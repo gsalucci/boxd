@@ -113,7 +113,10 @@ case $1 in
         if mv "$FAKE_VM_BLOCK" "$FAKE_VM_BLOCK.used" 2>/dev/null; then block create-blocked; fi
         echo "$img running" > "$FAKE_VM_STATE/$name" ;;
     start) echo "$(cut -d' ' -f1 "$FAKE_VM_STATE/$2") running" > "$FAKE_VM_STATE/$2" ;;
-    rm) last "$@"; rm -f "$FAKE_VM_STATE/$n" ;;
+    rm) last "$@"
+        # as the real engine does: its own progress line on standard error (seen on laptop, 2026-11-17); FAKE_RM_EXIT makes the removal fail
+        [ -z "${FAKE_RM_EXIT:-}" ] || { echo "  x Failed             $n" >&2; exit "$FAKE_RM_EXIT"; }
+        rm -f "$FAKE_VM_STATE/$n"; echo "  ✓ Removed             $n" >&2 ;;
     image) case $2 in ls) cat "${FAKE_VM_IMAGE_LIST:-/dev/null}"; exit 0 ;; rm) exit 0 ;; esac   # the cached images: a header, then "<reference> <digest> <size> <created>"
         last "$@"; cat "$FAKE_VM_IMAGES/$(echo "$n" | tr / _)" 2>/dev/null || exit 1 ;;   # inspect prints the image id
     load) f=$(readlink /proc/$$/fd/0)
@@ -615,6 +618,12 @@ eq "clear: podman rm -af" "rm -af" "$(cat "$FAKE_LOG")"
 eq "clear: msb rm -f once per pod-* sandbox, others untouched" "rm -f pod-v1|rm -f pod-v2" "$(grep '^rm' "$FAKE_MSB_LOG" | sort | paste -sd'|')"
 eq "clear leaves no box" "other" "$(ls "$FAKE_VM_STATE")"
 pod "pod clear"; eq "clear is not reachable over ssh" 125 "$rc"
+# pod stop: the engine's own "Removed" line stays out of the caller's output; a failed removal still says so and exits non-zero
+setup; vmbox s1; pod "pod stop s1"
+eq "stop of a machine box: exit 0, nothing printed, the engine's line is not passed on" "0||" "$rc|$(cat "$T/e/out")|$(cat "$T/e/err")"
+eq "stop of a machine box removed it" "" "$(ls "$FAKE_VM_STATE")"
+vmbox s2; FAKE_RM_EXIT=3 pod "pod stop s2"
+eq "stop of a machine box whose removal fails: non-zero exit and one clear line" "1 boxd-pod: removing pod-s2 failed:   x Failed             pod-s2" "$([ "$rc" != 0 ] && echo 1) $(cat "$T/e/err")"
 # clear: a detached run gets SIGTERM before its box goes
 setup
 mkdir -p "$W/jobs/x/runs"

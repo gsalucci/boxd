@@ -7,6 +7,7 @@ ARG NODE_VERSION=24.21.0
 ARG PNPM_VERSION=12.16.1
 ARG TSC_RS_VERSION=0.8.0
 ARG TYPESCRIPT_VERSION=7.0.2
+ARG TYPESCRIPT_API_VERSION=6.0.3
 ARG AST_GREP_VERSION=0.51.0
 ARG RUST_PINNED=1.98.1
 ARG GO_VERSION=1.27.4
@@ -40,6 +41,10 @@ ENV PNPM_HOME=/usr/local/share/pnpm
 ENV PATH=$PNPM_HOME/bin:$PNPM_HOME:$PATH
 # The official compiler too: tests and tools that look for `tsc` (the harness copies a TypeScript installation).
 RUN pnpm add -g "tsc-rs@${TSC_RS_VERSION}" "typescript@${TYPESCRIPT_VERSION}" && pnpm store prune
+# Version 7 is the native compiler and has no lib/typescript.js; tools and tests that load TypeScript as a library
+# find the JavaScript interface (version 6, the newest that has it) at a fixed path, off PATH, readable by every account.
+RUN pnpm add --dir /opt/typescript-api "typescript@${TYPESCRIPT_API_VERSION}" && pnpm store prune \
+    && chmod -R a+rX /opt/typescript-api
 
 RUN curl -fsSL -o /tmp/ast-grep.zip "https://github.com/ast-grep/ast-grep/releases/download/${AST_GREP_VERSION}/app-x86_64-unknown-linux-gnu.zip" \
     && unzip -q /tmp/ast-grep.zip -d /usr/local/bin ast-grep sg && rm /tmp/ast-grep.zip

@@ -19,7 +19,7 @@ CGROOT=${BOXD_CGROOT:-/sys/fs/cgroup}
 CGROUP=${BOXD_CGROUP:-$CGROOT/boxd}
 PROC=${BOXD_PROC:-/proc}   # test hook, like BOXD_MEMINFO: where `pod report` finds a box's process and its cgroup
 KVM=${BOXD_KVM:-/dev/kvm}   # test hook: the device a --kvm box gets
-VERSION=0.4.25
+VERSION=0.4.26
 # Keys that may only read, one "<type> <key> [comment]" per line (view_only below); and the largest answer of pod calls and pod log.
 VIEW_KEYS=${BOXD_VIEW_KEYS:-/etc/boxd/view_keys}
 READ_MAX=${BOXD_READ_MAX:-1048576}
@@ -69,6 +69,9 @@ noroom() { echo "boxd-pod: $*" >&2; logcall 75 "$*"; exit 75; }
 export HOME=${HOME:-$(getent passwd "$(id -un)" | cut -d: -f6)} MSB_HOME=$WORK/cache/msb
 # Every msb call: microsandbox refuses a state folder created under umask 002.
 vmx() ( umask 022; [ -d "$MSB_HOME" ] || mkdir -p "$MSB_HOME"; exec msb "$@" )
+# vm_rm <sandbox>: removes it. The engine prints its own "Removed" line on standard error; that line is not the caller's.
+# A failed removal gives the caller the engine's output in one clear line and returns 1.
+vm_rm() { local o; o=$(vmx rm -f "$1" </dev/null 2>&1) || { echo "boxd-pod: removing $1 failed: $o" >&2; return 1; }; }
 # vm_mem: sets used_mb (anonymous and shared memory of the build cgroup: guest memory is anonymous memory of the msb
 # process, file cache is reclaimable and does not count; plus its swapped-out memory, still in use, which anon no longer
 # shows: on 2026-11-15 the tower's group read 23713 MB with 7.7 GB more in swap and kept admitting machines) and cap_mb
@@ -602,7 +605,7 @@ reap() {
         (
             if [ -d "$J" ]; then exec 9>"$J/.lock"; flock -n 9 || exit 0; fi
             [ ! -e "$J/.running" ] || flock -n -x "$J/.running" true || exit 0
-            if [ "$engine" = vm ]; then vmx rm -f "pod-$box" </dev/null >/dev/null; else podman rm -f "pod-$box" </dev/null >/dev/null; fi && echo "reaped $box"
+            if [ "$engine" = vm ]; then vm_rm "pod-$box"; else podman rm -f "pod-$box" </dev/null >/dev/null; fi && echo "reaped $box"
         )
     done <<<"$rows"
     evict "$now"
@@ -860,7 +863,7 @@ view_only() {
 pod_stop() {
     [[ ${1:-} =~ $BOX_RE ]] || die "bad box name"
     if podman container inspect "pod-$1" >/dev/null 2>&1; then podman rm -f "pod-$1" >/dev/null || return 1; fi
-    if have_msb && vmx inspect "pod-$1" </dev/null >/dev/null 2>&1; then vmx rm -f "pod-$1" </dev/null >/dev/null; fi
+    if have_msb && vmx inspect "pod-$1" </dev/null >/dev/null 2>&1; then vm_rm "pod-$1" || return 1; fi
 }
 
 # Detached runs record their process group in runs/<id>.pid. Each group gets SIGTERM and is given a moment to end
@@ -882,7 +885,7 @@ pod_clear() {
     term_runs
     podman rm -af </dev/null >/dev/null || die "podman rm -af failed"
     if have_msb; then
-        while IFS=$'\t' read -r n _; do vmx rm -f "$n" </dev/null >/dev/null; done < <(vm_rows)
+        while IFS=$'\t' read -r n _; do vm_rm "$n"; done < <(vm_rows)
     fi
     echo cleared
 }
@@ -1076,7 +1079,7 @@ pod_run() {
     fi
     if [ -n "$recreate" ] || [ -n "$rebuilt" ]; then
         [ -z "$pc" ] || podman rm -f "$name" >/dev/null
-        [ -z "$vc" ] || vmx rm -f "$name" </dev/null >/dev/null
+        [ -z "$vc" ] || vm_rm "$name"
         [ -z "$recreate" ] || rm -f "$J/.mem-peak"   # a fresh machine starts the measure from nothing (a rebuilt one keeps it)
     fi
     # 9>&- 7>&- : the long-lived box processes must not inherit the locks.

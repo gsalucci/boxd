@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.26
+
+- **`box stop`: free a box's memory and keep its files.** Stops this worktree's box on its host; the folder with the
+  build outputs stays, so the next call makes the box again on the same files and the build is warm. Same guards as
+  `box drop` (your own box only, refused while a call or a run is going in it, a sleeping host is not woken). Prints
+  `box stop: stopped <host> box <box>; its files are kept`. `box drop` removes the folder too and is for a worktree
+  that is going away: a user who dropped after every run to free memory lost 22 GB of build output each time.
+- **The machine engine's own line no longer reaches the caller of `pod stop`.** `ssh boxd-<host> pod stop <box>` on a
+  machine box printed the engine's `✓ Removed pod-<box>`. Every removal of a machine now goes through one helper that
+  is silent on success and says `boxd-pod: removing <name> failed: <engine output>` with a failing exit otherwise.
+- **The toolbox image carries the JavaScript interface of TypeScript at a fixed path.** Version 6.0.3 in
+  `/opt/typescript-api/node_modules/typescript` (with `lib/typescript.js`), for tools and tests that load the compiler
+  as a library; version 7 on the path is the native compiler and no longer ships it. `toolbox-check` checks it. A host
+  gets it at its next image build (`boxd-setup --images`).
+
 ## 0.4.25
 
 - **A run in a machine box writes its output as it comes.** The machine engine's command runner held the output of a

@@ -9,6 +9,7 @@
 //   box forward [--host <name>] [--pod <name>] <local-port> <box-port>
 //   box vnc [--host <name>] [--pod <name>] [--port <box-port>]
 //   box drop [--pod <name>] [--host <name>]
+//   box stop [--pod <name>] [--host <name>]
 //   box gc [--dry-run]
 // Built with tsc-rs (see tsconfig.json); the emitted box.mjs is what runs.
 import { spawn, spawnSync } from "node:child_process";
@@ -17,7 +18,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-export const VERSION = "0.4.25";
+export const VERSION = "0.4.26";
 const BOX = /^[a-z0-9][a-z0-9_.-]{0,62}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const MAC = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i;
@@ -57,6 +58,9 @@ export const HELP = `usage: box [options] [--] <command...>
                                        delete yourself (run it from inside the worktree, before deleting it): the collector would wait 15 minutes
                                        for its second pass. Refuses while a command runs in the box; a sleeping server is not woken (exit 1); with --pod only a box this
                                        machine recorded for this worktree, or for a worktree that is gone, is removed
+       box stop [--pod <name>] [--host <name>]
+                                       stops this worktree's box on the build server and frees its memory, and keeps its files and its record: the
+                                       next call makes the box again on the same files (build outputs stay). Same guards as box drop
        box gc [--dry-run]              the collector: removes the boxes and server files of this machine's worktrees that no longer exist (a worktree
                                        must be found missing by two passes 15 minutes apart), lists boxes that no worktree here
                                        owns ("unknown owner", nothing is touched) and reports commands running over 6 hours;
@@ -1093,10 +1097,12 @@ export function removedWords(out) {
     const m = /^evicted .*, needed (\d{1,9}) MB of (\d{1,9}) MB \((small|medium|large|xlarge)\)(, \d{1,9} MB freed)?$/m.exec(out), a = m && sizeAdvice(Number(m[1]), m[3], Number(m[2]));
     return `${freed(out)}${m ? `; it needed ${m[1]} MB of its ${m[2]} MB at most${a ? ` (${a})` : ""}` : ""}`;
 }
-// box drop: the collector's removal for this worktree's box, asked for. Never wakes a host, never removes a box with a command in it
+// box drop and box stop share this: drop is the collector's removal for this worktree's box, asked for. Never wakes a host, never removes a box with a command in it
 // (no force: the collector removes a box under a live run only after the worktree is gone, this is a person's call from inside it).
 // pod drop answers 0 for a box the host no longer has (only the folder, or nothing, to remove), so a reaped box is cleaned too.
-async function dropCall(args, env) {
+// box stop (mode "stop") asks pod stop instead: the box goes, its folder and the record here stay, and a host that lists no box has nothing to stop.
+async function dropCall(args, env, mode = "drop") {
+    const cmd = `box ${mode}`, nothing = mode === "stop" ? "nothing stopped" : "nothing removed";
     let hostFlag, pod;
     for (let i = 0; i < args.length; i++) {
         const a = args[i], v = args[i + 1];
@@ -1112,40 +1118,48 @@ async function dropCall(args, env) {
             i++;
         }
         else
-            return usage(`box drop: unknown option ${a}`);
+            return usage(`${cmd}: unknown option ${a}`);
     }
     const t = readTarget(hostFlag, pod, env);
     if (typeof t === "string")
         return usage(t);
-    const host = t.HOST.replace(/^boxd-/, ""), refuse = (m) => { process.stderr.write(`box drop: ${m}\n`); return 1; };
+    const host = t.HOST.replace(/^boxd-/, ""), refuse = (m) => { process.stderr.write(`${cmd}: ${m}\n`); return 1; };
     const worktree = spawnSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).stdout.trim() || "-";
     // --pod can name any box: only one this machine recorded, for this worktree or for one that is gone, is removed (its files go with it).
     const owner = entries(env).find((e) => e.host === host && e.box === t.box);
     if (pod !== undefined && !owner)
-        return refuse(`box ${t.box} on ${host} has no record on this machine; nothing removed`);
+        return refuse(`box ${t.box} on ${host} has no record on this machine; ${nothing}`);
     if (pod !== undefined && owner && owner.worktree !== worktree && worktreeHere(owner.worktree))
-        return refuse(`box ${t.box} on ${host} belongs to the worktree ${owner.worktree}; run box drop from there; nothing removed`);
+        return refuse(`box ${t.box} on ${host} belongs to the worktree ${owner.worktree}; run ${cmd} from there; ${nothing}`);
     const state = (await probe(host, env)).state;
     if (state === "asleep")
-        return refuse(`${host} is asleep and is not woken; its box ${t.box} is removed by the collector when it wakes`);
+        return refuse(`${host} is asleep and is not woken; ${mode === "stop" ? nothing : `its box ${t.box} is removed by the collector when it wakes`}`);
     if (state !== "awake")
-        return refuse(`${host} is unreachable; nothing removed`);
+        return refuse(`${host} is unreachable; ${nothing}`);
     const listed = await ask(host, "pod list");
     if (listed.code !== 0)
-        return refuse(`${host}: pod list failed (exit ${listed.code}); nothing removed`);
+        return refuse(`${host}: pod list failed (exit ${listed.code}); ${nothing}`);
+    if (mode === "stop" && !listed.out.split("\n").some((l) => l.split("\t")[0] === t.box)) {
+        process.stdout.write(`box stop: ${host} has no running box ${t.box}; nothing to do\n`);
+        return 0;
+    }
     if (listed.out.split("\n").some((l) => l.split("\t")[0] === t.box && l.split("\t")[2] === "running")) {
         // Busy is the server's own notion (a call or a detached run holds the box: `busy=` of its `pod report` line). An image's own
         // daemons (dockerd, containerd in a machine) are processes but not work. A server that does not say keeps the process list.
         const rep = await ask(host, "pod report"), row = rep.code === 0 ? rep.out.split("\n").filter((l) => l.startsWith("box\t")).map(parseStatus).find((k) => k.box === t.box && k.busy !== undefined) : undefined;
         const procs = row ? { code: 0, out: row.busy === "yes" ? "busy" : "" } : await ask(host, `pod ps ${t.box}`);
         if (procs.code !== 0)
-            return refuse(`${host}: pod ps failed (exit ${procs.code}); nothing removed`);
+            return refuse(`${host}: pod ps failed (exit ${procs.code}); ${nothing}`);
         if (procs.out.trim())
-            return refuse(`box ${t.box} on ${host} still has a command running in it; nothing removed`);
+            return refuse(`box ${t.box} on ${host} still has a command running in it; ${nothing}`);
     }
-    const dropped = await ask(host, `pod drop ${t.box}`);
+    const dropped = await ask(host, `pod ${mode} ${t.box}`);
     if (dropped.code !== 0)
-        return refuse(`${host}: removing ${t.box} failed (exit ${dropped.code}); record kept`);
+        return refuse(`${host}: ${mode === "stop" ? "stopping" : "removing"} ${t.box} failed (exit ${dropped.code}); record kept`);
+    if (mode === "stop") {
+        process.stdout.write(`box stop: stopped ${host} box ${t.box}; its files are kept\n`);
+        return 0;
+    }
     rmSync(entryFile(env, host, t.box), { force: true });
     try {
         appendFileSync(path.join(stateDir(env), "gc.log"), `${[new Date().toISOString(), host, t.box, worktree, "asked"].join("\t")}\n`);
@@ -1296,8 +1310,8 @@ export function main(args, env = process.env) {
         return logCall(args.slice(1), env);
     if (args[0] === "forward" || args[0] === "vnc")
         return forwardCall(args[0], args.slice(1), env);
-    if (args[0] === "drop")
-        return dropCall(args.slice(1), env);
+    if (args[0] === "drop" || args[0] === "stop")
+        return dropCall(args.slice(1), env, args[0]);
     if (args[0] === "gc")
         return gcCall(args.slice(1), env);
     if (args[0] === "image")

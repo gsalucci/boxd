@@ -1804,6 +1804,68 @@ test("drop --pod: a box of another worktree that still exists, or one without a 
 
 test("drop: bad words are a usage error", () => assert.equal(runBox(["drop", "--now"]).code, 2));
 
+// ---- box stop: the same guards as drop, then pod stop; the folder and the record stay ---------------------------------------
+test("stop: stops the box, keeps its files and its record, and says so", () => {
+  const s = servers([{ name: "test", status: FREE }]), rp = newRepo();
+  hostFile(s, "test", "list", LINE(rp.box)); putEntry(s, "test", rp.box, rp.top);
+  const r = go(rp, s, ["stop"], { BOXD_HOST: "test" });
+  assert.equal(r.code, 0);
+  assert.equal(r.out, `box stop: stopped test box ${rp.box}; its files are kept\n`);
+  assert.deepEqual(stops(r.calls).map((c) => c.replace(/^.* boxd-/, "boxd-")), [`boxd-test pod stop ${rp.box}`]);
+  assert.notEqual(getEntry(s, "test", rp.box), undefined);
+  assert.deepEqual(gcLog(s), []);
+});
+
+test("stop: a host that lists no box of that name has nothing to stop, exit 0, no stop asked", () => {
+  const s = servers([{ name: "test", status: FREE }]), rp = newRepo();
+  hostFile(s, "test", "list", ""); putEntry(s, "test", rp.box, rp.top);
+  const r = go(rp, s, ["stop"], { BOXD_HOST: "test" });
+  assert.deepEqual([r.code, r.out, stops(r.calls)], [0, `box stop: test has no running box ${rp.box}; nothing to do\n`, []]);
+  assert.notEqual(getEntry(s, "test", rp.box), undefined);
+});
+
+test("stop: a command still running in the box refuses, record kept", () => {
+  const s = servers([{ name: "test", status: FREE }]), rp = newRepo();
+  hostFile(s, "test", "list", LINE(rp.box)); hostFile(s, "test", `ps.${rp.box}`, "7\t100\t0\t/job/src\tsleep 99\n"); putEntry(s, "test", rp.box, rp.top);
+  const r = go(rp, s, ["stop"], { BOXD_HOST: "test" });
+  assert.equal(r.code, 1);
+  assert.match(r.err, new RegExp(`box stop: box ${rp.box} on test still has a command running in it; nothing stopped\n`));
+  assert.deepEqual(stops(r.calls), []);
+  assert.notEqual(getEntry(s, "test", rp.box), undefined);
+});
+
+test("stop: a failed pod stop keeps the record and says the exit code", () => {
+  const s = servers([{ name: "test", status: FREE }]), rp = newRepo();
+  hostFile(s, "test", "list", LINE(rp.box)); hostFile(s, "test", "stop.exit", "1"); putEntry(s, "test", rp.box, rp.top);
+  const r = go(rp, s, ["stop"], { BOXD_HOST: "test" });
+  assert.equal(r.code, 1);
+  assert.match(r.err, /box stop: test: stopping .* failed \(exit 1\); record kept\n/);
+  assert.notEqual(getEntry(s, "test", rp.box), undefined);
+});
+
+test("stop: a sleeping host is never contacted, one line, exit 1, record kept", async () => {
+  const s = servers([{ name: "sleepy" }], { wake: { sleepy: `127.0.0.1:${await closedPort()}` } }), rp = newRepo();
+  putEntry(s, "sleepy", rp.box, rp.top);
+  const r = go(rp, s, ["stop"], { BOXD_HOST: "sleepy" });
+  assert.equal(r.code, 1);
+  assert.equal(r.calls.filter((c) => c.includes("boxd-sleepy")).length, 0);
+  assert.match(r.err, /box stop: sleepy is asleep and is not woken; nothing stopped\n/);
+  assert.notEqual(getEntry(s, "sleepy", rp.box), undefined);
+});
+
+test("stop --pod: a box of another worktree that still exists, or one without a record, is refused and nothing is asked", () => {
+  const s = servers([{ name: "test", status: FREE }]), rp = newRepo(), other = newRepo();
+  putEntry(s, "test", other.box, other.top);
+  const r = go(rp, s, ["stop", "--pod", other.box], { BOXD_HOST: "test" });
+  assert.equal(r.code, 1);
+  assert.match(r.err, /belongs to the worktree .*; run box stop from there; nothing stopped\n/);
+  const n = go(rp, s, ["stop", "--pod", "nobody-1"], { BOXD_HOST: "test" });
+  assert.match(n.err, /box nobody-1 on test has no record on this machine; nothing stopped\n/);
+  assert.deepEqual([...r.calls, ...n.calls].filter((c) => c.includes(" pod stop ") || c.includes(" pod list")), []);
+});
+
+test("stop: bad words are a usage error", () => assert.equal(runBox(["stop", "--now"]).code, 2));
+
 // ---- the refusal for room says what would work now (roomHint: only the status lines the probe returned) ----------------------
 const fitLine = (size: string, host: string, mb: number) => `fits now: --size ${size} on ${host} (${mb} MB free; a box that exists keeps its size, changing it needs --recreate)`;
 const WAIT_LINE = "or wait for room: add --wait";

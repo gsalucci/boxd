@@ -31,7 +31,7 @@ waiting cannot fix, like a missing image, still exits at once).
   `box image push [--vm] <ref>` (full reference, an allowed registry), then use `box --image <ref> ...`; nothing is sent when the server already has it.
 - Virtual machine: add `--vm` only when the work needs docker or podman inside, its own kernel, root, or runs untrusted
   code, and only when the server has virtual machines (otherwise the call is refused with a clear message, exit 125).
-  Example: `box --vm --image localhost/toolbox docker run --rm hello-world`. Containers stay the default: lighter and
+  Example: `box --vm --image localhost/toolbox docker run --rm hello-world`. In the toolbox image, tools that load TypeScript as a library find its JavaScript interface, version 6, at /opt/typescript-api/node_modules/typescript (`tsc` itself is version 7, which has no library file). Containers stay the default: lighter and
   they reach the server's own network (a virtual machine reaches the public internet only). A box keeps its engine like its image; to switch
   add `--recreate` (files stay). Pick the smallest size that fits with `--size small|medium|large|xlarge` (2, 4, 8 or 12 GB of memory; 2, 4, 4 or 8 processors; no `--size` means large; take xlarge (8 processors, 12 GB) only when the work needs more than 8 GB, because fewer machines fit beside it; the size is kept, another one needs `--recreate`). A new machine starts when the memory the server really uses plus the machine's size fits, so small machines leave room for others; when it does not fit the call is refused (exit 75, no room). Remove a machine box you no longer need. Repeat `--vm`
   on every call for that box, also when reading a detached log.
@@ -61,6 +61,7 @@ waiting cannot fix, like a missing image, still exits at once).
   must outlive you (a server, a long build you will read later) needs `--detach`; `BOXD_KEEP_ORPHAN=1` is only for a wrapper
   that exits on purpose.
 - When `box drop` says `it needed <n> MB of its <m> MB at most`, that is the most memory the machine really used inside (file cache not counted); a smaller size, named in the line, would have held it, and a smaller size leaves room for other machines. A new machine for a box with no `--size` takes its size from that need by itself.
+- To free a box's memory between runs while the worktree lives on, run `box stop`: the box stops and its files stay (build outputs included), so the next call makes it again on the same files. Use `box drop` only when the worktree is going away: it removes the files too, and the next call starts from a cold build.
 - After you delete a worktree yourself, run `box drop` first, from inside it: the box is found from the worktree. It removes the box, its files on the server and its record at once, refuses while the box is busy (a call or a detached run; the image's own daemons do not count), and does not wake a sleeping server (the collector then does it later).
 - `box gc` (`--dry-run` to only look) removes the boxes and server files of worktrees that were deleted (found missing by two passes 15 minutes
   apart), lists boxes nobody here owns and reports commands running over 6 hours; it also runs by itself after ordinary calls

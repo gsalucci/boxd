@@ -14,6 +14,7 @@ v node node --version
 v pnpm pnpm --version
 v tsc-rs tsc-rs --version
 v tsc tsc --version
+v typescript-api node -p 'require("/opt/typescript-api/node_modules/typescript").version'
 v ast-grep ast-grep --version
 v rustc-stable rustc +stable --version
 v rustc-1.98.1 rustc +1.98.1 --version
