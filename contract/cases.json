@@ -3058,7 +3058,7 @@
       "command": "pod status",
       "msb": false,
       "exit": 0,
-      "stdout_re": "^version=0\\.4\\.23\tengines=container\tcpus=8\tload1=[0-9]+\\.[0-9]+\tvm_used=0\tvm_max=3\tvm_room=no\tboxes=0\tdisk_pct=37\tmem_free_mb=unknown\timages=\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=-\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-$"
+      "stdout_re": "^version=0\\.4\\.24\tengines=container\tcpus=8\tload1=[0-9]+\\.[0-9]+\tvm_used=0\tvm_max=3\tvm_room=no\tboxes=0\tdisk_pct=37\tmem_free_mb=unknown\timages=\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=-\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096$"
     },
     {
       "name": "pod status: one of three machines running, room for another; boxes counts both engines",
@@ -3080,7 +3080,7 @@
           "state": "stopped"
         }
       },
-      "stdout_re": "^version=0\\.4\\.23\tengines=container,vm\tcpus=8\tload1=[0-9]+\\.[0-9]+\tvm_used=1\tvm_max=3\tvm_room=yes\tboxes=3\tdisk_pct=37\tmem_free_mb=unknown\timages=\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=-\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-$"
+      "stdout_re": "^version=0\\.4\\.24\tengines=container,vm\tcpus=8\tload1=[0-9]+\\.[0-9]+\tvm_used=1\tvm_max=3\tvm_room=yes\tboxes=3\tdisk_pct=37\tmem_free_mb=unknown\timages=\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=-\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096$"
     },
     {
       "name": "pod status: all machines used, no room (vm_room is the server's own answer)",
@@ -3115,7 +3115,7 @@
           "state": "running"
         }
       },
-      "stdout_re": "\tvm_used=1\tvm_max=1\tvm_room=no\t.*\tvm_why=1 of 1 running\tvm_fit_mb=0$"
+      "stdout_re": "\tvm_used=1\tvm_max=1\tvm_room=no\t.*\tvm_why=1 of 1 running\tvm_fit_mb=0\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096$"
     },
     {
       "name": "pod status: images lists the archives of local images, sorted, and leaves out per-box builds",
@@ -3126,7 +3126,7 @@
         "another"
       ],
       "archives_built": true,
-      "stdout_re": "\timages=another,toolbox\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=-\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-$"
+      "stdout_re": "\timages=another,toolbox\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=-\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096$"
     },
     {
       "name": "pod status: free memory is the cgroup's limit minus its anonymous and shared memory (the admission's figure), in megabytes; file cache, active or not, is free",
@@ -3137,7 +3137,7 @@
         "memory.current": "12884901888\n",
         "memory.stat": "anon 1073741824\nshmem 1073741824\ninactive_file 2147483648\nactive_file 5368709120\n"
       },
-      "stdout_re": "\tmem_free_mb=30720\timages=\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=2048\tgroup_mem_max_mb=32768\tvm_why=\tvm_fit_mb=30720$"
+      "stdout_re": "\tmem_free_mb=30720\timages=\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=2048\tgroup_mem_max_mb=32768\tvm_why=\tvm_fit_mb=30720\tbox_room=yes\tbox_fit_mb=32768\tbox_reserve_mb=4096$"
     },
     {
       "name": "pod status takes no lock, writes nothing and starts or removes nothing",
@@ -3641,7 +3641,7 @@
         "jobs/a/runs/r2.pid": "1\n",
         "jobs/b/.vm-size": "small"
       },
-      "stdout_re": "^host\tversion=0\\.4\\.23\tengines=container,vm\tcpus=8\tload1=[0-9]+\\.[0-9]+\tload5=[0-9]+\\.[0-9]+\tload15=[0-9]+\\.[0-9]+\tboot=[0-9]+\tmem_total_mb=32000\tmem_avail_mb=9000\tswap_total_mb=8000\tswap_used_mb=1200\tgroup_mem_max_mb=32768\tgroup_mem_used_mb=1024\tpressure_some10=2\\.31\tpressure_some60=1\\.12\tpressure_full10=0\\.40\tpressure_full60=0\\.18\toom_kills=1\tvm_used=0\tvm_max=none\tvm_room=yes\tvm_mem_mb=8192\tbox_mem_mb=12288\tdisk_pct=37\tdisk_total_mb=976562\tdisk_used_mb=361328\tttl=1800\tpower=on\tidle_checks=20\tidle_count=7\tidle_last=idle\treset_at=85\tkeepawake=free\nbox\tbox=a\tengine=container\timage=docker\\.io/library/rust:1\tstate=running\tlast_used=0\tuser=no\tsize=-\tmem_limit_mb=12288\tmem_mb=(-|[0-9]+)\tbusy=no\truns=1\nbox\tbox=b\tengine=vm\timage=localhost/toolbox:latest\tstate=stopped\tlast_used=0\tuser=-\tsize=small\tmem_limit_mb=2048\tmem_mb=-\tbusy=no\truns=0\nrun\tbox=a\tid=r1\tstate=ended\texit=3\tbytes=11\tchanged=[0-9]+\nrun\tbox=a\tid=r2\tstate=running\texit=-\tbytes=4\tchanged=[0-9]+\nimage\tname=toolbox\tbytes=0\tbuilt=[0-9]+$",
+      "stdout_re": "^host\tversion=0\\.4\\.24\tengines=container,vm\tcpus=8\tload1=[0-9]+\\.[0-9]+\tload5=[0-9]+\\.[0-9]+\tload15=[0-9]+\\.[0-9]+\tboot=[0-9]+\tmem_total_mb=32000\tmem_avail_mb=9000\tswap_total_mb=8000\tswap_used_mb=1200\tgroup_mem_max_mb=32768\tgroup_mem_used_mb=1024\tpressure_some10=2\\.31\tpressure_some60=1\\.12\tpressure_full10=0\\.40\tpressure_full60=0\\.18\toom_kills=1\tvm_used=0\tvm_max=none\tvm_room=yes\tvm_mem_mb=8192\tbox_mem_mb=12288\tdisk_pct=37\tdisk_total_mb=976562\tdisk_used_mb=361328\tttl=1800\tpower=on\tidle_checks=20\tidle_count=7\tidle_last=idle\treset_at=85\tkeepawake=free\nbox\tbox=a\tengine=container\timage=docker\\.io/library/rust:1\tstate=running\tlast_used=0\tuser=no\tsize=-\tmem_limit_mb=12288\tmem_mb=(-|[0-9]+)\tbusy=no\truns=1\nbox\tbox=b\tengine=vm\timage=localhost/toolbox:latest\tstate=stopped\tlast_used=0\tuser=-\tsize=small\tmem_limit_mb=2048\tmem_mb=-\tbusy=no\truns=0\nrun\tbox=a\tid=r1\tstate=ended\texit=3\tbytes=11\tchanged=[0-9]+\nrun\tbox=a\tid=r2\tstate=running\texit=-\tbytes=4\tchanged=[0-9]+\nimage\tname=toolbox\tbytes=0\tbuilt=[0-9]+$",
       "podman_calls_absent": [
         "^run",
         "^start",
@@ -3674,7 +3674,7 @@
         "BOXD_KEEPAWAKE_LOCK": "/work/no-lock",
         "BOXD_IDLE_STATE": "/work/no-idle"
       },
-      "stdout_re": "^host\tversion=0\\.4\\.23\tengines=container\tcpus=8\t.*\tgroup_mem_max_mb=-\tgroup_mem_used_mb=-\tpressure_some10=-\tpressure_some60=-\tpressure_full10=-\tpressure_full60=-\toom_kills=-\tvm_used=0\tvm_max=3\tvm_room=no\tvm_mem_mb=8192\tbox_mem_mb=12288\tdisk_pct=37\tdisk_total_mb=976562\tdisk_used_mb=361328\tttl=1800\tpower=off\tidle_checks=-\tidle_count=-\tidle_last=-\treset_at=-\tkeepawake=none$"
+      "stdout_re": "^host\tversion=0\\.4\\.24\tengines=container\tcpus=8\t.*\tgroup_mem_max_mb=-\tgroup_mem_used_mb=-\tpressure_some10=-\tpressure_some60=-\tpressure_full10=-\tpressure_full60=-\toom_kills=-\tvm_used=0\tvm_max=3\tvm_room=no\tvm_mem_mb=8192\tbox_mem_mb=12288\tdisk_pct=37\tdisk_total_mb=976562\tdisk_used_mb=361328\tttl=1800\tpower=off\tidle_checks=-\tidle_count=-\tidle_last=-\treset_at=-\tkeepawake=none$"
     },
     {
       "name": "pod report lists every running run and, of the ended ones, the three with the greatest ids per box",
@@ -4375,6 +4375,205 @@
       "podman_calls": [],
       "msb_calls": [],
       "exact": true
+    },
+    {
+      "name": "container box: refused for room when the running machines and the reserve do not fit the cap (one line with the numbers, exit 75), nothing created",
+      "command": "pod run boxd-2889387319 -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "containers": {},
+      "sandboxes": {
+        "pod-m1": {
+          "image": "docker.io/library/debian:stable-slim",
+          "state": "running"
+        }
+      },
+      "cgroup": {
+        "memory.max": "10737418240\n",
+        "memory.stat": "anon 0\nshmem 0\n"
+      },
+      "exit": 75,
+      "stderr": "boxd-pod: no room for another busy box (8192 MB counted + 4096 MB reserve > 10240 MB, 100% of the 10240 MB cap); wait for one to end",
+      "podman_calls_absent": [
+        "^run",
+        "^start",
+        "^exec"
+      ],
+      "files_absent": [
+        "/work/jobs/boxd-2889387319/.last-used"
+      ]
+    },
+    {
+      "name": "container box: the sums plus the reserve exactly equal to the cap pass",
+      "command": "pod run boxd-2889387319 -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "containers": {},
+      "sandboxes": {
+        "pod-m1": {
+          "image": "docker.io/library/debian:stable-slim",
+          "state": "running"
+        }
+      },
+      "cgroup": {
+        "memory.max": "12884901888\n",
+        "memory.stat": "anon 0\nshmem 0\n"
+      },
+      "exit": 0,
+      "podman_calls": [
+        "^run -d ",
+        "^exec "
+      ]
+    },
+    {
+      "name": "container box: BOXD_BOX_RESERVE sets the reserve (2048 MB fits a 10240 MB cap beside one 8192 MB machine)",
+      "command": "pod run boxd-2889387319 -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "containers": {},
+      "sandboxes": {
+        "pod-m1": {
+          "image": "docker.io/library/debian:stable-slim",
+          "state": "running"
+        }
+      },
+      "cgroup": {
+        "memory.max": "10737418240\n",
+        "memory.stat": "anon 0\nshmem 0\n"
+      },
+      "env": {
+        "BOXD_BOX_RESERVE": "2048"
+      },
+      "exit": 0,
+      "podman_calls": [
+        "^run -d ",
+        "^exec "
+      ]
+    },
+    {
+      "name": "container box: BOXD_BOX_RESERVE=0 turns the rule off, as before it existed",
+      "command": "pod run boxd-2889387319 -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "containers": {},
+      "sandboxes": {
+        "pod-m1": {
+          "image": "docker.io/library/debian:stable-slim",
+          "state": "running"
+        }
+      },
+      "cgroup": {
+        "memory.max": "10737418240\n",
+        "memory.stat": "anon 0\nshmem 0\n"
+      },
+      "env": {
+        "BOXD_BOX_RESERVE": "0"
+      },
+      "exit": 0,
+      "podman_calls": [
+        "^run -d ",
+        "^exec "
+      ]
+    },
+    {
+      "name": "container box: a host whose memory cannot be measured keeps admitting containers",
+      "command": "pod run boxd-2889387319 -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "containers": {},
+      "sandboxes": {
+        "pod-m1": {
+          "image": "docker.io/library/debian:stable-slim",
+          "state": "running"
+        }
+      },
+      "exit": 0,
+      "podman_calls": [
+        "^run -d ",
+        "^exec "
+      ]
+    },
+    {
+      "name": "BOXD_BOX_RESERVE must be a number",
+      "command": "pod run boxd-2889387319 -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "containers": {},
+      "env": {
+        "BOXD_BOX_RESERVE": "lots"
+      },
+      "exit": 125,
+      "stderr": "boxd-pod: BOXD_BOX_RESERVE must be a number"
+    },
+    {
+      "name": "container box: a machine call is not judged by the reserve (the machine rules alone)",
+      "command": "pod run boxd-2889387319 --vm --size small -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "containers": {},
+      "sandboxes": {
+        "pod-m1": {
+          "image": "docker.io/library/debian:stable-slim",
+          "state": "running"
+        }
+      },
+      "cgroup": {
+        "memory.max": "12884901888\n",
+        "memory.stat": "anon 0\nshmem 0\n"
+      },
+      "exit": 0,
+      "msb_calls": [
+        "^create "
+      ]
+    },
+    {
+      "name": "pod status: no room for another busy box when the sums and the reserve do not fit the cap",
+      "command": "pod status",
+      "exit": 0,
+      "sandboxes": {
+        "pod-m1": {
+          "image": "docker.io/library/debian:stable-slim",
+          "state": "running"
+        }
+      },
+      "cgroup": {
+        "memory.max": "10737418240\n",
+        "memory.stat": "anon 0\nshmem 0\n"
+      },
+      "stdout_re": "\tvm_fit_mb=2048\tbox_room=no\tbox_fit_mb=2048\tbox_reserve_mb=4096$"
+    },
+    {
+      "name": "pod status: room for another busy box says how many megabytes fit",
+      "command": "pod status",
+      "exit": 0,
+      "sandboxes": {
+        "pod-m1": {
+          "image": "docker.io/library/debian:stable-slim",
+          "state": "running"
+        }
+      },
+      "cgroup": {
+        "memory.max": "15032385536\n",
+        "memory.stat": "anon 0\nshmem 0\n"
+      },
+      "stdout_re": "\tbox_room=yes\tbox_fit_mb=6144\tbox_reserve_mb=4096$"
+    },
+    {
+      "name": "pod status: with the rule off the host says yes and no figure, and the reserve 0",
+      "command": "pod status",
+      "exit": 0,
+      "sandboxes": {
+        "pod-m1": {
+          "image": "docker.io/library/debian:stable-slim",
+          "state": "running"
+        }
+      },
+      "cgroup": {
+        "memory.max": "10737418240\n",
+        "memory.stat": "anon 0\nshmem 0\n"
+      },
+      "env": {
+        "BOXD_BOX_RESERVE": "0"
+      },
+      "stdout_re": "\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=0$"
+    },
+    {
+      "name": "pod status: a host that cannot measure its memory says yes and no figure",
+      "command": "pod status",
+      "exit": 0,
+      "sandboxes": {
+        "pod-m1": {
+          "image": "docker.io/library/debian:stable-slim",
+          "state": "running"
+        }
+      },
+      "stdout_re": "\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096$"
     }
   ],
   "choose": [
@@ -4702,6 +4901,280 @@
       ],
       "refusal": [
         "tower: no memory for another machine (5 running)"
+      ]
+    },
+    {
+      "name": "a machine goes to the host with the smallest cap for boxes, not to the first host nor the one with the most free memory",
+      "request": {
+        "vm": true
+      },
+      "hosts": [
+        {
+          "name": "tower",
+          "state": "awake",
+          "status": "version=0.4.23\tengines=container,vm\tcpus=16\tload1=0.42\tvm_used=1\tvm_max=none\tvm_room=yes\tboxes=4\tdisk_pct=37\tmem_free_mb=27000\timages=toolbox\tmem_avail_mb=9000\tgroup_mem_used_mb=1000\tgroup_mem_max_mb=28672\tvm_why=\tvm_fit_mb=-"
+        },
+        {
+          "name": "laptop",
+          "state": "awake",
+          "status": "version=0.4.23\tengines=container,vm\tcpus=16\tload1=0.42\tvm_used=1\tvm_max=none\tvm_room=yes\tboxes=4\tdisk_pct=37\tmem_free_mb=9000\timages=toolbox\tmem_avail_mb=9000\tgroup_mem_used_mb=1000\tgroup_mem_max_mb=14336\tvm_why=\tvm_fit_mb=-"
+        }
+      ],
+      "chosen": "laptop",
+      "reason": "fit"
+    },
+    {
+      "name": "machines: a tie in the cap keeps the configured order",
+      "request": {
+        "vm": true
+      },
+      "hosts": [
+        {
+          "name": "tower",
+          "state": "awake",
+          "status": "version=0.4.23\tengines=container,vm\tcpus=16\tload1=0.42\tvm_used=1\tvm_max=none\tvm_room=yes\tboxes=4\tdisk_pct=37\tmem_free_mb=9000\timages=toolbox\tmem_avail_mb=9000\tgroup_mem_used_mb=1000\tgroup_mem_max_mb=28672\tvm_why=\tvm_fit_mb=-"
+        },
+        {
+          "name": "laptop",
+          "state": "awake",
+          "status": "version=0.4.23\tengines=container,vm\tcpus=16\tload1=0.42\tvm_used=1\tvm_max=none\tvm_room=yes\tboxes=4\tdisk_pct=37\tmem_free_mb=20000\timages=toolbox\tmem_avail_mb=9000\tgroup_mem_used_mb=1000\tgroup_mem_max_mb=28672\tvm_why=\tvm_fit_mb=-"
+        }
+      ],
+      "chosen": "tower",
+      "reason": "fit"
+    },
+    {
+      "name": "machines: the smallest cap is skipped when it has no room for the machine, the next smallest is chosen",
+      "request": {
+        "vm": true
+      },
+      "hosts": [
+        {
+          "name": "tower",
+          "state": "awake",
+          "status": "version=0.4.23\tengines=container,vm\tcpus=16\tload1=0.42\tvm_used=1\tvm_max=none\tvm_room=yes\tboxes=4\tdisk_pct=37\tmem_free_mb=27000\timages=toolbox\tmem_avail_mb=9000\tgroup_mem_used_mb=1000\tgroup_mem_max_mb=28672\tvm_why=\tvm_fit_mb=-"
+        },
+        {
+          "name": "laptop",
+          "state": "awake",
+          "status": "version=0.4.23\tengines=container,vm\tcpus=16\tload1=0.42\tvm_used=1\tvm_max=none\tvm_room=no\tboxes=4\tdisk_pct=37\tmem_free_mb=100\timages=toolbox\tmem_avail_mb=9000\tgroup_mem_used_mb=1000\tgroup_mem_max_mb=14336\tvm_why=\tvm_fit_mb=-"
+        }
+      ],
+      "chosen": "tower",
+      "reason": "fit"
+    },
+    {
+      "name": "machines: a host that reports no cap comes after the hosts that report one, even when it is first and has more free memory",
+      "request": {
+        "vm": true
+      },
+      "hosts": [
+        {
+          "name": "tower",
+          "state": "awake",
+          "status": "version=0.4.23\tengines=container,vm\tcpus=16\tload1=0.42\tvm_used=1\tvm_max=none\tvm_room=yes\tboxes=4\tdisk_pct=37\tmem_free_mb=27000\timages=toolbox\tmem_avail_mb=9000\tgroup_mem_used_mb=1000\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-"
+        },
+        {
+          "name": "laptop",
+          "state": "awake",
+          "status": "version=0.4.23\tengines=container,vm\tcpus=16\tload1=0.42\tvm_used=1\tvm_max=none\tvm_room=yes\tboxes=4\tdisk_pct=37\tmem_free_mb=9000\timages=toolbox\tmem_avail_mb=9000\tgroup_mem_used_mb=1000\tgroup_mem_max_mb=14336\tvm_why=\tvm_fit_mb=-"
+        }
+      ],
+      "chosen": "laptop",
+      "reason": "fit"
+    },
+    {
+      "name": "machines: a sleeping host comes after an awake host that reports a cap",
+      "request": {
+        "vm": true
+      },
+      "hosts": [
+        {
+          "name": "tower",
+          "state": "asleep"
+        },
+        {
+          "name": "laptop",
+          "state": "awake",
+          "status": "version=0.4.23\tengines=container,vm\tcpus=16\tload1=0.42\tvm_used=1\tvm_max=none\tvm_room=yes\tboxes=4\tdisk_pct=37\tmem_free_mb=9000\timages=toolbox\tmem_avail_mb=9000\tgroup_mem_used_mb=1000\tgroup_mem_max_mb=28672\tvm_why=\tvm_fit_mb=-"
+        }
+      ],
+      "chosen": "laptop",
+      "reason": "fit"
+    },
+    {
+      "name": "machines: no host reports a cap, so the most free memory decides as before and the reason is not fit",
+      "request": {
+        "vm": true
+      },
+      "hosts": [
+        {
+          "name": "tower",
+          "state": "awake",
+          "status": "version=0.4.23\tengines=container,vm\tcpus=16\tload1=0.42\tvm_used=1\tvm_max=none\tvm_room=yes\tboxes=4\tdisk_pct=37\tmem_free_mb=9000\timages=toolbox\tmem_avail_mb=9000\tgroup_mem_used_mb=1000\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-"
+        },
+        {
+          "name": "laptop",
+          "state": "awake",
+          "status": "version=0.4.23\tengines=container,vm\tcpus=16\tload1=0.42\tvm_used=1\tvm_max=none\tvm_room=yes\tboxes=4\tdisk_pct=37\tmem_free_mb=20000\timages=toolbox\tmem_avail_mb=9000\tgroup_mem_used_mb=1000\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-"
+        }
+      ],
+      "chosen": "laptop",
+      "reason": "spread"
+    },
+    {
+      "name": "an xlarge machine goes to the smallest host whose vm_fit_mb holds 12288 MB, not to a smaller host that cannot",
+      "request": {
+        "vm": true,
+        "size": "xlarge"
+      },
+      "hosts": [
+        {
+          "name": "tower",
+          "state": "awake",
+          "status": "version=0.4.23\tengines=container,vm\tcpus=16\tload1=0.42\tvm_used=1\tvm_max=none\tvm_room=yes\tboxes=4\tdisk_pct=37\tmem_free_mb=27000\timages=toolbox\tmem_avail_mb=9000\tgroup_mem_used_mb=1000\tgroup_mem_max_mb=28672\tvm_why=\tvm_fit_mb=20000"
+        },
+        {
+          "name": "laptop",
+          "state": "awake",
+          "status": "version=0.4.23\tengines=container,vm\tcpus=16\tload1=0.42\tvm_used=1\tvm_max=none\tvm_room=yes\tboxes=4\tdisk_pct=37\tmem_free_mb=9000\timages=toolbox\tmem_avail_mb=9000\tgroup_mem_used_mb=1000\tgroup_mem_max_mb=14336\tvm_why=\tvm_fit_mb=4096"
+        }
+      ],
+      "chosen": "tower",
+      "reason": "fit"
+    },
+    {
+      "name": "a container keeps the most free memory rule: the caps are not looked at",
+      "request": {
+        "vm": false
+      },
+      "hosts": [
+        {
+          "name": "tower",
+          "state": "awake",
+          "status": "version=0.4.23\tengines=container,vm\tcpus=16\tload1=0.42\tvm_used=1\tvm_max=none\tvm_room=yes\tboxes=4\tdisk_pct=37\tmem_free_mb=9000\timages=toolbox\tmem_avail_mb=9000\tgroup_mem_used_mb=1000\tgroup_mem_max_mb=28672\tvm_why=\tvm_fit_mb=-"
+        },
+        {
+          "name": "laptop",
+          "state": "awake",
+          "status": "version=0.4.23\tengines=container,vm\tcpus=16\tload1=0.42\tvm_used=1\tvm_max=none\tvm_room=yes\tboxes=4\tdisk_pct=37\tmem_free_mb=20000\timages=toolbox\tmem_avail_mb=9000\tgroup_mem_used_mb=1000\tgroup_mem_max_mb=14336\tvm_why=\tvm_fit_mb=-"
+        }
+      ],
+      "chosen": "laptop",
+      "reason": "spread"
+    },
+    {
+      "name": "a container call: a host with box_room=no has no room for it, the next host with room takes it",
+      "request": {
+        "vm": false
+      },
+      "hosts": [
+        {
+          "name": "tower",
+          "state": "awake",
+          "status": "version=0.4.23\tengines=container,vm\tcpus=16\tload1=0.42\tvm_used=1\tvm_max=none\tvm_room=yes\tboxes=4\tdisk_pct=37\tmem_free_mb=9000\timages=toolbox\tmem_avail_mb=9000\tgroup_mem_used_mb=1000\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=no\tbox_fit_mb=1000\tbox_reserve_mb=4096"
+        },
+        {
+          "name": "laptop",
+          "state": "awake",
+          "status": "version=0.4.23\tengines=container,vm\tcpus=16\tload1=0.42\tvm_used=1\tvm_max=none\tvm_room=yes\tboxes=4\tdisk_pct=37\tmem_free_mb=2000\timages=toolbox\tmem_avail_mb=9000\tgroup_mem_used_mb=1000\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=yes\tbox_fit_mb=6000\tbox_reserve_mb=4096"
+        }
+      ],
+      "chosen": "laptop",
+      "reason": "overflow"
+    },
+    {
+      "name": "a container call: no host has memory for another busy box, one reason per host with the megabytes that fit and the reserve wanted",
+      "request": {
+        "vm": false
+      },
+      "hosts": [
+        {
+          "name": "tower",
+          "state": "awake",
+          "status": "version=0.4.23\tengines=container,vm\tcpus=16\tload1=0.42\tvm_used=1\tvm_max=none\tvm_room=yes\tboxes=4\tdisk_pct=37\tmem_free_mb=9000\timages=toolbox\tmem_avail_mb=9000\tgroup_mem_used_mb=1000\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=no\tbox_fit_mb=1000\tbox_reserve_mb=4096"
+        },
+        {
+          "name": "laptop",
+          "state": "awake",
+          "status": "version=0.4.23\tengines=container,vm\tcpus=16\tload1=0.42\tvm_used=1\tvm_max=none\tvm_room=yes\tboxes=4\tdisk_pct=37\tmem_free_mb=2000\timages=toolbox\tmem_avail_mb=9000\tgroup_mem_used_mb=1000\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=no\tbox_fit_mb=0\tbox_reserve_mb=4096"
+        }
+      ],
+      "refusal": [
+        "tower: no memory for another busy box (1000 MB fit, 4096 MB wanted)",
+        "laptop: no memory for another busy box (0 MB fit, 4096 MB wanted)"
+      ]
+    },
+    {
+      "name": "a container call: a host that prints no box_room (an older server) always has room, as before",
+      "request": {
+        "vm": false
+      },
+      "hosts": [
+        {
+          "name": "tower",
+          "state": "awake",
+          "status": "version=0.4.23\tengines=container,vm\tcpus=16\tload1=0.42\tvm_used=1\tvm_max=none\tvm_room=yes\tboxes=4\tdisk_pct=37\tmem_free_mb=9000\timages=toolbox\tmem_avail_mb=9000\tgroup_mem_used_mb=1000\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-"
+        },
+        {
+          "name": "laptop",
+          "state": "awake",
+          "status": "version=0.4.23\tengines=container,vm\tcpus=16\tload1=0.42\tvm_used=1\tvm_max=none\tvm_room=yes\tboxes=4\tdisk_pct=37\tmem_free_mb=2000\timages=toolbox\tmem_avail_mb=9000\tgroup_mem_used_mb=1000\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=no\tbox_fit_mb=0\tbox_reserve_mb=4096"
+        }
+      ],
+      "chosen": "tower",
+      "reason": "order"
+    },
+    {
+      "name": "a container call: boxes with room are spread by free memory as before, box_fit_mb is not the key",
+      "request": {
+        "vm": false
+      },
+      "hosts": [
+        {
+          "name": "tower",
+          "state": "awake",
+          "status": "version=0.4.23\tengines=container,vm\tcpus=16\tload1=0.42\tvm_used=1\tvm_max=none\tvm_room=yes\tboxes=4\tdisk_pct=37\tmem_free_mb=9000\timages=toolbox\tmem_avail_mb=9000\tgroup_mem_used_mb=1000\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=yes\tbox_fit_mb=9000\tbox_reserve_mb=4096"
+        },
+        {
+          "name": "laptop",
+          "state": "awake",
+          "status": "version=0.4.23\tengines=container,vm\tcpus=16\tload1=0.42\tvm_used=1\tvm_max=none\tvm_room=yes\tboxes=4\tdisk_pct=37\tmem_free_mb=20000\timages=toolbox\tmem_avail_mb=9000\tgroup_mem_used_mb=1000\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=yes\tbox_fit_mb=5000\tbox_reserve_mb=4096"
+        }
+      ],
+      "chosen": "laptop",
+      "reason": "spread"
+    },
+    {
+      "name": "a machine call: box_room=no says nothing about machines (vm_room does)",
+      "request": {
+        "vm": true
+      },
+      "hosts": [
+        {
+          "name": "tower",
+          "state": "awake",
+          "status": "version=0.4.23\tengines=container,vm\tcpus=16\tload1=0.42\tvm_used=1\tvm_max=none\tvm_room=yes\tboxes=4\tdisk_pct=37\tmem_free_mb=9000\timages=toolbox\tmem_avail_mb=9000\tgroup_mem_used_mb=1000\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=no\tbox_fit_mb=1000\tbox_reserve_mb=4096"
+        }
+      ],
+      "chosen": "tower",
+      "reason": "order"
+    },
+    {
+      "name": "a container call with a local image the host lacks: the missing image is named, not the memory",
+      "request": {
+        "vm": false,
+        "image": "localhost/other"
+      },
+      "hosts": [
+        {
+          "name": "tower",
+          "state": "awake",
+          "status": "version=0.4.23\tengines=container,vm\tcpus=16\tload1=0.42\tvm_used=1\tvm_max=none\tvm_room=yes\tboxes=4\tdisk_pct=37\tmem_free_mb=9000\timages=toolbox\tmem_avail_mb=9000\tgroup_mem_used_mb=1000\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=no\tbox_fit_mb=1000\tbox_reserve_mb=4096"
+        }
+      ],
+      "refusal": [
+        "tower: image other missing"
       ]
     }
   ],

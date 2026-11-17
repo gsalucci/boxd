@@ -19,7 +19,7 @@ CGROOT=${BOXD_CGROOT:-/sys/fs/cgroup}
 CGROUP=${BOXD_CGROUP:-$CGROOT/boxd}
 PROC=${BOXD_PROC:-/proc}   # test hook, like BOXD_MEMINFO: where `pod report` finds a box's process and its cgroup
 KVM=${BOXD_KVM:-/dev/kvm}   # test hook: the device a --kvm box gets
-VERSION=0.4.23
+VERSION=0.4.24
 # Keys that may only read, one "<type> <key> [comment]" per line (view_only below); and the largest answer of pod calls and pod log.
 VIEW_KEYS=${BOXD_VIEW_KEYS:-/etc/boxd/view_keys}
 READ_MAX=${BOXD_READ_MAX:-1048576}
@@ -296,6 +296,12 @@ lim_mb() { [[ $1 =~ -m\ ([0-9]+)([MG]) ]] || return 0; [ "${BASH_REMATCH[2]}" = 
 # 36 GB of machines on its 28 GB cap and the kernel killed one, with its runs, on 2026-11-15).
 VM_COMMIT=${BOXD_VM_COMMIT:-100}
 [[ $VM_COMMIT =~ ^[0-9]+$ ]] || die "BOXD_VM_COMMIT must be a number"
+# BOXD_BOX_RESERVE (megabytes, default 4096; 0 turns the rule off): container boxes are admitted like machines, by one number. A call
+# that starts work in a container box that is not busy is admitted only when the sums that vm_commit and ctr_commit give, plus the
+# larger of this reserve and what the box itself uses, fit BOXD_VM_COMMIT percent of the cap (box_fit). A box with a call or run
+# that began lately counts at least the reserve in those sums, as a young machine counts its size: it has not claimed its memory yet.
+BOX_RESERVE=${BOXD_BOX_RESERVE:-4096}
+[[ $BOX_RESERVE =~ ^[0-9]+$ ]] || die "BOXD_BOX_RESERVE must be a number"
 # vm_commit <own sandbox name>: megabytes of the sizes of the running machines, the asking one not counted.
 vm_commit() {
     local m=0 b st rows s
@@ -308,23 +314,38 @@ vm_commit() {
     done <<<"$rows"
     echo "$m"
 }
-# ctr_commit: megabytes the running container boxes use now (as vm_mem measures: anonymous, shared and swapped memory, no
-# file cache). Container boxes have no size to reserve, but they grow inside the cap beside the machines (2026-11-15: the
-# build running at the kill was in a container box). One that cannot be read counts as its whole limit (BOXD_LIMITS --memory);
-# with no limit it fails: never admit on an unreadable measure.
+# ctr_use <box>: megabytes a running container box uses now (as vm_mem measures: anonymous, shared and swapped memory, no file
+# cache). One that cannot be read counts as its whole limit (BOXD_LIMITS --memory); with no limit it fails: never admit on an
+# unreadable measure.
+ctr_use() {
+    local pid v
+    pid=$(podman container inspect --format '{{.State.Pid}} {{.Config.Labels}}' "pod-$1" 2>/dev/null) || return 1; pid=${pid%% *}
+    v=$(ctr_mb "$pid" used)
+    [[ $v =~ ^[0-9]+$ ]] || v=$(ctr_limit_mb)   # unreadable: assume it may use all its limit
+    [[ $v =~ ^[0-9]+$ ]] || return 1             # and with no limit either, nothing can be assumed
+    echo "$v"
+}
+# ctr_commit [<own box>]: megabytes the running container boxes count for, the asking box not included. Container boxes have no
+# size to reserve, but they grow inside the cap beside the machines (2026-11-15: the build running at the kill was in a
+# container box): each counts what ctr_use measures, and a box that is busy with a call or run begun no more than BOXD_VM_IDLE_MIN
+# seconds ago counts at least BOXD_BOX_RESERVE, because it has not claimed its memory yet (box_busy, box_young). The one
+# computation under the admission of machines (vm_fit) and of container boxes (box_fit).
 ctr_commit() {
-    local m=0 b st rows pid v
+    local m=0 b st rows v
     rows=$(box_rows 2>/dev/null) || return 1
     while IFS=$'\t' read -r b _ st _; do
-        [ -n "$b" ] && [ "$st" = running ] || continue
-        pid=$(podman container inspect --format '{{.State.Pid}} {{.Config.Labels}}' "pod-$b" 2>/dev/null) || return 1; pid=${pid%% *}
-        v=$(ctr_mb "$pid" used)
-        [[ $v =~ ^[0-9]+$ ]] || v=$(ctr_limit_mb)   # unreadable: assume it may use all its limit
-        [[ $v =~ ^[0-9]+$ ]] || return 1             # and with no limit either, nothing can be assumed
+        [ -n "$b" ] && [ "$b" != "${1:-}" ] && [ "$st" = running ] || continue
+        v=$(ctr_use "$b") || return 1
+        [ "$v" -ge "$BOX_RESERVE" ] || { box_busy "$b" && box_young "$b" && v=$BOX_RESERVE; }
         m=$((m + v))
     done <<<"$rows"
     echo "$m"
 }
+# box_busy <box>: a run (detached or foreground) or a call holds the box's .running lock (shared), tested without waiting, as the
+# reaper does. box_young <box>: its stamp (.last-used, touched when a call begins) is no more than BOXD_VM_IDLE_MIN seconds old,
+# the other side of vm_idle.
+box_busy() { local f=$WORK/jobs/$1/.running; [ -e "$f" ] && ! flock -n -x "$f" true 2>/dev/null; }
+box_young() { [ $(($(date +%s) - $(stamp_of "$1"))) -le "$VM_IDLE_MIN" ]; }
 # Idle machines give their room back when another machine asks for it (owner, 2026-11-16: "we really need a way to auto-cleanup
 # the idle vms"; an idle 8 GB machine held a slot on a full host until the reaper's 30 minutes). vm_idle <sandbox>: unused for
 # BOXD_VM_IDLE_MIN seconds (300), not being made and with no run or call in it: the reaper's own two locks, so a run in flight
@@ -387,6 +408,23 @@ vm_fit() {
 vm_refusal() { local fit_mb fit_why; vm_fit "$@"; [ -z "$fit_why" ] || echo "$fit_why"; }
 # Room for one more machine of the default (large) size.
 vm_room() { [ -z "$(vm_refusal "${1:-}" "$(lim_mb "$VM_LIMITS")")" ]; }
+# box_fit <own box> [kept]: the admission of a call that starts work in a container box that is not busy
+# (pod run), by the sums of vm_commit and ctr_commit. Sets box_fit_mb (what one more busy box may claim: BOXD_VM_COMMIT percent of
+# the cap minus those sums, never below 0; a dash when the rule is off or the memory cannot be measured or counted, then only
+# today's rule exists: the cap of the whole group) and box_why (why the call is refused, empty when it fits: the sums plus the
+# larger of the reserve and the box's own use must fit; with a second word the own box is running and kept, and its use is measured).
+# `pod status` asks with no own box (box_room, box_fit_mb).
+box_fit() {
+    local com=0 ctr used_mb cap_mb lim own=0 need
+    box_fit_mb=- box_why=
+    [ "$BOX_RESERVE" -gt 0 ] && vm_mem || return 0
+    { ! have_msb || com=$(vm_commit); } && ctr=$(ctr_commit "${1:-}") || return 0
+    lim=$((cap_mb * VM_COMMIT / 100))
+    [ -z "${2:-}" ] || own=$(ctr_use "$1") || own=0
+    need=$BOX_RESERVE; [ "$own" -le "$need" ] || need=$own
+    box_fit_mb=$((lim > com + ctr ? lim - com - ctr : 0))
+    [ "$box_fit_mb" -ge "$need" ] || box_why="$((com + ctr)) MB counted + $need MB reserve > $lim MB, $VM_COMMIT% of the $cap_mb MB cap"
+}
 
 # Retention: the host is kept clean by boxd itself, nobody cleans by hand (owner decision 2026-11-14). Only whole box
 # folders go, never single files of a box: unused for BOXD_KEEP_DAYS, or the least recently used one per reaper pass
@@ -559,7 +597,7 @@ group_mem() {
     ! vm_mem || gcur=$used_mb   # the same figure as mem_free_mb: the limit minus this is the free memory
 }
 pod_status() {
-    local eng=container used=0 room=no vmrows="" img="" mem=unknown l1 f vmax=$VM_MAX used_mb cap_mb rows ma gmax gcur why="" fit_mb=- fit_why
+    local eng=container used=0 room=no vmrows="" img="" mem=unknown l1 f vmax=$VM_MAX used_mb cap_mb rows ma gmax gcur why="" fit_mb=- fit_why box_fit_mb box_why box_room=yes
     have_msb && vmrows=1
     rows=$(box_rows $vmrows) || exit 125   # first: a failed listing ends the call before anything else lists
     vm_mem || vmax=${vmax:-3}   # the count rule and its default apply when the memory cannot be measured
@@ -567,6 +605,7 @@ pod_status() {
         eng=container,vm used=$(vm_used)
         SKIP_IDLE=1 vm_fit "" "$(lim_mb "$VM_LIMITS")" all; why=$fit_why; [ -n "$why" ] || room=yes   # one pass for the words vm_room, vm_why and vm_fit_mb: the same rule as `pod run`
     fi
+    box_fit ""; [ -z "$box_why" ] || box_room=no   # the same rule as `pod run` for a container box that is not busy
     read -r l1 _ </proc/loadavg
     ! vm_mem || mem=$((cap_mb > used_mb ? cap_mb - used_mb : 0))
     while IFS= read -r f; do img=${img:+$img,}${f%.tar}; done < <(find "$IMAGES" -maxdepth 1 -name '*.tar' -printf '%f\n' 2>/dev/null | sort)
@@ -575,7 +614,7 @@ pod_status() {
     printf 'version=%s\tengines=%s\tcpus=%s\tload1=%s\tvm_used=%s\tvm_max=%s\tvm_room=%s\tboxes=%s\tdisk_pct=%s\tmem_free_mb=%s\timages=%s' \
         "$VERSION" "$eng" "$(nproc)" "$l1" "$used" "${vmax:-none}" "$room" "$(grep -c . <<<"$rows")" \
         "$(df --output=pcent "$WORK" | tail -1 | tr -dc 0-9)" "$mem" "$img"
-    printf '\tmem_avail_mb=%s\tgroup_mem_used_mb=%s\tgroup_mem_max_mb=%s\tvm_why=%s\tvm_fit_mb=%s\n' "${ma:--}" "$gcur" "$gmax" "$why" "$fit_mb"
+    printf '\tmem_avail_mb=%s\tgroup_mem_used_mb=%s\tgroup_mem_max_mb=%s\tvm_why=%s\tvm_fit_mb=%s\tbox_room=%s\tbox_fit_mb=%s\tbox_reserve_mb=%s\n' "${ma:--}" "$gcur" "$gmax" "$why" "$fit_mb" "$box_room" "$box_fit_mb" "$BOX_RESERVE"
 }
 
 # ---- The reading verbs for the dashboard: pod report, pod calls, pod log (docs/pod-contract.md). Read only like pod status:
@@ -725,7 +764,7 @@ pod_report() {
             [ "$state" != running ] || mem=$(ctr_mb "${bl%% *}")
         fi
         # Busy while a run holds the box's .running lock (shared), tested without waiting, as reap does.
-        busy=no; [ ! -e "$j/.running" ] || flock -n -x "$j/.running" true 2>/dev/null || busy=yes
+        busy=no; ! box_busy "$box" || busy=yes
         rl=$(run_lines "$box"); runs="$runs$rl"$'\n'
         printf 'box\tbox=%s\tengine=%s\timage=%s\tstate=%s\tlast_used=%s\tuser=%s\tsize=%s\tmem_limit_mb=%s\tmem_mb=%s\tbusy=%s\truns=%s\n' \
             "$box" "$engine" "$image" "$state" "$(stamp_of "$box")" "$user" "$size" "${lim:--}" "$mem" "$busy" "$(grep -c "$(printf '\tstate=running\t')" <<<"$rl")"
@@ -790,7 +829,7 @@ pod_clear() {
 pod_run() {
     local box=${1:-} image="" imgfile="" vm="" container="" user="" cuser="" kvm="" ckvm="" ulabels="" recreate="" snapshot="" run="" b64="" tty="" name J out rc
     local -a envs=()
-    local size="" have="" lim="" asked="" used_mb=0 cap_mb=0 max=""
+    local size="" have="" lim="" asked="" used_mb=0 cap_mb=0 max="" box_fit_mb box_why
     local newid="" changed="" rebuilt="" full engine=container pc="" vc="" cimg="" cst="" vimg="" vst="" other mine cur st create="" start="" n
     shift
     CALL_T0=${EPOCHREALTIME//[!0-9]/} CALL_BOX=$box CALL_ENGINE=container
@@ -959,6 +998,15 @@ pod_run() {
         fi
         [ -z "$out" ] || noroom "no room for another virtual machine ($out); wait for one to end or stop one"
     fi
+    # A container box: a call that starts work in one that is not busy is admitted by the reserve (box_fit); one already busy adds
+    # nothing and is never refused here. The room lock is held until this call holds .running below, so ten calls at once are
+    # counted one after the other, each seeing the busy boxes of those before it.
+    if [ -z "$vm" ] && [ "$BOX_RESERVE" -gt 0 ] && ! box_busy "$box"; then
+        exec 7>"$WORK/cache/vm-room.lock"
+        flock 7
+        box_fit "$box" "$([ -n "$create$start" ] || echo kept)"   # a box that runs and is kept counts what it uses when that is more than the reserve
+        [ -z "$box_why" ] || noroom "no room for another busy box ($box_why); wait for one to end"
+    fi
     if [ -n "$recreate" ] || [ -n "$rebuilt" ]; then
         [ -z "$pc" ] || podman rm -f "$name" >/dev/null
         [ -z "$vc" ] || vmx rm -f "$name" </dev/null >/dev/null
@@ -994,9 +1042,9 @@ pod_run() {
         podman run -d --init --name "$name" --hostname "$box" --label "boxd.box=$box" "${uflags[@]}" \
             -v "$J:/job" -v "$WORK/cache/pod:/cache" -w /job/src --pull=missing \
             "${CACHE_ENV[@]}" \
-            --oom-score-adj 1000 $LIMITS "$image" sleep infinity 9>&- >/dev/null || die "cannot create box $box"
+            --oom-score-adj 1000 $LIMITS "$image" sleep infinity 9>&- 7>&- >/dev/null || die "cannot create box $box"
     elif [ -n "$start" ]; then
-        podman start "$name" 9>&- >/dev/null || die "cannot start box $box"
+        podman start "$name" 9>&- 7>&- >/dev/null || die "cannot start box $box"
     fi
     # First call into a new folder whose box name was evicted before: say so once, the caller's ignored files are gone.
     if [ ! -e "$J/.last-used" ] && out=$(awk -F'\t' -v b="$box" '$2 == b {l = $0} END {print l}' "$WORK/cache/evictions.log" 2>/dev/null) && [ -n "$out" ]; then
@@ -1036,7 +1084,9 @@ pod_run() {
 
     if [ -n "$run" ]; then
         : > "$J/runs/$run.log"
-        : >> "$J/.running"
+        # The shared lock is taken here and the wrapper inherits it (it also takes its own below): the box is busy from now on, so the
+        # next admission, which gets the room lock back at once, counts it.
+        exec 8>>"$J/.running"; flock -s 8; exec 7>&-
         [ -z "$vm" ] || eng+=(sh -c "$GUEST_KILLS" _)   # detached runs only: a foreground call has no log to hold the lines
         # The wrapper's own words are fixed (with this script's functions for the note of a machine that ended); the client's
         # words travel as arguments only. The shared lock on .running tells reap this box is busy.
@@ -1060,6 +1110,7 @@ pod_run() {
     # Held for the whole foreground run so reap spares a run that outlasts the time limit.
     exec 8>>"$J/.running"
     flock -s 8
+    exec 7>&-   # the room lock of a container call (above): busy now, so the next admission counts this box
     # And the host stays awake for it: the call's own ssh connection does not count for the sleep module when it comes from an
     # address of BOXD_IDLE_IGNORE (a runner beside the dashboard), and a command that waits makes no load.
     if [ -r "${BOXD_KEEPAWAKE_LOCK:-/run/boxd-keepawake.lock}" ]; then exec 6<"${BOXD_KEEPAWAKE_LOCK:-/run/boxd-keepawake.lock}"; flock -s 6; fi

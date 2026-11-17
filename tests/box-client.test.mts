@@ -548,7 +548,7 @@ const choices = (s: Servers) => { try { return readFileSync(path.join(s.home, ".
 const closedPort = async () => { const s = net.createServer().listen(0, "127.0.0.1"); await once(s, "listening"); const p = (s.address() as net.AddressInfo).port; s.close(); await once(s, "close"); return p; };
 
 test("seam: the real server's status line is what the client's choice reads", () => {
-  assert.deepEqual(Object.keys(parseStatus(FULL)), ["version", "engines", "cpus", "load1", "vm_used", "vm_max", "vm_room", "boxes", "disk_pct", "mem_free_mb", "images", "mem_avail_mb", "group_mem_used_mb", "group_mem_max_mb", "vm_why", "vm_fit_mb"]);
+  assert.deepEqual(Object.keys(parseStatus(FULL)), ["version", "engines", "cpus", "load1", "vm_used", "vm_max", "vm_room", "boxes", "disk_pct", "mem_free_mb", "images", "mem_avail_mb", "group_mem_used_mb", "group_mem_max_mb", "vm_why", "vm_fit_mb", "box_room", "box_fit_mb", "box_reserve_mb"]);
   assert.equal(parseStatus(FULL).vm_room, "no");
   assert.equal(parseStatus(FREE).vm_room, "yes");
   assert.equal(parseStatus(FREE).images, "toolbox");
@@ -589,28 +589,35 @@ test("scenarios 2 and 3 stickiness and move: later calls stay, ask nobody; --hos
 
 // Spread (0.4.8): the first host in order with room took every new worktree until it refused, and it refused only once it
 // was out of memory (2026-11-15, the tower: eight machines, one killed by the kernel, laptop used only when asked).
-test("spread: a new worktree goes to the host with the most free memory; ties keep the box hosts order", () => {
+// Smallest fit (owner decision 2026-11-17): a machine goes to the host with the smallest cap for boxes, so the big host stays free for big machines.
+test("spread: a new container worktree goes to the host with the most free memory, a machine to the smallest cap; ties keep the box hosts order", () => {
   const small = realStatus(1, 20000), big = realStatus(1, 30000);
   assert.equal(parseStatus(big).mem_free_mb, "30000");
   assert.equal(parseStatus(big).vm_room, "yes");
   const pick = (a: string, b: string, vm: boolean) => choose([{ name: "tower", state: "awake", status: a }, { name: "laptop", state: "awake", status: b }], { vm });
-  assert.deepEqual([pick(small, big, true).host, pick(small, big, true).reason], ["laptop", "spread"]);
-  assert.deepEqual(pick(small, big, true).room, ["laptop", "tower"], "the retry after a lost race walks the rest by free memory too");
-  assert.equal(pick(small, big, false).host, "laptop", "containers spread the same way");
-  assert.deepEqual([pick(big, small, true).host, pick(big, small, true).reason], ["tower", "order"]);
-  assert.deepEqual([pick(big, big, true).host, pick(big, big, true).reason], ["tower", "order"]);
-  assert.equal(pick(FREE, big, true).host, "laptop", "a host whose memory is unknown comes after one that reports it");
-  assert.equal(choose([{ name: "tower", state: "asleep" }, { name: "laptop", state: "awake", status: big }], { vm: true }).host, "tower", "an asleep host runs nothing: most room");
-  assert.equal(pick(FULL, big, true).reason, "overflow", "the first host had no room: still overflow");
+  assert.deepEqual([pick(small, big, true).host, pick(small, big, true).reason], ["tower", "fit"], "a machine: the smaller cap, although the other host has more free memory");
+  assert.deepEqual([pick(big, small, true).host, pick(big, small, true).reason], ["laptop", "fit"]);
+  assert.deepEqual(pick(small, big, true).room, ["tower", "laptop"], "the retry after a lost race walks the rest by cap too");
+  assert.deepEqual([pick(big, big, true).host, pick(big, big, true).reason], ["tower", "fit"], "equal caps keep the order");
+  assert.deepEqual([pick(small, big, false).host, pick(small, big, false).reason], ["laptop", "spread"], "containers spread by free memory");
+  assert.deepEqual([pick(big, small, false).host, pick(big, small, false).reason], ["tower", "order"]);
+  assert.deepEqual([pick(FREE, FREE, true).host, pick(FREE, FREE, true).reason], ["tower", "order"], "no host reports a cap: the old rule");
+  assert.equal(pick(FREE, big, true).host, "laptop", "a host that reports no cap comes after one that reports it");
+  assert.equal(choose([{ name: "tower", state: "asleep" }, { name: "laptop", state: "awake", status: big }], { vm: true }).host, "laptop", "an asleep host comes after an awake one with a cap");
+  assert.equal(choose([{ name: "tower", state: "asleep" }, { name: "laptop", state: "awake", status: big }], { vm: false }).host, "tower", "a container: an asleep host runs nothing, most room");
+  assert.equal(pick(FULL, FREE, true).reason, "overflow", "the first host had no room: still overflow");
 });
 
-test("spread through the command: the placement and the choices log name the host with more free memory", () => {
-  const s = servers([{ name: "tower", status: realStatus(1, 20000) }, { name: "laptop", status: realStatus(1, 30000) }]), rp = newRepo();
+test("spread through the command: a container goes to the host with more free memory, a machine to the host with the smaller cap, and the choices log names the reason", () => {
+  const s = servers([{ name: "tower", status: realStatus(1, 30000) }, { name: "laptop", status: realStatus(1, 20000) }]), rp = newRepo(), rc = newRepo();
   const r = go(rp, s, ["--vm", "true"]);
   assert.equal(r.code, 0, r.err);
   assert.deepEqual(rest(r.calls), [sync(rp, "laptop"), runLine(rp, "laptop", "--vm")]);
   assert.equal(rp.placed(), "laptop\n");
-  assert.deepEqual(choices(s)[0]?.slice(3, 5), ["laptop", "spread"]);
+  assert.deepEqual(choices(s)[0]?.slice(3, 5), ["laptop", "fit"]);
+  assert.equal(go(rc, s, ["true"]).code, 0);
+  assert.equal(rc.placed(), "tower\n");
+  assert.deepEqual(choices(s)[1]?.slice(3, 5), ["tower", "order"]);
 });
 
 test("scenario 4 all full: exit 75 at once with one reason per host, nothing synced, nothing placed", () => {
@@ -679,7 +686,9 @@ test("scenario 8 host down: refused naming it when the other is full, no delay o
   assert.deepEqual(rest(ok.calls), [sync(rp, "tower"), runLine(rp, "tower", "--vm")]);
 });
 
-test("a placed worktree whose host is full is refused with the exact command that moves it; nothing is moved", () => {
+// Since 2026-11-17 a placed worktree whose host is full moves by itself when its old host can be asked and holds nothing of it (see "moves by
+// itself" below). These two keep the old behaviour: the fake host has no `pod report` to give, so nothing is known to be safe to leave.
+test("a placed worktree whose host is full and cannot be asked what it holds is refused with the exact command that moves it; nothing is moved", () => {
   const s = servers([{ name: "tower", status: FULL, runExit: NO_ROOM, runErr: REFUSAL }, { name: "laptop", status: FREE }]), rp = newRepo();
   go(rp, s, ["--host", "tower", "--no-sync", "true"]); // places it on tower (the fake refuses the run; the placement stays)
   const r = go(rp, s, ["--no-sync", "--vm", "sh", "-c", "make all"]);
@@ -1453,7 +1462,7 @@ test("--wait: no host has room, so it says so once with the reasons, says again 
   assert.equal(choices(s).length, 1);
 });
 
-test("--wait: a placed worktree whose host refuses at the call waits for that host only, never moves, then runs there", () => {
+test("--wait: a placed worktree whose host refuses at the call and cannot be asked what it holds waits for that host, is not moved, then runs there", () => {
   const s = servers([{ name: "tower", status: FREE }, { name: "laptop", status: FREE }]), rp = newRepo();
   writeFileSync(path.join(rp.cwd, ".git/boxd-host"), "tower\n");
   hostFile(s, "tower", "run.refuse", "1\n");
@@ -1462,7 +1471,7 @@ test("--wait: a placed worktree whose host refuses at the call waits for that ho
   assert.equal(r.err, "boxd-pod: no room for another virtual machine (3 of 3 running); wait for one to end or stop one\n"
     + "box: waiting for room, asking every 0.001 seconds:\n  tower: no room (the server refused the call)\n");
   assert.equal(r.calls.filter((c) => c === runLine(rp, "tower", "--vm")).length, 2);
-  assert.ok(!r.calls.some((c) => c.includes("boxd-laptop")), "the other host is never asked");
+  assert.ok(!r.calls.some((c) => c.includes("boxd-laptop") && !c.endsWith(" pod status")), "the other host is only asked its status, nothing is synced or run there");
   assert.equal(rp.placed(), "tower\n");
 });
 
@@ -1943,4 +1952,184 @@ test("--git: refused with --snapshot and with --no-sync, one line each, nothing 
   assert.ok(!c.calls.some((x) => x.startsWith("ssh ") && x.includes(" pod run ")), "no run");
   const outside = path.join(root, "git-outside"); mkdirSync(outside);
   assert.match(runBox(["--git", "true"], { cwd: outside }).err, /box: not inside a git worktree/);
+});
+
+// ---- admission of container boxes (owner decision 2026-11-17): the host's box_room, its refusal text, and what the client does with them ----
+const BUSY_TEXT = "boxd-pod: no room for another busy box (6144 MB counted + 4096 MB reserve > 8192 MB, 100% of the 8192 MB cap); wait for one to end";
+const noBox = (fit: number) => `${FREE}\tbox_room=no\tbox_fit_mb=${fit}\tbox_reserve_mb=4096`;
+const yesBox = `${FREE}\tbox_room=yes\tbox_fit_mb=6144\tbox_reserve_mb=4096`;
+test("seam: the real server's status line says no for a container call when the cap leaves no memory for another busy box, and the client reads it", () => {
+  const real = realStatus(1, 100), w = parseStatus(real);   // one 8192 MB machine on a 100 MB cap
+  assert.deepEqual([w.box_room, w.box_fit_mb, w.box_reserve_mb], ["no", "0", "4096"]);
+  assert.deepEqual(choose([{ name: "a", state: "awake", status: real }], { vm: false }).refusal, ["a: no memory for another busy box (0 MB fit, 4096 MB wanted)"]);
+  assert.equal(parseStatus(FREE).box_room, "yes", "a host that cannot measure its memory says yes");
+});
+
+test("a container call goes past a host with box_room=no; the choices log names the reason, the host's own words and the next host", () => {
+  const s = servers([{ name: "tower", status: noBox(1000) }, { name: "laptop", status: yesBox }]), rp = newRepo();
+  const r = go(rp, s, ["true"]);
+  assert.equal(r.code, 0, r.err);
+  assert.deepEqual(rest(r.calls), [sync(rp, "laptop"), runLine(rp, "laptop")]);
+  assert.deepEqual(choices(s)[0]?.slice(3), ["laptop", "overflow", "tower=no memory for another busy box (1000 MB fit, 4096 MB wanted),laptop=awake"]);
+});
+
+test("a container call with no room anywhere: exit 75 at once, one reason per host, the wait line and no size line (a container has no size)", () => {
+  const withFit = (x: string) => `${x}\tvm_fit_mb=3000`;   // a machine would fit smaller, which says nothing for a container
+  const s = servers([{ name: "tower", status: withFit(noBox(1000)) }, { name: "laptop", status: withFit(noBox(0)) }]), rp = newRepo();
+  const r = go(rp, s, ["true"]);
+  assert.equal(r.code, NO_ROOM);
+  assert.equal(r.err, "box: no build server has room for this call\n  tower: no memory for another busy box (1000 MB fit, 4096 MB wanted)\n  laptop: no memory for another busy box (0 MB fit, 4096 MB wanted)\n  or wait for room: add --wait\n");
+  assert.deepEqual(rest(r.calls), []);
+  assert.equal(rp.placed(), undefined);
+});
+
+test("--wait for a container call: asks again until a host has memory for another busy box, then goes on", () => {
+  const s = servers([{ name: "tower", status: noBox(1000) }, { name: "laptop", status: noBox(0) }]), rp = newRepo();
+  hostFile(s, "laptop", "status.2", `${yesBox}\n`);
+  const r = waits(rp, s, ["true"]);
+  assert.equal(r.code, 0, r.err);
+  assert.equal(r.err, "box: waiting for room, asking every 0.001 seconds:\n  tower: no memory for another busy box (1000 MB fit, 4096 MB wanted)\n  laptop: no memory for another busy box (0 MB fit, 4096 MB wanted)\n");
+  assert.deepEqual(rest(r.calls), [sync(rp, "laptop"), runLine(rp, "laptop")]);
+});
+
+test("lost race for a container call: the host's refusal for another busy box is retried on the next host with room, as for a machine", () => {
+  const s = servers([{ name: "tower", status: yesBox, runExit: NO_ROOM, runErr: BUSY_TEXT }, { name: "laptop", status: yesBox }]), rp = newRepo();
+  const r = go(rp, s, ["true"]);
+  assert.equal(r.code, 0, r.err);
+  assert.deepEqual(rest(r.calls), [sync(rp, "tower"), runLine(rp, "tower"), sync(rp, "laptop"), runLine(rp, "laptop")]);
+  assert.equal(rp.placed(), "laptop\n");
+  assert.deepEqual(choices(s).map((l) => [l[3], l[4]]), [["tower", "order"], ["laptop", "retry"]]);
+  assert.match(r.err, /no room for another busy box/, "the refusal of the first host is still shown");
+});
+
+test("a host that does not print box_room (an older server) is never judged for a container call", () => {
+  const old = FULL.replace(/\tbox_room=.*$/, "");   // a full machine host, no word about container boxes
+  assert.ok(!old.includes("box_room"));
+  assert.equal(choose([{ name: "tower", state: "awake", status: old }], { vm: false }).host, "tower");
+});
+
+// ---- a placed worktree whose own host is full moves by itself (owner decision 2026-11-17) ----
+const MOVE_LINE = "box: tower has no room; this worktree moves to laptop (its caches on tower are kept until that host's time limit)\n";
+const reportOf = (...rows: string[]) => `host\tversion=0.4.23\tengines=container,vm\n${rows.map((r) => `${r}\n`).join("")}`;
+const placedOn = (rp: Repo, host: string) => writeFileSync(path.join(rp.cwd, ".git/boxd-host"), `${host}\n`);
+const reports = (calls: string[], n: string) => calls.filter((c) => c.endsWith(`boxd-${n} pod report`)).length;
+const otherThanReport = (calls: string[]) => rest(calls).filter((c) => !c.endsWith(" pod report"));
+function movable(refused: "status" | "run" = "run") {
+  const s = servers([{ name: "tower", status: refused === "status" ? FULL : FREE }, { name: "laptop", status: FREE }]), rp = newRepo();
+  placedOn(rp, "tower");
+  if (refused === "run") hostFile(s, "tower", "run.refuse", "1\n");
+  return { s, rp };
+}
+
+test("moves by itself: the host's refusal for room, another host with room, nothing of the box on the old host: one line first, placed, logged as moved, then run there", () => {
+  const { s, rp } = movable();
+  hostFile(s, "tower", "report", reportOf(`box\tbox=other\tengine=container\tstate=running\tbusy=no\truns=0`, `run\tbox=other\tid=r1\tstate=ended\texit=0`));   // other boxes do not stop it
+  const r = go(rp, s, ["--vm", "true"]);
+  assert.equal(r.code, 0, r.err);
+  assert.equal(r.err, `boxd-pod: no room for another virtual machine (3 of 3 running); wait for one to end or stop one\n${MOVE_LINE}`);
+  assert.deepEqual(otherThanReport(r.calls), [sync(rp, "tower"), runLine(rp, "tower", "--vm"), sync(rp, "laptop"), runLine(rp, "laptop", "--vm")]);
+  assert.equal(reports(r.calls, "tower"), 1);
+  assert.equal(rp.placed(), "laptop\n");
+  assert.deepEqual(choices(s).map((l) => [l[3], l[4]]), [["laptop", "moved"]]);
+});
+
+test("moves by itself when a refused call is the probe's word too: a container call, the old host answers box_room=no on the retry", () => {
+  const s = servers([{ name: "tower", status: noBox(0), runExit: NO_ROOM, runErr: BUSY_TEXT }, { name: "laptop", status: yesBox }]), rp = newRepo();
+  placedOn(rp, "tower"); hostFile(s, "tower", "report", reportOf());
+  const r = go(rp, s, ["true"]);
+  assert.equal(r.code, 0, r.err);
+  assert.equal(r.err, `${BUSY_TEXT}\n${MOVE_LINE}`);
+  assert.equal(rp.placed(), "laptop\n");
+});
+
+test("moves by itself: the choice among the other hosts is the normal one (a machine goes to the smallest cap, a container to the most free memory)", () => {
+  const caps = (cap: number, free: number) => realStatus(0, cap).replace(/mem_free_mb=\d+/, `mem_free_mb=${free}`);
+  const three = () => servers([{ name: "tower", status: FREE }, { name: "big", status: caps(30000, 25000) }, { name: "small", status: caps(15000, 9000) }]);
+  const s = three(), rp = newRepo(); placedOn(rp, "tower"); hostFile(s, "tower", "run.refuse", "1\n"); hostFile(s, "tower", "report", reportOf());
+  assert.equal(go(rp, s, ["--vm", "true"]).code, 0);
+  assert.equal(rp.placed(), "small\n", "a machine: the smaller cap");
+  const s2 = three(), rp2 = newRepo(); placedOn(rp2, "tower"); hostFile(s2, "tower", "run.refuse", "1\n"); hostFile(s2, "tower", "report", reportOf());
+  assert.equal(go(rp2, s2, ["true"]).code, 0);
+  assert.equal(rp2.placed(), "big\n", "a container: the most free memory");
+});
+
+test("does not move when the old host still has a machine or container of this box, in any state, or a run of it, running or ended: the old refusal text stays", () => {
+  const holds = [
+    reportOf(`box\tbox=${"BOX"}\tengine=vm\tstate=running\tbusy=no\truns=0`), reportOf(`box\tbox=${"BOX"}\tengine=container\tstate=stopped\tbusy=no\truns=0`),
+    reportOf(`run\tbox=${"BOX"}\tid=r1\tstate=running\texit=-`), reportOf(`run\tbox=${"BOX"}\tid=r1\tstate=ended\texit=0`),
+  ];
+  for (const h of holds) {
+    const { s, rp } = movable();
+    hostFile(s, "tower", "report", h.replaceAll("BOX", rp.box));
+    const r = go(rp, s, ["--no-sync", "--vm", "true"]);
+    assert.equal(r.code, NO_ROOM, h);
+    assert.match(r.err, /box: tower has no room; hosts that do: laptop\. Move this worktree with: box --host laptop --no-sync --vm true\n$/, h);
+    assert.equal(rp.placed(), "tower\n");
+    assert.equal(r.calls.filter((c) => c.includes(" pod run ")).length, 1, "no move: one run only");
+    assert.deepEqual(choices(s), []);
+  }
+});
+
+test("does not move when the old host cannot be asked: the report fails, answers nothing, or has no host line", () => {
+  for (const how of ["fail", "empty", "nohost"]) {
+    const { s, rp } = movable();
+    if (how === "fail") hostFile(s, "tower", "report.fail.1", "");
+    if (how === "nohost") hostFile(s, "tower", "report", "box\tbox=other\n");
+    if (how !== "nohost") hostFile(s, "tower", "report", reportOf());
+    if (how === "empty") hostFile(s, "tower", "report", "");
+    const r = go(rp, s, ["--no-sync", "--vm", "true"]);
+    assert.equal(r.code, NO_ROOM, how);
+    assert.match(r.err, /box: tower has no room; hosts that do: laptop\. Move this worktree with:/, how);
+    assert.equal(rp.placed(), "tower\n", how);
+  }
+});
+
+test("does not move with BOXD_HOST set (it names a host for this call only) nor with --host; no other host is asked for it", () => {
+  const { s, rp } = movable(); hostFile(s, "tower", "report", reportOf());
+  const env = go(rp, s, ["--no-sync", "--vm", "true"], { BOXD_HOST: "tower" });
+  assert.equal(env.code, NO_ROOM);
+  assert.ok(!env.err.includes("moves to"), env.err);
+  assert.equal(reports(env.calls, "tower"), 0, "the old host is not even asked");
+  hostFile(s, "tower", "run.refuse", "1\n");
+  const flag = go(rp, s, ["--host", "tower", "--no-sync", "--vm", "true"]);
+  assert.equal(flag.code, NO_ROOM);
+  assert.ok(!flag.err.includes("moves to"), flag.err);
+  assert.equal(rp.placed(), "tower\n");
+});
+
+test("does not move when no other host has room: the old text with the reasons", () => {
+  const s = servers([{ name: "tower", status: FREE }, { name: "laptop", status: FULL }]), rp = newRepo();
+  placedOn(rp, "tower"); hostFile(s, "tower", "run.refuse", "1\n"); hostFile(s, "tower", "report", reportOf());
+  const r = go(rp, s, ["--no-sync", "--vm", "true"]);
+  assert.equal(r.code, NO_ROOM);
+  assert.match(r.err, /box: no other build server has room\n  laptop: 3 of 3 running\n/);
+  assert.equal(rp.placed(), "tower\n");
+});
+
+test("--wait: moving is tried first, in the first round and in every later one; the call waits only while it cannot move", () => {
+  const first = movable(); hostFile(first.s, "tower", "report", reportOf());
+  const a = waits(first.rp, first.s, ["--vm", "true"]);
+  assert.equal(a.code, 0, a.err);
+  assert.ok(!a.err.includes("waiting for room"), "it moved at once, it did not wait");
+  assert.ok(a.err.endsWith(MOVE_LINE), a.err);
+  assert.equal(first.rp.placed(), "laptop\n");
+  // round 1: the box still exists on tower (no move), the call waits; round 2: it is gone, the worktree moves
+  const { s, rp } = movable("status");
+  hostFile(s, "tower", "run.refuse", "1\n");
+  hostFile(s, "tower", "report.1", reportOf(`box\tbox=${rp.box}\tengine=vm\tstate=running\tbusy=no\truns=0`)); hostFile(s, "tower", "report.2", reportOf());
+  const b = waits(rp, s, ["--vm", "true"]);
+  assert.equal(b.code, 0, b.err);
+  assert.match(b.err, /box: waiting for room, asking every 0\.001 seconds:\n  tower: 3 of 3 running\n/);
+  assert.ok(b.err.endsWith(MOVE_LINE), b.err);
+  assert.equal(reports(b.calls, "tower"), 2);
+  assert.equal(rp.placed(), "laptop\n");
+  assert.deepEqual(choices(s).map((l) => l[4]), ["moved"]);
+});
+
+test("after a move that is refused at once (the new host lost the race) the placement is dropped, as for a placement this call made", () => {
+  const s = servers([{ name: "tower", status: FREE }, { name: "laptop", status: FREE, runExit: NO_ROOM, runErr: REFUSAL }]), rp = newRepo();
+  placedOn(rp, "tower"); hostFile(s, "tower", "run.refuse", "1\n"); hostFile(s, "tower", "report", reportOf());
+  const r = go(rp, s, ["--no-sync", "--vm", "true"]);
+  assert.equal(r.code, NO_ROOM);
+  assert.equal(rp.placed(), undefined, "no box was made on the new host: the worktree is unplaced, the next call chooses again");
 });

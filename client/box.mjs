@@ -17,7 +17,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-export const VERSION = "0.4.23";
+export const VERSION = "0.4.24";
 const BOX = /^[a-z0-9][a-z0-9_.-]{0,62}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const MAC = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i;
@@ -87,17 +87,21 @@ container or, with --vm, a small virtual machine; the same box on every call) an
                    with it. Files outside /job go when the idle box is removed: keep results under /job/src. Only a detached
                    run outlives its starter: a foreground call ends with the process that started it (it ends when that
                    process is gone, exit 129; $BOXD_KEEP_ORPHAN=1 turns that off)
-  --wait           when no build server has room, wait and ask again every 30 seconds ($BOXD_WAIT_MS) until the call can be
-                   placed, instead of exit 75 at once; holds nothing meanwhile and gives no order among several waiting
-                   callers. A refusal that waiting cannot fix (no server with the image or with virtual machines, none
+  --wait           when no build server has room (for a machine, or memory for another busy container box), wait and ask
+                   again every 30 seconds ($BOXD_WAIT_MS) until the call can be placed, instead of exit 75 at once; a
+                   worktree whose server is full moves first when it can; holds nothing meanwhile and gives no order
+                   among several waiting callers. A refusal that waiting cannot fix (no server with the image or with virtual machines, none
                    reachable) still ends at once
   --pull <path>    after a foreground run, copy <path> (relative to the worktree) back; repeatable. Only changed
                    files travel (rsync)
   --host <name>    build server to use (ssh alias boxd-<name>) and the one this worktree stays on from now on. Without
                    it: $BOXD_HOST (this call only), else the host this worktree was placed on, else (first call, two or
                    more servers set up) the server with room that has the most free memory (ties: \`box hosts\` order; a
-                   sleeping one counts as empty), never waking a sleeping one just to ask; no server with room: exit 75
-                   with one reason per server
+                   sleeping one counts as empty); for a machine (--vm) the awake server with room that has the smallest
+                   memory cap for boxes, so the big server stays free for big machines; never waking a sleeping one just
+                   to ask; no server with room: exit 75 with one reason per server. A worktree whose server has no room
+                   moves to one that has by itself (one line says so), unless its box still holds a machine, a container
+                   or a run there, or the call named a server (--host, $BOXD_HOST); then exit 75 and the command that moves it
   --pod <name>     use this box instead of the one derived from the worktree. For box gc the box belongs to the
                    worktree that called it last
   --no-sync        skip the sync
@@ -355,10 +359,11 @@ export function hostAlias(flag, env) {
     return name && NAME.test(name) ? `boxd-${name}` : undefined;
 }
 // ---- choosing a build host (docs/designs/load-management.md, docs/pod-contract.md "Host choice") ----
-// Exit code of "no room": the host's refusal of a virtual machine (with the stderr text below) and the client's own
-// refusal when no host has room. 125 stays "refused for another reason".
+// Exit code of "no room": the host's refusal of a virtual machine or of a call into a container box that is not busy (with
+// the stderr text below, which both refusals start with) and the client's own refusal when no host has room. 125 stays
+// "refused for another reason".
 export const NO_ROOM = 75;
-const NO_ROOM_TEXT = "boxd-pod: no room for another virtual machine";
+const NO_ROOM_TEXT = "boxd-pod: no room for another";
 const PROBE_SECONDS = 3; // network timeout of one probe, in parallel for every host
 // The registered hosts: the marker blocks `box setup` wrote into ~/.ssh/config.
 export function registered(env) {
@@ -384,9 +389,12 @@ export function source(flag, envHost, placed, reg) {
 }
 // "key=value" words of a `pod status` line.
 export const parseStatus = (line) => Object.fromEntries(line.trim().split("\t").filter((w) => w.includes("=")).map((w) => [w.slice(0, w.indexOf("=")), w.slice(w.indexOf("=") + 1)]));
-// The host with room for this request that has the most free memory (`mem_free_mb`), ties in the given order. Asleep
-// counts as room and as the most free (nothing runs there; the call itself wakes it). Awake: a container always has room
-// (the server never refuses one for room), a virtual machine needs the engine and the server's own `vm_room=yes`, and a
+// The host with room for this request that has the most free memory (`mem_free_mb`), ties in the given order. A machine
+// (`--vm`) goes to the awake host with room that has the smallest cap for boxes (`group_mem_max_mb`) instead, so the big host
+// stays free for big machines (reason `fit`); a host that reports no cap, and a sleeping one, come after those. Asleep
+// counts as room and as the most free (nothing runs there; the call itself wakes it). Awake: a container
+// has room unless the server says `box_room=no` (a call that starts work in a box needs the reserve of memory it prints;
+// a server that prints no such word never refuses one), a virtual machine needs the engine and the server's own `vm_room=yes`, and a
 // local image must be on the host; one whose memory is unknown comes after those that report it. An awake host that
 // printed no status (a server older than `pod status`) is the last resort. Spreading by free memory, not filling the
 // first host: on 2026-11-15 the first host took every new worktree until its kernel killed a machine, the second stayed idle.
@@ -415,18 +423,22 @@ export function choose(hosts, req) {
         } // the server's own reason (0.4.11), else the count ceiling, else the memory rule
         else if (want && !(s.images ?? "").split(",").includes(want))
             no = `image ${want} missing`;
+        else if (!req.vm && s.box_room === "no") {
+            no = `no memory for another busy box (${s.box_fit_mb} MB fit, ${s.box_reserve_mb} MB wanted)`;
+            waitable = true;
+        }
         else
-            room.push({ name: h.name, free: /^\d+$/.test(s.mem_free_mb ?? "") ? Number(s.mem_free_mb) : -1 });
+            room.push({ name: h.name, free: /^\d+$/.test(s.mem_free_mb ?? "") ? Number(s.mem_free_mb) : -1, ...(req.vm && /^\d+$/.test(s.group_mem_max_mb ?? "") ? { cap: Number(s.group_mem_max_mb) } : {}) });
         why.push(no ?? (h.state === "awake" && !s ? "awake, no status" : h.state));
     }
     const notes = hosts.map((h, i) => `${h.name}=${why[i]}`);
-    room.sort((a, b) => (a.free === b.free ? 0 : b.free > a.free ? 1 : -1)); // stable: ties keep the order
+    room.sort((a, b) => (a.cap !== undefined || b.cap !== undefined ? (a.cap ?? Infinity) - (b.cap ?? Infinity) : a.free === b.free ? 0 : b.free > a.free ? 1 : -1)); // stable: ties keep the order
     const order = [...room.map((r) => r.name), ...late];
     const host = order[0];
     if (host === undefined)
         return { refusal: hosts.map((h, i) => `${h.name}: ${why[i]}`), notes, wait: waitable };
     const first = hosts[0]?.name;
-    return { host, reason: host === first ? "order" : room.some((r) => r.name === first) ? "spread" : "overflow", room: order, notes };
+    return { host, reason: room[0]?.cap !== undefined ? "fit" : host === first ? "order" : room.some((r) => r.name === first) ? "spread" : "overflow", room: order, notes };
 }
 // --git: a repository at this worktree's own commit, made here and sent next to the synced files. A shallow fetch of exactly
 // that commit (git sends only what the one commit needs) into an empty temporary repository; HEAD is detached on it (no branch
@@ -464,7 +476,7 @@ export function roomHint(hosts, req, waiting) {
         if (s && (s.engines ?? "").split(",").includes("vm") && /^\d+$/.test(s.vm_fit_mb ?? "") && (!best || Number(s.vm_fit_mb) > best.fit))
             best = { name: h.name, fit: Number(s.vm_fit_mb) };
     }
-    const asked = req.size ? SIZE_MB[req.size] : 8192, size = best && SIZES.find(([, mb]) => mb < asked && mb <= best.fit);
+    const asked = req.size ? SIZE_MB[req.size] : 8192, size = req.vm && best && SIZES.find(([, mb]) => mb < asked && mb <= best.fit);
     return [...(size && best ? [`fits now: --size ${size[0]} on ${best.name} (${best.fit} MB free; a box that exists keeps its size, changing it needs --recreate)`] : []), ...(waiting ? [] : ["or wait for room: add --wait"])];
 }
 function answers(target, ms) {
@@ -1435,6 +1447,28 @@ export function main(args, env = process.env) {
             process.stderr.write("box: the process that started this call is gone; no longer waiting\n");
             return true;
         };
+        // A placed worktree whose own host has no room moves by itself (owner decision 2026-11-17), as --host would: the placement is
+        // recorded and "moved" logged. Only when another host has room for this call and nothing of this box would be lost or stranded
+        // on the old host: a machine or container of it in any state, or a run of it, running or ended (its log and results are there),
+        // as the old host's `pod report` lists them. An old host that cannot be asked keeps the worktree. Never with --host or
+        // $BOXD_HOST: src.how is then not "placed". The worktree then counts as placed by this call (a refusal there removes the placement).
+        const autoMove = async (from) => {
+            if (src.how !== "placed")
+                return false;
+            const [seen, rep] = await Promise.all([Promise.all(order.filter((n) => n !== from).map((n) => probe(n, env))), ask(from, "pod report")]);
+            const c = choose(seen, req);
+            if (!("host" in c) || rep.code !== 0 || !rep.out.startsWith("host\t"))
+                return false;
+            if (rep.out.split("\n").some((l) => (l.startsWith("box\t") || l.startsWith("run\t")) && parseStatus(l).box === box))
+                return false;
+            process.stderr.write(`box: ${from} has no room; this worktree moves to ${c.host} (its caches on ${from} are kept until that host's time limit)\n`);
+            place(gitDir, c.host, false);
+            logChoice(env, box, req, c.host, "moved", []);
+            name = c.host;
+            spare = c.room.slice(1);
+            fresh = true;
+            return true;
+        };
         if (src.how === "flag" && order.length > 1 && readOr(placedFile) !== name) {
             place(gitDir, name, false);
             logChoice(env, box, req, name, "moved", []);
@@ -1447,6 +1481,8 @@ export function main(args, env = process.env) {
                         process.stderr.write(`box: no build server has room for this call\n${c.refusal.map((l) => `  ${l}\n`).join("")}`);
                         return NO_ROOM;
                     }
+                    if (await autoMove(name))
+                        continue; // moving is tried first, each round
                     if (await hold(c.refusal))
                         return 129;
                     continue;
@@ -1486,6 +1522,8 @@ export function main(args, env = process.env) {
             if (refused(r)) {
                 if (fresh)
                     rmSync(placedFile, { force: true }); // this call placed the worktree and no box was made
+                else if (await autoMove(name))
+                    continue;
                 if (wait) { // ask again: everybody for a worktree this call placed, only its own host for a placed one
                     const refusedBy = name, c = choose(await Promise.all((fresh ? order : [name]).map((n) => probe(n, env))), req);
                     if (fresh) {

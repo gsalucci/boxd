@@ -59,11 +59,15 @@ has "a report without a host line" "no host line" "$($W check tower "$T/nohost" 
   printf 't3\tb3\tvm,-\tlaptop\toverflow\ttower=awake,laptop=awake\n'
   printf 't4\tb4\tvm,-\tlaptop\tmoved\t\n'
   printf 't5\tb5\tvm,-\ttower\torder\ttower=asleep,laptop=awake\n'
-  printf 't6\tb6\tvm,-\tlaptop\tspread\ttower=awake,laptop=awake\n'; } > "$T/choices"
+  printf 't6\tb6\tvm,-\tlaptop\tspread\ttower=awake,laptop=awake\n'
+  printf 't7\tb7\tvm,-\tlaptop\tfit\ttower=awake,laptop=awake\n'
+  printf 't8\tb8\tvm,-\tlaptop\tfit\ttower=asleep,laptop=asleep\n'
+  printf 't9\tb9\tvm,-\ttower\tfit\ttower=no memory for another machine (4 running),laptop=awake\n'; } > "$T/choices"
 out=$($W choices "$T/choices" 1)
 has "a placement past a host with room" "placement of b3 at t3 went to laptop as \"overflow\", but tower was first" "$out"
-[ "$(wc -l <<<"$out")" = 1 ] && ok "the right placements and a move are not findings" || bad "only b3 is wrong: $out"
-[ -z "$($W choices "$T/choices" 4)" ] && ok "lines before the start line are not read again" || bad "start line ignored"
+has "a fit placement on a host that had no room" "placement of b9 at t9 went to tower as \"fit\", but that host had no room" "$out"
+[ "$(wc -l <<<"$out")" = 2 ] && ok "the right placements (fit on an awake or a sleeping host too) and a move are not findings" || bad "only b3 and b9 are wrong: $out"
+[ -z "$($W choices "$T/choices" 10)" ] && [ "$($W choices "$T/choices" 9 | wc -l)" = 1 ] && ok "lines before the start line are not read again" || bad "start line ignored"
 
 # A finding is printed when it held its samples, once, and "ended" once when it is gone.
 f=$'2\tWARN\ttower:idle-box:old\ttower: box old is idle'

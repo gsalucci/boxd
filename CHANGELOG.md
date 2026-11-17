@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.4.24
+
+- **Container boxes are admitted, no longer only limited by the cap.** A call that would start work in a container box is
+  refused with exit 75 when the memory already counted plus a reserve for the new work does not fit the cap:
+  `boxd-pod: no room for another busy box (<counted> MB counted + <reserve> MB reserve > <limit> MB, <percent>% of the
+  <cap> MB cap); wait for one to end`. Counted are the sizes of the running machines and the measured memory of every
+  container box, where a box whose work started in the last `BOXD_VM_IDLE_MIN` seconds counts at least the reserve (it has
+  not claimed its memory yet). New host setting `BOXD_BOX_RESERVE` (megabytes, default 4096; 0 turns the rule off). A call
+  into a box that is already busy is never refused, nor are reads. Machine admission counts young busy container boxes the
+  same way. `pod status` gains `box_room`, `box_fit_mb` and `box_reserve_mb`; the client judges a container call by
+  them, tries the next host, waits with `--wait`. Before this, ten builds started at once all began and the kernel killed
+  a process of some box past the cap, possibly another user's long run.
+- **Machine boxes go to the smallest host that fits.** Among the hosts where the asked size fits, the client takes the one
+  with the smallest memory cap (`group_mem_max_mb`), so small machines no longer fill the big host and leave no room for a
+  big one. Logged as `fit` in `choices.log`. Container boxes still go to the host with the most free memory.
+- **A box whose own host is full comes back on another host by itself.** When a placed worktree is refused for room and
+  another host has room, the client moves it there as `--host` would and says so first:
+  `box: <old> has no room; this worktree moves to <new> (its caches on <old> are kept until that host's time limit)`.
+  Never when the old host still lists a box or a run of this worktree, cannot be asked, or when `BOXD_HOST` or `--host`
+  named the host.
+
 ## 0.4.23
 
 - **`--git`: the box gets a git repository at the worktree's real commit.** With it, `/job/src` in the box is a shallow

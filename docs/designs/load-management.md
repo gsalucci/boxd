@@ -317,3 +317,47 @@ Where the code follows the owner decisions above rather than the draft's wording
   scenarios 1 to 9 of this draft against a fake ssh playing several hosts, with status lines captured from the real `boxd-pod`.
   `tests/pod-acceptance.sh` scenarios 28 to 36: the same nine against two real hosts (`BOXD_TEST_HOST2`; skipped with a printed
   reason without it).
+
+## 2026-11-17: small machines to small hosts, admission for container boxes, a full host is left by itself
+
+Three owner decisions of one day. They change three rules above: the choice among hosts (section 4), "never moved by itself" (decision 2
+of 2026-11-13) and "container boxes are never refused for load or memory" (judged and rejected in 0.4.8). The contract text is in
+`docs/pod-contract.md` ("Host choice", "Memory budget", `pod run` step 5b); this section keeps the reasoning.
+
+**1. A machine goes to the smallest host that fits.** The choice took the host with the most free memory. That spread work, but it
+also filled the big host with small machines: the free memory of the big host stays the largest until it is nearly full. A later request
+for a big machine (`--size xlarge`, 12288 MB) then found no room on it, while a small host stood empty and could have taken the small
+machines. Now, for `--vm`, among the awake hosts where this call fits (`vm_fit_mb` against the size asked, or `vm_room`, as before), the
+one with the smallest cap for boxes (`group_mem_max_mb`, which `pod status` already printed) wins; ties keep the configured order. Hosts that
+print no cap and sleeping hosts come after, and keep the old rule among themselves, so an older server loses nothing. A container keeps
+"most free memory": containers have no size, so there is no big request to keep room for. The reason word in `choices.log` is `fit`, new, so
+the host watcher's check of placements (`order` must be the first host with room, `overflow` must follow a first host without room) does
+not call a deliberate choice of a later host a mistake; it checks only that the host named for `fit` was awake or asleep.
+
+**2. Container boxes are admitted by a reserve.** A machine is admitted by counting sizes, because a young machine has not claimed its
+memory yet (2026-11-15: twelve 4 GB machines on a 28 GB cap). A container box has no size, so it was never counted: the only limit was
+the cap of the whole build group, and past it the kernel ended a process of some box, possibly another user's long run. A user about to
+start ten builds at once would have hit the cap, because every one of the ten looks light the moment it is admitted. The same protection
+needs no size, only one number: a reserve, 4096 MB by default (`BOXD_BOX_RESERVE`, `0` is off). A call into a box that is not busy is
+admitted only when the machines' sizes, the other container boxes' memory (a busy one with a young call counts at least the reserve),
+and the larger of the reserve and the asking box's own use fit `BOXD_VM_COMMIT` percent of the cap. A box already busy adds nothing,
+so a second call into the same box is never refused. The young busy boxes are counted by the same function the machines use, so a
+machine is not admitted into memory a container box began to claim a second ago. The room lock is held until the call holds its box busy,
+or ten calls at once would all see an empty host. Not done, on purpose: idle machines are not removed for a container call (the machine rule
+removes them for a machine); that can be added where the refusal is made if a host is seen refusing containers while idle machines hold the room.
+`pod status` says the answer (`box_room`, `box_fit_mb`, `box_reserve_mb`) so a client does not send a call that would be refused; the client
+treats the host's 75 for a container call as it treats the machine one (the next host with room on a first placement; the lost race).
+
+**3. A box whose own host is full comes back on another host by itself.** "A placed worktree is never moved" protected the caches that
+live in the box on its host. But an idle box is not worth a stuck user: when the host is full and another host has room, the worktree
+moves, as `--host` would. The two guards keep it from losing anything: a machine or container of the box that still exists on the old
+host (any state), or any run of it listed there (an ended run's log and results may not be fetched yet), stops the move, and so does an
+old host that cannot be asked, and a call that named a host (`--host`, `BOXD_HOST`) is never redirected. The old caches stay until that
+host's time limit, as after `--host`. With `--wait` moving is tried first each round, so a waiting call leaves as soon as it can.
+
+**Compatibility.** A new client against an older server sees no new words and behaves as before. An older client against a new server
+keeps working: for a container call the server may now answer 75 with `boxd-pod: no room for another busy box ...`; the older client
+tests the machine text only, so it does not retry, does not wait and prints no hint: it shows the server's line and exits 75.
+
+**Evidence.** `contract/cases.json` (choose and pod cases), `tests/contract-pod-test.sh` ("box admission"), `tests/box-client.test.mts`
+(spread through the command, container admission, "moves by itself"), `tests/host-watch-test.sh` (`fit`).

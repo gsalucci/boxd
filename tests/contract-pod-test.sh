@@ -724,7 +724,7 @@ eq "pod status: free memory is never below zero" mem_free_mb=0 "$(tr '\t' '\n' <
 # The three new words have the meaning and the code of the host line of pod report; mem_free_mb stays as it was.
 cg8; printf 'MemTotal: 32768000 kB\nMemAvailable: 9216000 kB\nSwapTotal: 0 kB\nSwapFree: 0 kB\n' > "$W/meminfo"; echo $((3 * 1048576)) > "$BOXD_CGROOT/boxd/memory.swap.current"
 CASE_ENV=(BOXD_MEMINFO="$W/meminfo"); pod "pod status"
-eq "pod status: after images come the host's available memory and the group's used and maximum" $'mem_avail_mb=9000\tgroup_mem_used_mb=3\tgroup_mem_max_mb=8192' "$(awk -F'\t' '{ print $(NF-4) "\t" $(NF-3) "\t" $(NF-2) }' "$T/e/out")"
+eq "pod status: after images come the host's available memory and the group's used and maximum" $'mem_avail_mb=9000\tgroup_mem_used_mb=3\tgroup_mem_max_mb=8192' "$(awk -F'\t' '{ print $(NF-7) "\t" $(NF-6) "\t" $(NF-5) }' "$T/e/out")"
 eq "pod status: mem_free_mb stays the group's accounting" mem_free_mb=8189 "$(tr '\t' '\n' < "$T/e/out" | grep '^mem_free_mb=')"
 pod "pod report"; eq "pod report: its host line has the same three figures as pod status" $'mem_avail_mb=9000\tgroup_mem_max_mb=8192\tgroup_mem_used_mb=3' "$(head -1 "$T/e/out" | tr '\t' '\n' | grep -E '^(mem_avail_mb|group_mem_max_mb|group_mem_used_mb)=' | paste -sd'\t')"
 CASE_ENV=()
@@ -756,10 +756,10 @@ eq "container memory counts in the commitment" "75 boxd-pod: no room for another
 rm -f "$FAKE_STATE/pod-x"; pod "pod run b2 --vm --size small -- $B64"; eq "the same machines without container memory are admitted" 0 "$rc"
 cg8; ctrcg 2048 0; pod "pod run b1 --vm --size small -- $B64"; eq "container memory alone does not refuse when everything fits" 0 "$rc"
 cg8; ctrcg 1024 0; pod "pod status"; eq "pod status: no room for a large machine once a container box uses memory" vm_room=no "$(tr '\t' '\n' < "$T/e/out" | grep '^vm_room=')"
-eq "pod status: vm_why comes before the last word and says why no machine fits" "vm_why=0 MB of running machines + 1024 MB used by container boxes + 8192 MB asked > 8192 MB, 100% of the 8192 MB cap" "$(awk -F'\t' '{ print $(NF-1) }' "$T/e/out")"
+eq "pod status: vm_why comes before vm_fit_mb and the three words of container boxes, and says why no machine fits" "vm_why=0 MB of running machines + 1024 MB used by container boxes + 8192 MB asked > 8192 MB, 100% of the 8192 MB cap" "$(awk -F'\t' '{ print $(NF-4) }' "$T/e/out")"
 rm -f "$FAKE_STATE/pod-x"; pod "pod status"; eq "pod status: room for a large machine on an idle cap" vm_room=yes "$(tr '\t' '\n' < "$T/e/out" | grep '^vm_room=')"
-eq "pod status: vm_why is empty when a machine fits" vm_why= "$(awk -F'\t' '{ print $(NF-1) }' "$T/e/out")"
-eq "pod status: vm_fit_mb is the last word, the whole cap on an idle host" vm_fit_mb=8192 "$(awk -F'\t' '{ print $NF }' "$T/e/out")"
+eq "pod status: vm_why is empty when a machine fits" vm_why= "$(awk -F'\t' '{ print $(NF-4) }' "$T/e/out")"
+eq "pod status: vm_fit_mb comes before the three words of container boxes, the whole cap on an idle host" vm_fit_mb=8192 "$(awk -F'\t' '{ print $(NF-3) }' "$T/e/out")"
 # vm_fit_mb: the largest machine `pod run` admits (the smaller of cap minus use and the commit share minus machines minus
 # containers); the seam test runs pod run itself, with a machine of just under, exactly and just over that size.
 fitword() { pod "pod status"; tr '\t' '\n' < "$T/e/out" | sed -n 's/^vm_fit_mb=//p'; }
@@ -784,6 +784,57 @@ cg8; ctrcg 0 0; CASE_ENV=(FAKE_CPID=4243 BOXD_PROC="$T/e/proc"); pod "pod run b1
 eq "an unreadable running container counts as its limit" "75 boxd-pod: no room for another virtual machine (0 MB of running machines + 12288 MB used by container boxes + 2048 MB asked > 8192 MB, 100% of the 8192 MB cap); wait for one to end or stop one" "$rc $(cat "$T/e/err")"
 CASE_ENV=(FAKE_CPID=4243 BOXD_PROC="$T/e/proc" BOXD_LIMITS="--pids-limit 100"); pod "pod run b1 --vm --size small -- $B64"
 eq "an unreadable running container with no limit refuses: it cannot be measured" "75 boxd-pod: no room for another virtual machine (the running container boxes cannot be measured now); wait for one to end or stop one" "$rc $(cat "$T/e/err")"
+CASE_ENV=()
+# Admission of container boxes (owner decision 2026-11-17): a call that starts work in a container box that is not busy is admitted
+# only when the sizes of the running machines, the container boxes (a box with a call or run begun lately counts at least the
+# reserve, BOXD_BOX_RESERVE, 4096) and the larger of the reserve and the asking box's own use fit the cap. The cases of the contract
+# file cover the sums with machines; these need a box that is busy (a held shared lock on its .running) and a stamp young or old
+# (the stamp is now, or the year 1970; BOXD_VM_IDLE_MIN 300), and no step waits on time. Every container here measures what ctrcg says.
+ctrbox() { mkdir -p "$W/jobs/$1"; echo "docker.io/library/debian:stable-slim running" > "$FAKE_STATE/pod-$1"; touch ${2:+-d @100} "$W/jobs/$1/.last-used"; : > "$W/jobs/$1/.running"; }
+holdbox() { exec 8<"$W/jobs/$1/.running"; flock -s 8; }
+unhold() { exec 8<&-; }
+roomfree() { flock -n "$W/cache/vm-room.lock" true && echo free || echo held; }
+cg8; ctrcg 1024 0; ctrbox x; ctrbox w
+pod "pod run y -- $B64"; eq "box admission: two idle container boxes using 1024 MB each and a new call fit 8192 MB" 0 "$rc"
+holdbox x; pod "pod run y2 -- $B64"
+eq "box admission: a busy box with a young call counts the reserve, not its use (4096 + 1024 + 1024 + 4096 > 8192): refused, one line with the numbers" "75 boxd-pod: no room for another busy box (6144 MB counted + 4096 MB reserve > 8192 MB, 100% of the 8192 MB cap); wait for one to end" "$rc $(cat "$T/e/err")"
+eq "box admission: a refused call made no box and no stamp" "no no" "$([ -e "$FAKE_STATE/pod-y2" ] && echo yes || echo no) $([ -e "$W/jobs/y2/.last-used" ] && echo yes || echo no)"
+eq "box admission: a refusal gives the room lock back" free "$(roomfree)"
+pod "pod run y2 --detach r1 -- $B64"; eq "box admission: a detached call is refused the same way" "75 boxd-pod: no room for another busy box (6144 MB counted + 4096 MB reserve > 8192 MB, 100% of the 8192 MB cap); wait for one to end" "$rc $(cat "$T/e/err")"
+unhold; touch -d @100 "$W/jobs/x/.last-used"; holdbox x; pod "pod run y2 -- $B64"
+eq "box admission: a busy box whose call began more than BOXD_VM_IDLE_MIN seconds ago counts its use" 0 "$rc"
+CASE_ENV+=(BOXD_VM_IDLE_MIN=99999999999); pod "pod run y3 -- $B64"
+eq "box admission: BOXD_VM_IDLE_MIN sets how long a call counts as young" 75 "$rc"
+CASE_ENV=(FAKE_CPID=4242 BOXD_PROC="$T/e/proc"); unhold
+cg8; ctrcg 1024 0; ctrbox x; ctrbox w; holdbox x; ctrbox y; exec 9<"$W/jobs/y/.running"; flock -s 9
+pod "pod run y -- $B64"; eq "box admission: a call into a box that is already busy adds nothing and is never refused here" 0 "$rc"
+exec 9<&-
+pod "pod run y -- $B64"; eq "box admission: the same call into the box once it is not busy is refused" 75 "$rc"
+for v in "pod list" "pod ps y" "pod status" "pod report" "pod log y r1" "pod stop y" "pod drop y"; do pod "$v"; eq "box admission: '$v' is never refused for room" 1 "$([ "$rc" != 75 ] && echo 1 || echo 0)"; done
+unhold
+# The asking box counts the larger of the reserve and its own use: a running box using 5000 MB beside a busy one (5000 MB) on a 9500 MB cap.
+cg8; echo $((9500 * 1048576)) > "$BOXD_CGROOT/boxd/memory.max"; ctrcg 5000 0; ctrbox x; ctrbox y; holdbox x
+pod "pod run y -- $B64"; eq "box admission: the asking box counts what it uses when that is more than the reserve (5000 + 5000 > 9500)" "75 boxd-pod: no room for another busy box (5000 MB counted + 5000 MB reserve > 9500 MB, 100% of the 9500 MB cap); wait for one to end" "$rc $(cat "$T/e/err")"
+unhold; rm -f "$FAKE_STATE/pod-y"; pod "pod run y -- $B64"; eq "box admission: the same call that makes the box counts the reserve only (5000 + 4096 <= 9500)" 0 "$rc"
+# The machine rules count a young busy container box the same way: nothing is admitted into memory it is about to claim.
+cg8; ctrcg 1024 0; ctrbox x; CASE_ENV+=(BOXD_VM_LIMITS="-c 2 -m 5000M")
+pod "pod run m --vm -- $B64"; eq "box admission: a machine beside an idle container box using 1024 MB fits (1024 + 5000 <= 8192)" 0 "$rc"
+rm -f "$FAKE_VM_STATE/pod-m"; holdbox x; pod "pod run m --vm -- $B64"
+eq "box admission: the machine rules count a young busy container box at the reserve (4096 + 5000 > 8192): the same computation" "75 boxd-pod: no room for another virtual machine (0 MB of running machines + 4096 MB used by container boxes + 5000 MB asked > 8192 MB, 100% of the 8192 MB cap); wait for one to end or stop one" "$rc $(cat "$T/e/err")"
+pod "pod status"; eq "box admission: pod status counts it too: 4096 MB fit for another busy box, so room" $'box_room=yes\tbox_fit_mb=4096\tbox_reserve_mb=4096' "$(tr '\t' '\n' < "$T/e/out" | grep -E '^box_' | paste -sd'\t')"
+ctrbox w; exec 9<"$W/jobs/w/.running"; flock -s 9; pod "pod status"; eq "box admission: two young busy boxes leave no room, and pod status says so before a call is sent" $'box_room=no\tbox_fit_mb=0\tbox_reserve_mb=4096' "$(tr '\t' '\n' < "$T/e/out" | grep -E '^box_' | paste -sd'\t')"
+exec 9<&-; unhold
+# Ten calls at once are counted one after the other: the room lock is kept until a call holds its box busy. Two calls in flight (blocked
+# in their command) count the reserve each, so a third is refused; the lock is free again afterwards.
+cg8; ctrcg 1024 0; rm -f "$FAKE_STATE/pod-x"
+CASE_ENV+=(FAKE_BLOCK_EXEC=1)
+for b in a1 a2; do SSH_ORIGINAL_COMMAND="pod run $b -- $B64" env "${CASE_ENV[@]}" bash "$POD" </dev/null >/dev/null 2>&1 & read -r ev <&3; eq "box admission: call $b is in its command" exec-blocked "$ev"; done
+eq "box admission: the room lock is not held by calls that are busy" free "$(roomfree)"
+pod "pod run a3 -- $B64"; eq "box admission: a third call is refused while two are busy (4096 + 4096 + 4096 > 8192)" "75 boxd-pod: no room for another busy box (8192 MB counted + 4096 MB reserve > 8192 MB, 100% of the 8192 MB cap); wait for one to end" "$rc $(cat "$T/e/err")"
+exec 6>"$T/e/rel"; exec 6>&-; wait
+CASE_ENV=(FAKE_CPID=4242 BOXD_PROC="$T/e/proc"); pod "pod run a3 -- $B64"; eq "box admission: once they end the call is admitted" 0 "$rc"
+eq "box admission: an admitted call gives the room lock back (foreground and detached)" "free" "$(roomfree)"
+pod "pod run a4 --detach r2 -- $B64"; eq "box admission: a detached call is admitted too" 0 "$rc"; eq "box admission: and gives the room lock back" free "$(roomfree)"
 CASE_ENV=()
 # Container boxes are made with a raised out-of-memory score: when the build cgroup hits its cap the kernel kills the
 # grower, not a machine. The badness of a process is its memory plus score/1000 of the cgroup's limit, so 1000 adds the whole cap.

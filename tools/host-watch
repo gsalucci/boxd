@@ -57,14 +57,22 @@ check() { # <host> <report file> <now>
 }
 
 # Placement decisions from line <from> on. The probed hosts are logged in order. `order` must name the first of them;
-# `overflow` means the first had no room (a state other than `awake` or `asleep`). `spread` (more free memory on a
-# later host), moves (`--host`) and retries after a lost race are not judged.
+# `overflow` means the first had no room (a state other than `awake` or `asleep`). `fit` (a machine sent to the host with
+# the smallest cap, which need not be the first) is judged only on the host it names: it must have been awake or asleep.
+# `spread` (more free memory on a later host), moves (`--host`, or by itself when the own host is full) and retries after
+# a lost race are not judged.
 choices() { # <choices.log> <from line>
   awk -F'\t' -v from="$2" '
     NR >= from && ($5 == "order" || $5 == "overflow") && $6 != "" {
       split($6, p, ","); e = index(p[1], "="); first = substr(p[1], 1, e - 1); s = substr(p[1], e + 1)
       if (($5 == "order" && first != $4) || ($5 == "overflow" && (s == "awake" || s == "asleep")))
         printf "1\tALERT\tevent:choice:%s\tplacement of %s at %s went to %s as \"%s\", but %s was first in order with room (%s)\n", NR, $2, $1, $4, $5, first, $6
+    }
+    NR >= from && $5 == "fit" && $6 != "" {
+      s = ""; n = split($6, p, ",")
+      for (i = 1; i <= n; i++) { e = index(p[i], "="); if (substr(p[i], 1, e - 1) == $4) s = substr(p[i], e + 1) }
+      if (s != "awake" && s != "asleep")
+        printf "1\tALERT\tevent:choice:%s\tplacement of %s at %s went to %s as \"fit\", but that host had no room (%s)\n", NR, $2, $1, $4, $6
     }' "$1"
 }
 
