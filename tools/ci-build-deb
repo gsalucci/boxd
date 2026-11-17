@@ -1,0 +1,32 @@
+#!/bin/sh
+# Build the Debian packages of a release in a debian:13 container, as root: the build step of the deb job of
+# .github/workflows/release.yml. Builds from the archive of the tag with the tag's own tools/build-deb, then makes the
+# checks tools/release-deb makes on the built files: the three boxd packages exist at <version>-1, and the boxd-pod in the
+# server package is the file of the tag. It does not publish and does not install (tools/ci-prove installs, from the release).
+#   docker run --rm -v "$PWD:/w" debian:13 sh /w/tools/ci-build-deb /w/boxd-<version>.tar.gz /w/deb-out
+# usage: tools/ci-build-deb <source archive> <output folder>
+set -eu
+archive=$(cd "$(dirname "${1:?usage: tools/ci-build-deb <source archive> <output folder>}")" && pwd)/$(basename "$1")
+mkdir -p "${2:?usage: tools/ci-build-deb <source archive> <output folder>}"
+out=$(cd "$2" && pwd)
+die() { echo "ci-build-deb: $*" >&2; exit 1; }
+
+apt-get update -qq >/dev/null
+apt-get install -y -qq curl ca-certificates >/dev/null 2>&1
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+tar -xzf "$archive" -C "$work"
+src=$(echo "$work"/boxd-*)
+ver=$(sed -n 's/^version=//p' "$src/srcpkgs/boxd/template")
+# git archive stamps every file with the commit time; it is the time the packages carry (as tools/release-deb does).
+SOURCE_DATE_EPOCH=$(stat -c %Y "$src/srcpkgs/boxd/template") BOXD_DEB_OUT=$out sh "$src/tools/build-deb"
+
+for p in boxd boxd-client boxd-server; do
+	[ -f "$out/${p}_$ver-1_all.deb" ] && [ "$(dpkg-deb -f "$out/${p}_$ver-1_all.deb" Version)" = "$ver-1" ] || die "package $p $ver-1 was not built"
+done
+set -- "$out"/microsandbox-bin_*.deb
+[ -f "$1" ] || die "microsandbox-bin was not built"
+want=$(sha256sum < "$src/server/boxd-pod" | cut -d' ' -f1)
+got=$(dpkg-deb --fsys-tarfile "$out/boxd-server_$ver-1_all.deb" | tar -xO ./usr/bin/boxd-pod | sha256sum | cut -d' ' -f1)
+[ "$got" = "$want" ] || die "/usr/bin/boxd-pod in the server package differs from server/boxd-pod of the tag"
+echo "ci-build-deb: built $(find "$out" -type f | wc -l) packages of boxd $ver; boxd-pod in the package matches the tag"

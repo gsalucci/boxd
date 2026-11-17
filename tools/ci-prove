@@ -1,0 +1,39 @@
+#!/bin/sh
+# Install a published release the way a user does, in a fresh container, as root: the proof step of
+# .github/workflows/release.yml. It reads only from the release's download address, never from files of the build.
+#   docker run --rm -v "$PWD/tools:/t:ro" ghcr.io/void-linux/void-glibc sh /t/ci-prove void <owner/name> v<version> <version>
+#   docker run --rm -v "$PWD/tools:/t:ro" debian:13 sh /t/ci-prove deb <owner/name> v<version> <version>
+# void: that address is the xbps repository; the key is accepted by the install; boxd-client is at <version>_1 and runs.
+# deb: boxd-client_<version>-1_all.deb is downloaded with SHA256SUMS, checked against it, installed with apt, and runs.
+# usage: tools/ci-prove void|deb <owner/name> <tag> <version>
+set -eu
+kind=${1:?usage: tools/ci-prove void|deb <owner/name> <tag> <version>}
+repo=${2:?usage: tools/ci-prove void|deb <owner/name> <tag> <version>}
+tag=${3:?usage: tools/ci-prove void|deb <owner/name> <tag> <version>}
+ver=${4:?usage: tools/ci-prove void|deb <owner/name> <tag> <version>}
+base=https://github.com/$repo/releases/download/$tag
+die() { echo "ci-prove: $*" >&2; exit 1; }
+
+case $kind in
+void)
+	xbps-install -Syu xbps >/dev/null
+	mkdir -p /etc/xbps.d
+	echo "repository=$base" > /etc/xbps.d/boxd.conf
+	yes | xbps-install -Sy boxd-client   # -y does not answer the question about importing the key; stdin does
+	[ "$(xbps-query -p pkgver boxd-client)" = "boxd-client-${ver}_1" ] || die "boxd-client is not at ${ver}_1"
+	box --help >/dev/null || die "box --help does not run"
+	echo "ci-prove: Void: boxd-client-${ver}_1 installed from $base and runs" ;;
+deb)
+	apt-get update -qq >/dev/null
+	apt-get install -y -qq curl ca-certificates >/dev/null 2>&1
+	f=boxd-client_$ver-1_all.deb
+	d=/tmp/boxd-proof
+	mkdir -p "$d" && chmod 755 "$d" && cd "$d"
+	curl -fsSL -o "$f" "$base/$f"
+	curl -fsSL -o SHA256SUMS "$base/SHA256SUMS"
+	grep "  $f\$" SHA256SUMS | sha256sum -c - || die "$f does not match SHA256SUMS of the release"
+	apt-get install -y -qq "$d/$f" >/dev/null
+	box --help >/dev/null || die "box --help does not run"
+	echo "ci-prove: Debian: $f checked against SHA256SUMS, installed from $base and runs" ;;
+*) die "the kind is void or deb, not $kind" ;;
+esac

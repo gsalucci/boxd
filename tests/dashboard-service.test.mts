@@ -11,6 +11,7 @@ import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFile
 import http from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { TSC, NO_TSC } from "./tsc-rs.mts";
 
 const REPO = path.resolve(import.meta.dirname, "..");
 const FIX = path.join(REPO, "tests/fixtures/dashboard");
@@ -404,9 +405,9 @@ test("the program refuses to start on a bad settings file (exit 2, one clear lin
   assert.equal(await new Promise((r) => p.on("close", r)), 0);
 });
 
-test("committed dashboard/*.mjs match a fresh tsc-rs build", () => {
+test("committed dashboard/*.mjs match a fresh tsc-rs build", { skip: NO_TSC }, () => {
   const out = mkdtempSync(path.join(root, "build-"));
-  execFileSync(path.join(process.env.HOME ?? "", ".local/share/pnpm/bin/tsc-rs"), ["-p", path.join(REPO, "dashboard"), "--outDir", out]);
+  execFileSync(TSC!, ["-p", path.join(REPO, "dashboard"), "--outDir", out]);
   for (const f of ["fleet.mjs", "boxd-dashboard.mjs"]) assert.equal(readFileSync(path.join(REPO, "dashboard", f), "utf8"), readFileSync(path.join(out, f), "utf8"), `${f} is stale: run tsc-rs -p dashboard`);
 });
 

@@ -77,7 +77,7 @@ refuses when the Void packages or `boxd-server` of the version are missing, or t
 every asset again and compares the checksums with the local files.
 
 Variables: `BOXD_GITHUB_REPO` (required), `BOXD_GITHUB_TARGET` (commit or branch a new tag points at, default the default
-branch), `BOXD_REPO_DIR` (default `$HOME/.local/share/boxd-repo`), `BOXD_DEB_OUT` (default `deb-out` in the checkout).
+branch), `BOXD_GITHUB_TAG` (the tag of the release, default `v<version>`; `v<version>-<suffix>` makes a prerelease), `BOXD_REPO_DIR` (default `$HOME/.local/share/boxd-repo`), `BOXD_DEB_OUT` (default `deb-out` in the checkout).
 
 xbps asks a repository address for `<address>/x86_64-repodata` and `<address>/<package file>`, and GitHub serves the files of the
 latest release at `https://github.com/<owner>/<name>/releases/latest/download/<file>`, so that address works as a repository:
@@ -86,6 +86,34 @@ latest release at `https://github.com/<owner>/<name>/releases/latest/download/<f
 # /etc/xbps.d/boxd.conf
 repository=https://github.com/<owner>/<name>/releases/latest/download
 ```
+
+## Releases made by GitHub Actions
+
+Pushing a tag `v<version>` makes the public release by itself (`.github/workflows/release.yml`). The tag must be on a commit whose
+`srcpkgs/boxd/template`, `server/boxd-pod`, `client/box.mts` and `CHANGELOG.md` already carry `<version>` (`tools/release-version`
+checks it and the run stops there otherwise). Only a tag push starts it, never a pull request. Every push to a branch and every pull
+request runs the tests alone (`.github/workflows/test.yml`).
+
+The one secret it needs is the repository secret `BOXD_SIGNING_KEY`: the text of the private RSA key in PEM form, the same key that
+`tools/sign-and-publish` uses. Only the signing step of the `void` job sees it: it is written to a file of mode 600 in the runner's
+temporary folder, mounted read only into the container that runs `tools/sign-repo`, and removed when the step ends. It is never printed,
+never on a command line and never in an artifact.
+
+| Job | What it does |
+| --- | --- |
+| `source` | Checks the tag with `tools/release-version` and makes one archive of it (`git archive`), shared by the other jobs. |
+| `test` | The test workflow, the same tests as on every push. |
+| `void` | In a Void container (`ghcr.io/void-linux/void-glibc-full`, privileged, `/dev` mounted, chroot style `uchroot`, the settings of the build workflow of void-packages) builds `boxd` and `microsandbox-bin` with `tools/build-packages` through `tools/ci-build-void`, then indexes and signs them with `tools/sign-repo`. Uploads the folder: packages, `.sig2` files, `x86_64-repodata`. |
+| `deb` | In a `debian:13` container builds the Debian packages with `tools/build-deb` through `tools/ci-build-deb`, which also checks that the three boxd packages are at `<version>-1` and that `boxd-pod` in the server package is the file of the tag. Uploads the `.deb` files. |
+| `release` | Needs the three above. The only job with `contents: write`. Downloads both folders and runs `tools/release-github`, which makes the release (the tag exists already, so no `--target`) or completes it, and checks every asset again. |
+| `proof` | Needs `release`. In a fresh Void container sets `repository=<release address>` in `/etc/xbps.d/boxd.conf`, installs `boxd-client`, checks `boxd-client-<version>_1` and runs `box --help`. In a fresh `debian:13` container downloads `boxd-client_<version>-1_all.deb` and `SHA256SUMS` from the release, checks the sum, installs it with apt and runs `box --help`. Both go through `tools/ci-prove`. |
+
+To try it without making a real release, push a tag with a suffix after a version that is in the files already, for example
+`v0.4.21-citest1` on a commit that carries `0.4.21`. The run is the same, but the release is a prerelease (it is never `latest`, so
+the download address `releases/latest/download` keeps pointing at the last real release), its title carries the suffix, and the proof
+reads from the tag's own address `releases/download/v0.4.21-citest1`. Delete the trial release and its tag afterwards
+(`gh release delete v0.4.21-citest1 --cleanup-tag`). The container steps run by hand too, in a throwaway container (see the header of each
+`tools/ci-*` file).
 
 ## Client setup (every machine that installs boxd)
 

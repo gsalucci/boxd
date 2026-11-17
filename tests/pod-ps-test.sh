@@ -14,24 +14,28 @@ T=$(mktemp -d "${TMPDIR:-/tmp}/pod-ps-test.XXXXXX")
 pids=()
 trap 'kill "${pids[@]}" 2>/dev/null; pkill -f "^sleep 99993$"; rm -rf "$T"' EXIT   # 99993 is the child of a sh -c
 mkdir -p "$T/work dir" "$T/bin"
-ln -s "$(command -v sleep)" "$T/bin/odd) name"   # its command name (comm in /proc/<pid>/stat) holds ") "
+# A program whose command name (comm in /proc/<pid>/stat) holds ") ": a copy of bash that blocks opening a pipe nobody
+# writes to. Not a link to sleep: where sleep is one binary for many tools (Ubuntu 26.04), an unknown name ends at once.
+cp "$(command -v bash)" "$T/bin/odd) name"; mkfifo "$T/pipe"; odd=(-c 'read x <"$0"' "$T/pipe")
 
 start() {   # start <folder> <program> <args...>: runs it in <folder>, waits until it is there, prints its pid
     local d=$1; shift
     (cd "$d" && exec "$@") >/dev/null 2>&1 &   # not our stdout: $(start ...) would wait for it to close
     local p=$!
-    until [ "$(readlink "/proc/$p/cwd" 2>/dev/null)" = "$d" ] && [ "$(tr '\0' ' ' <"/proc/$p/cmdline")" = "$* " ]; do :; done
+    until [ "$(readlink "/proc/$p/cwd" 2>/dev/null)" = "$d" ] && [ "$(tr '\0' ' ' <"/proc/$p/cmdline")" = "$* " ]; do
+        kill -0 "$p" 2>/dev/null || { echo "FAIL $* ended before it was seen" >&2; return 1; }   # never wait for a process that is gone
+    done
     echo "$p"
 }
-a=$(start "$T/work dir" sleep 99991); pids+=("$a")
-b=$(start "$T" "$T/bin/odd) name" 99992); pids+=("$b")
-c=$(start "$T" sh -c "$(printf 'sleep 99993\n\ttrue')"); pids+=("$c")   # newline and tab in its command
+a=$(start "$T/work dir" sleep 99991) || exit 1; pids+=("$a")
+b=$(start "$T" "$T/bin/odd) name" "${odd[@]}") || exit 1; pids+=("$b")
+c=$(start "$T" sh -c "$(printf 'sleep 99993\n\ttrue')") || exit 1; pids+=("$c")   # newline and tab in its command
 
 out=$(sh -c "$PS_SCRIPT")
 line() { grep -P "^$1\t" <<<"$out"; }
 eq "a known process: pid, working folder with a space, command" "$a|$T/work dir|sleep 99991" \
     "$(line "$a" | awk -F'\t' '{print $1 "|" $4 "|" $5}')"
-eq "a command name with ') ' keeps the fields in place" "$b|$T|$T/bin/odd) name 99992|0" \
+eq "a command name with ') ' keeps the fields in place" "$b|$T|$T/bin/odd) name ${odd[*]}|0" \
     "$(line "$b" | awk -F'\t' '{print $1 "|" $4 "|" $5 "|" $3}')"
 up=$(cut -d. -f1 /proc/uptime)
 eq "elapsed is whole seconds within the uptime" yes \

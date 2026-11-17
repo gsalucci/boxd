@@ -1,0 +1,130 @@
+# A tag v<version> makes the public release: the tests, the Void packages (signed), the Debian packages, the GitHub
+# release with all of them, and a proof that both kinds install from the release. A tag with a suffix after the version
+# (v0.4.21-citest1) is a trial: the same run, a prerelease. See "Releases made by GitHub Actions" in docs/packaging.md.
+# Only a push of a tag starts it, never a pull request: the signing key is used in the void job.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  # The tag's files as one archive, the same bytes for every job, and the version the tag names.
+  source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+      - id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          v=$(sh tools/release-version "$TAG")
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          git archive --prefix="boxd-$v/" -o "boxd-$v.tar.gz" HEAD
+      - uses: actions/upload-artifact@v7
+        with:
+          name: source
+          path: boxd-${{ steps.version.outputs.version }}.tar.gz
+          if-no-files-found: error
+
+  test:
+    uses: ./.github/workflows/test.yml
+
+  void:
+    needs: source
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      VERSION: ${{ needs.source.outputs.version }}
+      VOID_IMAGE: ghcr.io/void-linux/void-glibc-full
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v8
+        with:
+          name: source
+          path: source
+      # Privileged and with /dev, as the build workflow of void-packages runs xbps-src in a container.
+      - name: Build the packages
+        run: docker run --rm --privileged -v /dev:/dev -v "$PWD:/w" "$VOID_IMAGE" sh /w/tools/ci-build-void "/w/source/boxd-$VERSION.tar.gz" /w/void-repo
+      # Only this step sees the key: a file of mode 600 in the runner's temporary folder, mounted read only, removed at the end.
+      - name: Index and sign the packages
+        env:
+          KEY_TEXT: ${{ secrets.BOXD_SIGNING_KEY }}
+        run: |
+          [ -n "$KEY_TEXT" ] || { echo "::error::the repository secret BOXD_SIGNING_KEY is not set"; exit 1; }
+          umask 077
+          key=$RUNNER_TEMP/boxd-signing-key
+          trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$KEY_TEXT" > "$key"
+          docker run --rm -v "$PWD:/w" -v "$key:/key:ro" -e BOXD_SIGNING_KEY=/key "$VOID_IMAGE" sh /w/tools/sign-repo /w/void-repo
+      - uses: actions/upload-artifact@v7
+        with:
+          name: void-repo
+          path: void-repo
+          if-no-files-found: error
+
+  deb:
+    needs: source
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v8
+        with:
+          name: source
+          path: source
+      - name: Build and check the packages
+        env:
+          VERSION: ${{ needs.source.outputs.version }}
+        run: docker run --rm -v "$PWD:/w" debian:13 sh /w/tools/ci-build-deb "/w/source/boxd-$VERSION.tar.gz" /w/deb-out
+      - uses: actions/upload-artifact@v7
+        with:
+          name: deb
+          path: deb-out
+          if-no-files-found: error
+
+  release:
+    needs: [source, test, void, deb]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v8
+        with:
+          name: void-repo
+          path: void-repo
+      - uses: actions/download-artifact@v8
+        with:
+          name: deb
+          path: deb-out
+      - name: Make the release
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+          BOXD_GITHUB_REPO: ${{ github.repository }}
+        run: |
+          v=$(sh tools/release-version "$TAG")
+          [ "$v" = "${{ needs.source.outputs.version }}" ] || { echo "::error::the version of the tag differs from the one of the source job"; exit 1; }
+          BOXD_GITHUB_TAG=$TAG BOXD_REPO_DIR=$PWD/void-repo BOXD_DEB_OUT=$PWD/deb-out sh tools/release-github "$v"
+
+  proof:
+    needs: [source, release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      TAG: ${{ github.ref_name }}
+      VERSION: ${{ needs.source.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install from the release in a fresh Void container
+        run: docker run --rm -v "$PWD/tools:/t:ro" ghcr.io/void-linux/void-glibc sh /t/ci-prove void "$GITHUB_REPOSITORY" "$TAG" "$VERSION"
+      - name: Install from the release in a fresh Debian 13 container
+        run: docker run --rm -v "$PWD/tools:/t:ro" debian:13 sh /t/ci-prove deb "$GITHUB_REPOSITORY" "$TAG" "$VERSION"

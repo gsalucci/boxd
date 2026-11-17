@@ -23,7 +23,7 @@ function input(): Input {
   return inp;
 }
 async function load(): Promise<{ fleet: (i: Input) => any; parseAnswer: (text: string) => any }> {
-  assert.ok(existsSync(MODULE), "dashboard/fleet.mjs is missing: run ~/.local/share/pnpm/bin/tsc-rs -p dashboard");
+  assert.ok(existsSync(MODULE), "dashboard/fleet.mjs is missing: run tsc-rs -p dashboard");
   return await import(MODULE);
 }
 

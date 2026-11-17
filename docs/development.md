@@ -10,10 +10,13 @@ bash tests/boxd-idle-test.sh                             # the power module, wit
 bash tests/boxd-service-test.sh                          # boxctl and the runit scripts, with fake sv and runuser
 bash tests/boxd-view-key-test.sh                         # boxd-setup --view-key, in a scratch folder
 bash tests/release-github-test.sh                        # tools/release-github, with a fake gh
+tools/test-shell                                         # every shell test above that needs no real host and no sudo, each checked to end with ALL OK
 node --test tests/contract-client.test.mts tests/box-client.test.mts tests/box-wake.test.mts tests/dashboard-data.test.mts tests/dashboard-service.test.mts tests/dashboard-web.test.mts tests/dashboard-bundle.test.mts
 bash tests/dashboard-stack-test.sh                       # builds the dashboard image from the bundle and checks the stack (needs docker without sudo; one image build)
 bash tests/dashboard-capture.sh                          # regenerates the recorded answers of tests/fixtures/dashboard/ from the real boxd-pod
 ```
+
+GitHub Actions runs the Node tests and `tools/test-shell` on every push and pull request (`.github/workflows/test.yml`). The freshness tests of the committed `.mjs` files look for the compiler in `BOXD_TSC`, then `~/.local/share/pnpm/bin/tsc-rs`, then `tsc-rs` on the path, and are skipped with a reason when none runs (so they are skipped on the runner).
 
 `docs/designs/dashboard.md` is the design of the dashboard service. Its first workstream, the read-only server verbs
 (server 0.3.0: `pod report`, `pod calls`, `pod log`, keys that may only read, `BOXD_IDLE_IGNORE`), and its second, the collector and the

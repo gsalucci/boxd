@@ -11,7 +11,14 @@ fails=0
 eq() { if [ "$2" = "$3" ]; then printf 'ok   %s\n' "$1"; else printf 'FAIL %s: expected [%s] got [%s]\n' "$1" "$2" "$3"; fails=$((fails + 1)); fi; }
 
 T=$(mktemp -d)
-trap 'exec 3>&-; rm -rf "$T"' EXIT
+# Every process a case starts carries BOXD_TEST_RUN=$T. The cleanup of a killed call is still scanning (sleep 1 in a loop)
+# when the last case ends, so the script ends only when no process with the marker is left: it waits on that condition
+# (bash builtins only, so the search is not a process with the marker; a read on a fifo nobody writes ends at once).
+export BOXD_TEST_RUN=$T
+mkfifo "$T/poll"
+left() { local d p kv; for d in /proc/[0-9]*; do p=${d#/proc/}; [ "$p" = "$$" ] && continue
+  while IFS= read -r -d '' kv; do [ "$kv" = "BOXD_TEST_RUN=$T" ] && return 0; done 2>/dev/null <"$d/environ"; done; return 1; }
+trap 'exec 3>&-; while left; do read -r -t 0.05 <>"$T/poll"; done; rm -rf "$T"' EXIT
 mkdir -p "$T/bin" "$T/vmbin"
 cat > "$T/bin/podman" <<'FAKE'
 #!/bin/sh
@@ -847,8 +854,14 @@ eq "call log: box, engine and exit code of a run" "$box container 0" "$lb $le $l
 eq "call log: start and duration are whole numbers" "yes yes" "$([[ $t0 =~ ^[0-9]{16}$ ]] && echo yes || echo no) $([[ $ld =~ ^[0-9]+$ ]] && echo yes || echo no)"
 pod "pod run $box --image evil.example.com/x:1 -- $B64"
 eq "call log: a refusal is logged with 125 and its reason" "125|image not allowed" "$(tail -1 "$W/cache/calls.log" | cut -f5,7 | tr '\t' '|')"
-LC_ALL=it_IT.UTF-8 pod "pod run $box -- $B64"
-eq "call log: an Italian locale (comma decimal separator) still logs" "0" "$(tail -1 "$W/cache/calls.log" | cut -f5)"
+# A locale whose decimal separator is a comma, if this machine has one installed (the workflow generates Italian).
+comma=; for l in $(locale -a); do [ "$(LC_ALL=$l locale decimal_point 2>/dev/null)" = , ] && { comma=$l; break; }; done
+if [ -n "$comma" ]; then
+  LC_ALL=$comma pod "pod run $box -- $B64"
+  eq "call log: a locale with a comma decimal separator ($comma) still logs" "0" "$(tail -1 "$W/cache/calls.log" | cut -f5)"
+else
+  echo "skip call log: no installed locale with a comma decimal separator (locale -a lists none)"
+fi
 # A pushed image is logged like any call: engine, exit code, refusal reason
 setup; mkdir -p "$W/cache"; STDIN=$T/e/archive; echo "docker.io/library/busybox:stable id-1" > "$STDIN"
 pod "pod image load container docker.io/library/busybox:stable 0123456789ab0123456789ab0123456789ab0123456789ab0123456789abcdef"
@@ -958,6 +971,8 @@ CASE_ENV=()
 folders() { ls "$W/jobs" | paste -sd' '; }
 evlog() { cut -f2- "$W/cache/evictions.log" 2>/dev/null | paste -sd'|'; }
 setup; day=86400
+# What an empty folder measures depends on the file system (0 on btrfs, 1 on ext4): measure one built like the evicted ones.
+mkdir -p "$T/probe/src"; touch "$T/probe/.last-used"; empty=$(du -smx "$T/probe" | cut -f1)
 mkdir -p "$W/cache" "$W/jobs"/{ancient,recent,busy,making,bare}/src
 touch -d @1000 "$W/jobs/ancient/.last-used" "$W/jobs/busy/.last-used" "$W/jobs/making/.last-used" "$W/jobs/bare"
 touch -d @$((10 * day)) "$W/jobs/recent/.last-used"
@@ -975,7 +990,7 @@ eq "retention: exactly at the limit nothing goes" "ancient bare busy making rece
 reapnow $((1001 + 14 * day))
 eq "retention: unused past the limit goes (a folder without a stamp counts from its own date); busy, being made and recent stay" "busy making recent" "$(folders)"
 eq "retention: the box of an evicted folder is removed too" "" "$(ls "$FAKE_STATE")"
-eq "retention: the service log names what went, why and how much it freed (empty folders: 0 MB)" "evicted ancient (unused 14 days), 0 MB freed|evicted bare (unused 14 days), 0 MB freed" "$(grep '^evicted' "$T/e/out" | sort | paste -sd'|')"
+eq "retention: the service log names what went, why and how much it freed (empty folders: what du measures for one)" "evicted ancient (unused 14 days), $empty MB freed|evicted bare (unused 14 days), $empty MB freed" "$(grep '^evicted' "$T/e/out" | sort | paste -sd'|')"
 eq "retention: evictions.log has one line per folder: time, box, reason" "ancient	unused 14 days|bare	unused 14 days" "$(sort -k2 "$W/cache/evictions.log" | cut -f2- | paste -sd'|')"
 eq "retention: the line's time is the reaper's clock" "$((1001 + 14 * day))" "$(head -1 "$W/cache/evictions.log" | cut -f1)"
 exec 6>"$T/e/rel"; exec 6>&-; wait "$r1" "$r2"   # one close frees both waiting readers

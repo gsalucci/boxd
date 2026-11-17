@@ -1,0 +1,48 @@
+#!/bin/sh
+# Run the shell tests that need no real host and no sudo, and fail when one of them does not end with its success line
+# "ALL OK" (a test that dies early or is cut off must not pass on a zero exit alone). The log of a test is shown only when
+# it fails. The test workflow (.github/workflows/test.yml) runs this; so can you.
+#   tools/test-shell [test file ...]
+# Each test runs in a session of its own, with standard input closed. When it ends, whatever it left running in that
+# session is named and killed, and counts as a failure: a test must not leave a process behind. A test that has not
+# ended after BOXD_TEST_LIMIT seconds (default 600, far above the slowest, which takes about 3 minutes) is killed with
+# everything in its session and reported, so a stuck test can never hold a run for hours. That limit is a guard, not a wait.
+set -u
+cd "$(dirname "$0")/.." || exit 1
+[ $# -gt 0 ] || set -- tests/contract-pod-test.sh tests/pod-ps-test.sh tests/host-watch-test.sh tests/boxd-view-key-test.sh \
+	tests/boxd-idle-test.sh tests/boxd-service-test.sh tests/release-github-test.sh tests/release-version-test.sh
+limit=${BOXD_TEST_LIMIT:-600}
+log=$(mktemp)
+sidfile=$(mktemp)
+trap 'rm -f "$log" "$sidfile"' EXIT INT TERM
+bad=0
+for t in "$@"; do
+	# The session leader is the shell that writes its own number ($$ is the session number) and becomes the test.
+	# shellcheck disable=SC2016
+	setsid -w sh -c 'echo $$ > "$1"; shift; exec timeout -s KILL "$@"' sh "$sidfile" "$limit" bash "$t" > "$log" 2>&1 < /dev/null
+	rc=$?
+	sid=$(cat "$sidfile")
+	left=$(ps -e -o pid= -o sid= -o args= | awk -v s="$sid" '$2 == s { $2 = ""; print }')
+	last=$(tail -n 1 "$log")
+	if [ -n "$left" ]; then
+		echo "$left" | while read -r pid _; do kill -KILL "$pid" 2>/dev/null; done
+	fi
+	if [ "$rc" = 137 ]; then
+		cat "$log"
+		echo "test-shell: $t: STUCK, killed after $limit seconds" >&2
+		bad=$((bad + 1))
+	elif [ "$rc" = 0 ] && [ "$last" = "ALL OK" ]; then
+		[ -z "$left" ] && echo "test-shell: $t: ALL OK"
+	else
+		cat "$log"
+		echo "test-shell: $t: FAILED (exit $rc, last line: $last)" >&2
+		bad=$((bad + 1))
+	fi
+	if [ -n "$left" ]; then
+		echo "test-shell: $t: left these processes running, now killed:" >&2
+		echo "$left" >&2
+		bad=$((bad + 1))
+	fi
+done
+[ "$bad" = 0 ] || { echo "test-shell: $bad problems in $# tests" >&2; exit 1; }
+echo "test-shell: all $# passed"

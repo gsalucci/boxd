@@ -1,0 +1,18 @@
+#!/bin/sh
+# The version of a release tag, after the checks of tools/release that need no network: run it in a checkout of the tag.
+# Prints the version (the tag without its "v"); a suffix after the version (v0.4.21-citest1) marks a trial tag and is
+# dropped, so the files of a trial carry the real version. Fails when the version is not the one of srcpkgs/boxd/template,
+# server/boxd-pod, client/box.mts, or when CHANGELOG.md has no section for it.
+#   tools/release-version <tag>        e.g. tools/release-version v0.4.21
+set -eu
+tag=${1:?usage: tools/release-version <tag>}
+cd "$(dirname "$0")/.."
+die() { echo "release-version: $*" >&2; exit 1; }
+case $tag in v[0-9]*.[0-9]*.[0-9]*) ;; *) die "the tag $tag is not v<version>" ;; esac
+v=${tag#v}; v=${v%%-*}
+case $v in *[!0-9.]*|*..*|*.) die "the tag $tag does not hold a plain version" ;; esac
+grep -qx "version=$v" srcpkgs/boxd/template || die "srcpkgs/boxd/template is not at version $v"
+[ "$(sed -n 's/^VERSION=\([0-9.]*\).*/\1/p' server/boxd-pod)" = "$v" ] || die "VERSION in server/boxd-pod is not $v"
+grep -qx "export const VERSION = \"$v\";" client/box.mts || die "VERSION in client/box.mts is not $v"
+grep -qx "## $v" CHANGELOG.md || die "CHANGELOG.md has no section for $v"
+echo "$v"

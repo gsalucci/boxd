@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import dgram from "node:dgram";
 import net from "node:net";
 import path from "node:path";
+import { TSC, NO_TSC } from "./tsc-rs.mts";
 
 const REPO = path.resolve(import.meta.dirname, "..");
 const DIR = path.join(REPO, "client");
@@ -142,10 +143,10 @@ test("never answers: exits 1 at its limit", async (t) => {
   assert.match(err, /no answer after/);
 });
 
-test("committed box-wake.mjs matches a fresh tsc-rs build", () => {
+test("committed box-wake.mjs matches a fresh tsc-rs build", { skip: NO_TSC }, () => {
   const out = mkdtempSync(path.join(tmpdir(), "box-wake-"));
   try {
-    execFileSync(path.join(process.env.HOME ?? "", ".local/share/pnpm/bin/tsc-rs"), ["-p", DIR, "--outDir", out]);
+    execFileSync(TSC!, ["-p", DIR, "--outDir", out]);
     assert.equal(readFileSync(TOOL, "utf8"), readFileSync(path.join(out, "box-wake.mjs"), "utf8"), "stale: run tsc-rs -p client");
   } finally {
     rmSync(out, { recursive: true, force: true });

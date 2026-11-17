@@ -8,6 +8,7 @@ import { once } from "node:events";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { TSC, NO_TSC } from "./tsc-rs.mts";
 
 const REPO = path.resolve(import.meta.dirname, "..");
 const TOOL = path.join(REPO, "client/box.mjs");
@@ -392,10 +393,10 @@ test("no machine address, card name or account is written into the program", () 
   assert.doesNotMatch(src, /\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b|[0-9a-f]{2}(:[0-9a-f]{2}){5}|tower|\/work\b/i);
 });
 
-test("committed box.mjs matches a fresh tsc-rs build", () => {
+test("committed box.mjs matches a fresh tsc-rs build", { skip: NO_TSC }, () => {
   const out = mkdtempSync(path.join(tmpdir(), "box-build-"));
   try {
-    execFileSync(path.join(process.env.HOME ?? "", ".local/share/pnpm/bin/tsc-rs"), ["-p", path.join(REPO, "client"), "--outDir", out]);
+    execFileSync(TSC!, ["-p", path.join(REPO, "client"), "--outDir", out]);
     assert.equal(readFileSync(TOOL, "utf8"), readFileSync(path.join(out, "box.mjs"), "utf8"), "stale: run tsc-rs -p client");
   } finally {
     rmSync(out, { recursive: true, force: true });

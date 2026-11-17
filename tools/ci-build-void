@@ -1,0 +1,30 @@
+#!/bin/sh
+# Build the Void packages of a release in a Void container, as root: the build step of the void job of
+# .github/workflows/release.yml. It makes the unprivileged build account, runs the tag's own tools/build-packages as that
+# account (the archive is checksummed and placed as the distfile, as tools/release does) and copies the .xbps files out.
+# The container settings are those of the build workflow of void-packages (the image ghcr.io/void-linux/void-glibc-full
+# run with --privileged and /dev mounted; the chroot style uchroot, which needs the account in the group xbuilder).
+#   docker run --rm --privileged -v /dev:/dev -v "$PWD:/w" ghcr.io/void-linux/void-glibc-full \
+#     sh /w/tools/ci-build-void /w/boxd-<version>.tar.gz /w/void-repo
+# usage: tools/ci-build-void <source archive> <output folder>
+set -eu
+archive=$(cd "$(dirname "${1:?usage: tools/ci-build-void <source archive> <output folder>}")" && pwd)/$(basename "$1")
+mkdir -p "${2:?usage: tools/ci-build-void <source archive> <output folder>}"
+out=$(cd "$2" && pwd)
+
+xbps-install -Syu xbps >/dev/null && xbps-install -yu >/dev/null && xbps-install -y sudo bash curl git >/dev/null
+id builder >/dev/null 2>&1 || useradd -m -G xbuilder builder
+work=/home/builder/job
+rm -rf "$work" && mkdir -p "$work"
+tar -xzf "$archive" -C "$work"
+cp "$archive" "$work/source.tar.gz"
+src=$(echo "$work"/boxd-*)
+ver=$(sed -n 's/^version=//p' "$src/srcpkgs/boxd/template")
+chown -R builder "$work"
+
+sudo -u builder env XBPS_CHROOT_CMD=uchroot BOXD_PKG_WORK="$work/pkg" BOXD_SOURCE_ARCHIVE="$work/source.tar.gz" \
+	sh "$src/tools/build-packages"
+
+cp "$work"/pkg/void-packages/hostdir/binpkgs/*.xbps "$out/"
+ls "$out"/boxd-server-"$ver"_*.xbps "$out"/microsandbox-bin-*.xbps >/dev/null
+echo "ci-build-void: built $(find "$out" -type f | wc -l) packages of boxd $ver"

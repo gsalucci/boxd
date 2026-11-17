@@ -6,7 +6,10 @@
 #   tools/release-github <version>      e.g. tools/release-github 1.2.3
 # Environment:
 #   BOXD_GITHUB_REPO    owner/name of the repository on GitHub (required)
-#   BOXD_GITHUB_TARGET  commit or branch a new tag points at (default: the default branch of the repository)
+#   BOXD_GITHUB_TARGET  commit or branch a new tag points at (default: the default branch of the repository); gh ignores
+#                       it when the tag exists already, as it does when GitHub Actions runs this on a tag push
+#   BOXD_GITHUB_TAG     the tag of the release, default v<version>. Any other tag (v1.2.3-citest1, a trial of the release
+#                       workflow) makes a prerelease, which GitHub never offers as the latest release
 #   BOXD_REPO_DIR       signed Void repository folder that tools/sign-and-publish fills, default $HOME/.local/share/boxd-repo
 #   BOXD_DEB_OUT        folder with the .deb files, default <checkout>/deb-out (as tools/publish-deb)
 # Uploaded: the Void index x86_64-repodata, and of the packages of this version (boxd, boxd-server, boxd-power,
@@ -23,7 +26,9 @@ die() { echo "release-github: $*" >&2; exit 1; }
 repo=$BOXD_GITHUB_REPO
 void=${BOXD_REPO_DIR:-$HOME/.local/share/boxd-repo}
 deb=${BOXD_DEB_OUT:-$PWD/deb-out}
-tag=v$v
+tag=${BOXD_GITHUB_TAG:-v$v}
+kind=
+case $tag in "v$v") ;; "v$v"-*) kind=--prerelease ;; *) die "the tag $tag is not v$v or v$v-<suffix>" ;; esac
 command -v gh >/dev/null || die "gh is not installed"
 
 t=$(mktemp -d)
@@ -61,7 +66,9 @@ if gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
 	gh release upload "$tag" --repo "$repo" --clobber "$@" || die "upload to the existing release $tag failed (rerun to complete it)"
 else
 	[ -z "${BOXD_GITHUB_TARGET:-}" ] || set -- --target "$BOXD_GITHUB_TARGET" "$@"
-	gh release create "$tag" --repo "$repo" --title "boxd $v" --notes-file "$t/notes.md" "$@" || die "creating the release $tag failed (rerun to complete it)"
+	# $kind is empty or one flag: unquoted on purpose.
+	# shellcheck disable=SC2086
+	gh release create "$tag" --repo "$repo" $kind --title "boxd ${tag#v}" --notes-file "$t/notes.md" "$@" || die "creating the release $tag failed (rerun to complete it)"
 fi
 
 # Verify as a client would: download every asset again and compare it with the local file.

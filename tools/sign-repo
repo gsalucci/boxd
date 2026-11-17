@@ -1,0 +1,14 @@
+#!/bin/sh
+# Index and sign a folder of .xbps files: the repository index x86_64-repodata, its signature, and a .sig2 signature
+# for every package. The one piece of code that signs: tools/sign-and-publish (the maintainer's workstation) and the
+# release workflow of GitHub Actions (.github/workflows/release.yml) both call it.
+#   BOXD_SIGNING_KEY=<private key file> tools/sign-repo <folder>
+set -eu
+dir=${1:?usage: BOXD_SIGNING_KEY=<private key file> tools/sign-repo <folder>}
+: "${BOXD_SIGNING_KEY:?set BOXD_SIGNING_KEY to the private key path}"
+[ -f "$BOXD_SIGNING_KEY" ] || { echo "no such key: $BOXD_SIGNING_KEY" >&2; exit 1; }
+dir=$(cd "$dir" && pwd)
+cd "$dir"
+xbps-rindex -a ./*.xbps
+xbps-rindex --sign --signedby "boxd" --privkey "$BOXD_SIGNING_KEY" "$dir"
+xbps-rindex --sign-pkg --privkey "$BOXD_SIGNING_KEY" ./*.xbps

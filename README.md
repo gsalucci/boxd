@@ -186,6 +186,25 @@ boxd runs day-long agent workloads on two build hosts, and every release is inst
 tagged. It is young software, made for one setup first: expect rough edges on distributions other than Void Linux
 and Debian 13, and read the change log before an upgrade.
 
+## Acknowledgements
+
+boxd is glue around the work of others.
+
+Shipped with boxd, under their own licenses:
+
+- [microsandbox](https://github.com/superradcompany/microsandbox) (Apache License 2.0) runs the virtual machine boxes.
+  The `microsandbox-bin` package is its unchanged release binary with its license text.
+- [IBM Plex](https://github.com/IBM/plex) (SIL Open Font License 1.1) is the typeface of the dashboard; the license is
+  in `dashboard/web/assets/fonts/OFL.txt`.
+
+Used on the host or the client, installed from your distribution:
+
+- [Podman](https://podman.io) runs the container boxes, rootless.
+- [OpenSSH](https://www.openssh.com) and [rsync](https://rsync.samba.org) carry every call and every file.
+- [btrfs](https://btrfs.readthedocs.io) gives the work area its instant resets.
+- [Void Linux](https://voidlinux.org) and [Debian](https://www.debian.org) are the systems boxd is packaged for.
+- [Node.js](https://nodejs.org) runs the client and the dashboard.
+
 ## License
 
 [MIT](LICENSE)

@@ -69,6 +69,10 @@ mkdir "$T/emptydeb"; reset; BOXD_DEB_OUT=$T/emptydeb run 2.0.0
 eq "Debian packages missing: refused" 1 "$rc"; has "it names boxd-server" "boxd-server" "$(cat "$T/err")"
 eq "no call to gh before the files are known" 0 "$(wc -l < "$FAKE/calls")"
 
+reset; BOXD_GITHUB_TAG=v3.0.0 run 2.0.0
+eq "a tag that is not of the version: refused" 1 "$rc"; has "it says so" "not v2.0.0" "$(cat "$T/err")"
+eq "and gh was not called for it" 0 "$(wc -l < "$FAKE/calls")"
+
 reset; BOXD_GITHUB_TARGET=feature run 2.0.0
 eq "first run: exit 0" 0 "$rc"; has "final line" "release-github: boxd 2.0.0 published with 16 assets" "$(cat "$T/out")"
 create=$(cat "$FAKE/create")
@@ -85,10 +89,21 @@ eq "the sums name each file with its hash" 0 "$(cd "$FAKE/store" && sha256sum -c
 eq "the sums list every other asset" 15 "$(wc -l < "$FAKE/store/SHA256SUMS")"
 eq "the temporary folder is gone" 0 "$(ls -A "$T/tmp" | wc -l)"
 
+eq "a release of the plain tag is no prerelease" 0 "$(grep -c -e --prerelease "$FAKE/create")"
+has "its title is the version" "--title boxd 2.0.0 " "$create"
+
 : > "$FAKE/calls"; run 2.0.0
 eq "second run: exit 0" 0 "$rc"
 has "it uploads with --clobber" "^release upload v2.0.0 --repo owner/name --clobber " "$(cat "$FAKE/upload")"
 eq "it does not create again" 0 "$(grep -c '^release create' "$FAKE/calls")"
+
+reset; BOXD_GITHUB_TAG=v2.0.0-citest1 run 2.0.0
+eq "trial tag: exit 0" 0 "$rc"; create=$(cat "$FAKE/create")
+has "trial tag: the release is made for the trial tag" "^release create v2.0.0-citest1 " "$create"
+has "trial tag: it is a prerelease" "--prerelease" "$create"
+has "trial tag: the title carries the suffix" "--title boxd 2.0.0-citest1 " "$create"
+has "trial tag: the files are those of the version" "boxd-server-2.0.0_1.x86_64.xbps" "$(ls "$FAKE/store")"
+eq "trial tag: no target is passed when none is set" 0 "$(grep -c -e --target "$FAKE/create")"
 
 reset; touch "$FAKE/exists"; CORRUPT=boxd-server_2.0.0-1_all.deb run 2.0.0
 eq "corrupted download: exit 1" 1 "$rc"; has "a mismatch line" "MISMATCH after upload: boxd-server_2.0.0-1_all.deb" "$(cat "$T/err")"
