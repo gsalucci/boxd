@@ -9,6 +9,7 @@ bash tests/contract-pod-test.sh                          # every pod case of con
 bash tests/boxd-idle-test.sh                             # the power module, with fake ss, zzz, ethtool, iw, df
 bash tests/boxd-service-test.sh                          # boxctl and the runit scripts, with fake sv and runuser
 bash tests/boxd-view-key-test.sh                         # boxd-setup --view-key, in a scratch folder
+bash tests/release-github-test.sh                        # tools/release-github, with a fake gh
 node --test tests/contract-client.test.mts tests/box-client.test.mts tests/box-wake.test.mts tests/dashboard-data.test.mts tests/dashboard-service.test.mts tests/dashboard-web.test.mts tests/dashboard-bundle.test.mts
 bash tests/dashboard-stack-test.sh                       # builds the dashboard image from the bundle and checks the stack (needs docker without sudo; one image build)
 bash tests/dashboard-capture.sh                          # regenerates the recorded answers of tests/fixtures/dashboard/ from the real boxd-pod

@@ -65,7 +65,7 @@ ones. The distribution name `trixie` is just a name in the registry; it is not c
 For a released version, `tools/release-deb <version>` does the whole round in one command: it builds the three packages from the
 tag `v<version>` in a `debian:13` container, checks that `boxd-pod` in the server package is the file of the tag, publishes with
 `tools/publish-deb` (the token comes from `GITEA_TOKEN` or `~/.secrets`), and installs from the registry in a fresh container to
-compare the checksums. `--no-publish` stops after the build; `BOXD_DEB_ENGINE=podman` changes the container engine.
+compare the checksums. `--no-publish` stops after the build; `BOXD_DEB_ENGINE=podman` changes the container engine. `BOXD_DEB_KEEP=<folder>` copies the built `.deb` files there (made if missing) once the build succeeded, with or without `--no-publish`; `tools/release-github` uploads them to the GitHub release (see `docs/packaging.md`).
 
 ## Install on a Debian host
 

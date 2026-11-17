@@ -61,6 +61,32 @@ virtual machine box on the default build host (`box --vm`, image `ghcr.io/void-l
 runs `tools/sign-and-publish`. A rerun after a failed build reuses the tag. Upgrading the hosts
 (`xbps-install -Syu boxd-server boxd-power`) stays a separate step.
 
+## Attach the packages to a GitHub release
+
+```
+BOXD_GITHUB_REPO=<owner>/<name> tools/release-github <version>
+```
+
+Run it after `tools/release` (the signed Void repository folder) and `tools/release-deb` with `BOXD_DEB_KEEP` set (the
+Debian files). It needs `gh`, logged in with the right to write releases. It creates the release `v<version>` with the section
+`## <version>` of `CHANGELOG.md` as notes, or, when the release exists, uploads over it (`--clobber`), so a rerun after a
+failure completes it. Uploaded: the index `x86_64-repodata`; the `.xbps` file and the `.sig2` signature of `boxd`,
+`boxd-server`, `boxd-power`, `boxd-client` of this version and of the newest `microsandbox-bin`; the `.deb` files of this version
+and the newest `microsandbox-bin` one; `SHA256SUMS` over all of them. Files of older versions in the folders stay out. It
+refuses when the Void packages or `boxd-server` of the version are missing, or the change log has no section. Last, it downloads
+every asset again and compares the checksums with the local files.
+
+Variables: `BOXD_GITHUB_REPO` (required), `BOXD_GITHUB_TARGET` (commit or branch a new tag points at, default the default
+branch), `BOXD_REPO_DIR` (default `$HOME/.local/share/boxd-repo`), `BOXD_DEB_OUT` (default `deb-out` in the checkout).
+
+xbps asks a repository address for `<address>/x86_64-repodata` and `<address>/<package file>`, and GitHub serves the files of the
+latest release at `https://github.com/<owner>/<name>/releases/latest/download/<file>`, so that address works as a repository:
+
+```
+# /etc/xbps.d/boxd.conf
+repository=https://github.com/<owner>/<name>/releases/latest/download
+```
+
 ## Client setup (every machine that installs boxd)
 
 ```

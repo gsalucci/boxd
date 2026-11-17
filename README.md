@@ -11,7 +11,7 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-1f6392"></a>
-  <a href="CHANGELOG.md"><img alt="Version 0.4.19" src="https://img.shields.io/badge/version-0.4.19-1f6392"></a>
+  <a href="https://github.com/gsalucci/boxd/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/gsalucci/boxd?color=1f6392"></a>
   <img alt="Hosts: Void Linux and Debian 13" src="https://img.shields.io/badge/hosts-Void%20Linux%20%7C%20Debian%2013-4a525b">
 </p>
 
@@ -93,8 +93,24 @@ streams the output back with the command's exit code. On the host a dedicated ss
 
 ### 1. The build host
 
-Build the packages from this repository ([Void](docs/packaging.md): `tools/build-packages`,
-[Debian](docs/packaging-debian.md): `tools/build-deb`), install `boxd-server`, then as root:
+Built packages are attached to every release at <https://github.com/gsalucci/boxd/releases>.
+
+On Void, use the release as a package repository (the first sync asks you to accept the signing key):
+
+```sh
+echo 'repository=https://github.com/gsalucci/boxd/releases/latest/download' | sudo tee /etc/xbps.d/boxd.conf
+sudo xbps-install -S boxd-server
+```
+
+On Debian, download the `.deb` files of the release and install them:
+
+```sh
+sudo apt install ./boxd-server_*.deb ./microsandbox-bin_*.deb
+```
+
+(`microsandbox-bin` is optional; it adds virtual machine boxes.) Or build the packages from this repository
+([Void](docs/packaging.md): `tools/build-packages`, [Debian](docs/packaging-debian.md): `tools/build-deb`) and install
+`boxd-server`. Then, as root:
 
 ```sh
 boxd-setup --key /path/to/agent.pub     # the public key the agents' machine logs in with
@@ -107,7 +123,7 @@ service: `start`, `stop`, `status`, `check`, `log`, `reload`.
 
 ### 2. The agents' machine
 
-Install `boxd-client`, then once per build server:
+Install `boxd-client` the same way (`sudo xbps-install -S boxd-client`, or `sudo apt install ./boxd-client_*.deb`), then once per build server:
 
 ```sh
 box setup <host> --hostname <address> [--port 2222] [--identity <key file>]

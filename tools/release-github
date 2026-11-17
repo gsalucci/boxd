@@ -1,0 +1,74 @@
+#!/bin/sh
+# Attach the built packages to the GitHub release v<version>, so that anyone can install boxd from GitHub. Run it on the
+# workstation after tools/release (Void packages, signed and indexed in BOXD_REPO_DIR) and tools/release-deb (Debian
+# packages, kept with BOXD_DEB_KEEP). It makes the release when it does not exist and completes it when it does, so a
+# rerun after a failure is safe. Needs gh, logged in with the right to write releases of the repository.
+#   tools/release-github <version>      e.g. tools/release-github 1.2.3
+# Environment:
+#   BOXD_GITHUB_REPO    owner/name of the repository on GitHub (required)
+#   BOXD_GITHUB_TARGET  commit or branch a new tag points at (default: the default branch of the repository)
+#   BOXD_REPO_DIR       signed Void repository folder that tools/sign-and-publish fills, default $HOME/.local/share/boxd-repo
+#   BOXD_DEB_OUT        folder with the .deb files, default <checkout>/deb-out (as tools/publish-deb)
+# Uploaded: the Void index x86_64-repodata, and of the packages of this version (boxd, boxd-server, boxd-power,
+# boxd-client) and the newest microsandbox-bin the .xbps file and its .sig2 signature; the .deb files of this version
+# and the newest microsandbox-bin; SHA256SUMS over all of them. Older versions in the folders are left out.
+# xbps reads the index and the packages from one address, so the release's download address works as a repository:
+#   repository=https://github.com/<owner>/<name>/releases/latest/download
+set -eu
+
+v=${1:?usage: tools/release-github <version>}
+cd "$(dirname "$0")/.."
+die() { echo "release-github: $*" >&2; exit 1; }
+[ -n "${BOXD_GITHUB_REPO:-}" ] || { echo "release-github: set BOXD_GITHUB_REPO (owner/name of the repository on GitHub)" >&2; exit 2; }
+repo=$BOXD_GITHUB_REPO
+void=${BOXD_REPO_DIR:-$HOME/.local/share/boxd-repo}
+deb=${BOXD_DEB_OUT:-$PWD/deb-out}
+tag=v$v
+command -v gh >/dev/null || die "gh is not installed"
+
+t=$(mktemp -d)
+trap 'rm -rf "$t"' EXIT INT TERM
+
+# The notes are the section of this version in CHANGELOG.md, up to the next "## " line.
+[ -f CHANGELOG.md ] || die "CHANGELOG.md is missing"
+awk -v h="## $v" '$0 == h { on = 1; next } /^## / { on = 0 } on' CHANGELOG.md > "$t/notes.md"
+grep -q '[^[:space:]]' "$t/notes.md" || die "CHANGELOG.md has no section, or an empty one, for $v"
+
+# The asset list: one path per line. The folders also hold older versions, which stay out.
+# A glob that matches nothing stays literal, so every path is checked to be a file below.
+have() { for f; do [ -f "$f" ] && return 0; done; return 1; }
+newest() { printf '%s\n' "$@" | sort -V | tail -n 1; }
+[ -f "$void/x86_64-repodata" ] || die "no Void index $void/x86_64-repodata (run tools/release first)"
+have "$void"/boxd-"$v"_*.xbps || die "the Void package boxd $v is not in $void (run tools/release first)"
+have "$void"/boxd-server-"$v"_*.xbps || die "the Void packages of boxd $v are not in $void (run tools/release first)"
+have "$void"/microsandbox-bin-*.xbps || die "no microsandbox-bin package in $void"
+have "$deb"/boxd-server_"$v"-*_*.deb || die "the Debian package boxd-server $v is not in $deb (run tools/release-deb with BOXD_DEB_KEEP)"
+have "$deb"/microsandbox-bin_*.deb || die "no microsandbox-bin .deb in $deb"
+msb=$(newest "$void"/microsandbox-bin-*.xbps)
+mdeb=$(newest "$deb"/microsandbox-bin_*.deb)
+{ echo "$void/x86_64-repodata"
+  for f in "$void"/boxd*-"$v"_*.xbps "$msb"; do printf "%s\n%s\n" "$f" "$f.sig2"; done
+  for f in "$deb"/boxd*_"$v"-*_*.deb "$mdeb"; do echo "$f"; done; } > "$t/assets"
+
+while read -r f; do [ -f "$f" ] || die "missing file $f"; done < "$t/assets"
+while read -r f; do printf '%s  %s\n' "$(sha256sum < "$f" | cut -d' ' -f1)" "${f##*/}"; done < "$t/assets" > "$t/SHA256SUMS"
+echo "$t/SHA256SUMS" >> "$t/assets"
+n=$(wc -l < "$t/assets")
+
+set --
+while read -r f; do set -- "$@" "$f"; done < "$t/assets"
+if gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
+	gh release upload "$tag" --repo "$repo" --clobber "$@" || die "upload to the existing release $tag failed (rerun to complete it)"
+else
+	[ -z "${BOXD_GITHUB_TARGET:-}" ] || set -- --target "$BOXD_GITHUB_TARGET" "$@"
+	gh release create "$tag" --repo "$repo" --title "boxd $v" --notes-file "$t/notes.md" "$@" || die "creating the release $tag failed (rerun to complete it)"
+fi
+
+# Verify as a client would: download every asset again and compare it with the local file.
+mkdir "$t/dl"
+gh release download "$tag" --repo "$repo" --dir "$t/dl" || die "download of the release $tag failed"
+while read -r f; do
+	[ -f "$t/dl/${f##*/}" ] || die "MISMATCH: ${f##*/} is not on the release"
+	[ "$(sha256sum < "$f")" = "$(sha256sum < "$t/dl/${f##*/}")" ] || die "MISMATCH after upload: ${f##*/}"
+done < "$t/assets"
+echo "release-github: boxd $v published with $n assets"

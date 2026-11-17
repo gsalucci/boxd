@@ -5,6 +5,7 @@
 #   tools/release-deb --no-publish <version>    build and check only; the registry is not touched
 # Environment: BOXD_DEB_ENGINE (container engine, default docker; podman works too), GITEA_TOKEN (a token with package
 # write; when unset it is taken from ~/.secrets, and it is never printed or written anywhere), GITEA_URL (address of the Gitea server, required with publishing) and GITEA_OWNER (account or organisation that owns the packages, required with publishing).
+# BOXD_DEB_KEEP (optional): a folder that receives a copy of the built .deb files once the build succeeded (made if missing; tools/release-github uploads them).
 # Everything lives in one temporary folder that is removed at the end, also on failure.
 set -eu
 
@@ -12,6 +13,8 @@ publish=1
 [ "${1:-}" = --no-publish ] && { publish=0; shift; }
 v=${1:?usage: tools/release-deb [--no-publish] <version>}
 engine=${BOXD_DEB_ENGINE:-docker}
+keep=${BOXD_DEB_KEEP:-}
+case $keep in ""|/*) ;; *) keep=$PWD/$keep ;; esac   # before the cd below
 cd "$(dirname "$0")/.."
 die() { echo "release-deb: $*" >&2; exit 1; }
 
@@ -81,6 +84,10 @@ done
 [ "$(sed -n 's/^pod //p' "$t/built.txt")" = "$want_pod" ] ||
 	die "/usr/bin/boxd-pod in the server package differs from server/boxd-pod at v$v"
 echo "release-deb: built; boxd-pod in the package matches the tag"
+if [ -n "$keep" ]; then
+	{ mkdir -p "$keep" && cp "$t"/out/*.deb "$keep/"; } || die "cannot copy the .deb files to $keep"
+	echo "release-deb: kept the .deb files in $keep"
+fi
 
 if [ "$publish" = 0 ]; then
 	echo "release-deb: --no-publish, stopping before the registry"

@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.4.20
+
+- **boxd is public, under the MIT license.** The source is at https://github.com/gsalucci/boxd. The packages state the
+  license (`license="MIT"` with the license file in the Void packages, the Expat text in the Debian copyright file).
+- **Every release on GitHub carries the built packages.** New tool `tools/release-github <version>` creates the release
+  `v<version>` with the change log section as its notes and attaches the signed Void packages with their index, the Debian
+  packages and a `SHA256SUMS` file, then downloads everything again and compares. A Void host installs straight from it:
+  `repository=https://github.com/gsalucci/boxd/releases/latest/download` in `/etc/xbps.d/boxd.conf`. A Debian host
+  downloads the `.deb` files. `tools/release-deb` keeps its built packages in `BOXD_DEB_KEEP` when that names a folder.
+- **The release tools have no default registry.** `tools/sign-and-publish` needs `BOXD_REGISTRY`; `tools/publish-deb` and
+  `tools/release-deb` need `GITEA_URL` and `GITEA_OWNER`. Unset, each prints one line that names the variable and exits 2.
+- **Documents for a first reader.** New README; the settings table is now `docs/settings.md`, the development notes
+  `docs/development.md`. Examples in documents, tests and comments use neutral host names and the documentation address
+  range 192.0.2.0/24.
+- `tools/host-watch` keeps its state in `~/.local/state/boxd/watch` unless `HOST_WATCH_DIR` says otherwise. The dashboard
+  stack runs in UTC. Node type definitions for the compile come from `package.json` (`pnpm install`).
+- No behaviour of `box`, `boxd-pod` or the dashboard changes in this release.
+
 ## 0.4.19
 
 - **A removal says how much disk it freed.** The server measures a box's folder before it removes it and answers
