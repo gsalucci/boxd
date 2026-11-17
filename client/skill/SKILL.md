@@ -81,6 +81,7 @@ waiting cannot fix, like a missing image, still exits at once).
 - Tests that need a git repository: `--snapshot`. A synced tree has no git data otherwise (`.git` is not sent): a build that embeds
   `git describe` says `unknown`; pass `--snapshot` when the build needs it (it makes a new commit named snapshot).
 - Tools that need the worktree's real commit (`git rev-parse HEAD`, git status): `--git` makes `/job/src` a repository at the same commit hash, one commit, detached; uncommitted work shows as changes. It stays until the next `--git` call. Not with `--snapshot` or `--no-sync`.
+- With `--git`, a file that is new and not yet committed exists in the box but is untracked there: `git status` shows it, `git ls-files` does not. A test that reads the list of tracked files will not see it and can pass in the box and fail after the commit: commit first, or check `git status --short` in the box.
 - The clock inside a box is coordinated universal time (UTC); the servers' own clocks and the times `box` prints (run ids, `box runs`) are local time.
 - Memory and out-of-memory kills inside a virtual machine box: `box --no-sync -- sh -c 'free -m; grep oom_kill /proc/vmstat'`
   (a count above 0 means the kernel in the box ended a process for lack of memory).
@@ -107,6 +108,7 @@ waiting cannot fix, like a missing image, still exits at once).
   Where the server names a Maven mirror (`echo $MAVEN_ARGS` shows `-s /cache/maven-settings.xml`), Java packages come from the caching
   repository on your own network; pass the same `MAVEN_ARGS` into nested containers. "No route to host" for that address means the
   repository's server is off, not that the build is broken. Build outputs in your worktree folder (ignored files) survive syncs.
+- The box points the language tools at those shared caches through the environment (`CARGO_HOME`, `GOPATH`, `GOMODCACHE`, `GOCACHE`, `npm_config_cache`, `PIP_CACHE_DIR`, `MAVEN_OPTS`). A test that brings its own cache (its own Go module cache, for example) is overruled by them and can fail in a way that looks unrelated: unset the variable for that test run (`env -u GOMODCACHE -u GOPATH <command>`).
 - The box can write only under `/job` and `/cache`. Never ssh to the server for builds; never build as the build account.
 
 ## Disk full: reset
