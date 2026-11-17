@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.31
+
+- **The home of a `--user` machine box is writable.** In a machine made with `--vm --user` (0.4.28 to 0.4.30)
+  `/job/home` belonged to root inside the machine: `touch: cannot touch '/job/home/x': Permission denied`, git could
+  not write its settings file and npm not its cache. The home was made by root in the guest, and only what the host
+  makes is presented as the account's. The server now makes it on the host before each call, and a home that is
+  already wrong is handed over once, so existing machines heal at their next call without `--recreate`. Found by a
+  user; the proof of 0.4.28 had tested the source folder and the caches, not the home.
+- **`--wait` no longer gives up when the call builds its image.** A refusal for room was recognised by the server's
+  line at the start of the call's error output. With `--image-file` the build's lines come first, so the client took
+  exit 75 for the command's own and returned it: no waiting, no try on the next host, no move, no hint. The client now
+  keeps the end of the error output and looks at its last line, which is where the server writes a refusal. A command
+  that exits 75 by itself is still not taken for one. Found by a user who started several such calls side by side.
+- The toolbox image recipe gains `bubblewrap` (a sandbox tool some test suites need); `toolbox-check` checks it. A host
+  gets it at its next image build.
+
 ## 0.4.30
 
 - **`--commit <rev>`: the box's source is exactly one commit, as a fresh clone and checkout gives it.** Tracked files

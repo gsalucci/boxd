@@ -45,6 +45,7 @@ v ps ps --version
 v unzip unzip -v
 v sqlite3 sqlite3 --version
 v rsync rsync --version
+v bwrap bwrap --version
 v hyperfine hyperfine --version
 v docker docker --version
 v buildx docker buildx version

@@ -91,6 +91,7 @@ if [ -n "\${FAKE_HOSTS:-}" ]; then
     *" pod drop "*) cat "$FAKE_HOSTS/$h.drop.out" 2>/dev/null; exit "$(cat "$FAKE_HOSTS/$h.drop.exit" 2>/dev/null || echo 0)";;
     *" pod run "*) if [ -f "$FAKE_HOSTS/$h.run.refuse" ] && [ "$(cat "$FAKE_HOSTS/$h.run.refuse")" -gt 0 ]; then
         echo $(( $(cat "$FAKE_HOSTS/$h.run.refuse") - 1 )) > "$FAKE_HOSTS/$h.run.refuse"
+        [ ! -f "$FAKE_HOSTS/$h.run.pre" ] || cat "$FAKE_HOSTS/$h.run.pre" >&2
         echo "boxd-pod: no room for another virtual machine (3 of 3 running); wait for one to end or stop one" >&2; exit 75
       fi
       [ ! -f "$FAKE_HOSTS/$h.run.err" ] || cat "$FAKE_HOSTS/$h.run.err" >&2
@@ -2274,6 +2275,41 @@ test("lost race for a container call: the host's refusal for another busy box is
   assert.equal(rp.placed(), "laptop\n");
   assert.deepEqual(choices(s).map((l) => [l[3], l[4]]), [["tower", "order"], ["laptop", "retry"]]);
   assert.match(r.err, /no room for another busy box/, "the refusal of the first host is still shown");
+});
+
+// The server prints the refusal for room last, after anything it said before (the image build of --image-file, a removed idle machine): the client must
+// still know it, also when more than 2 KB of other lines come first, and must not take a command's own exit 75 for a refusal.
+const BUILD = Array.from({ length: 80 }, (_, i) => `STEP ${i + 1}/80: RUN echo building the image of this box, line ${i}`).join("\n");
+test("a refusal for room after 3 KB of build lines on standard error: --wait waits and then runs", () => {
+  assert.ok(BUILD.length > 3000);
+  const s = servers([{ name: "tower", status: FREE }, { name: "laptop", status: FREE }]), rp = newRepo();
+  writeFileSync(path.join(rp.cwd, ".git/boxd-host"), "tower\n");
+  hostFile(s, "tower", "run.refuse", "1\n"); hostFile(s, "tower", "run.pre", `${BUILD}\n`);
+  const r = waits(rp, s, ["--no-sync", "--vm", "true"]);
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.err, /box: waiting for room, asking every 0.001 seconds:\n  tower: no room \(the server refused the call\)\n$/);
+  assert.equal(r.calls.filter((c) => c === runLine(rp, "tower", "--vm")).length, 2);
+});
+test("a refusal for room after 3 KB of build lines, first placement without --wait: the next host with room is tried", () => {
+  const s = servers([{ name: "tower", status: FREE, runExit: NO_ROOM, runErr: `${BUILD}\n${REFUSAL}` }, { name: "laptop", status: FREE }]), rp = newRepo();
+  const r = go(rp, s, ["--vm", "true"]);
+  assert.equal(r.code, 0, r.err);
+  assert.deepEqual(rest(r.calls), [sync(rp, "tower"), runLine(rp, "tower", "--vm"), sync(rp, "laptop"), runLine(rp, "laptop", "--vm")]);
+  assert.equal(rp.placed(), "laptop\n");
+});
+test("a refusal for room after 3 KB of build lines for a placed worktree gives the hint lines", () => {
+  const s = servers([{ name: "tower", status: FULL, runExit: NO_ROOM, runErr: `${BUILD}\n${REFUSAL}` }, { name: "laptop", status: FREE }]), rp = newRepo();
+  go(rp, s, ["--host", "tower", "--no-sync", "true"]);
+  const r = go(rp, s, ["--no-sync", "--vm", "sh", "-c", "make all"]);
+  assert.equal(r.code, NO_ROOM);
+  assert.match(r.err, /box: tower has no room; hosts that do: laptop\. Move this worktree with: box --host laptop --no-sync --vm sh -c 'make all'\n$/);
+});
+test("a command that exits 75 by itself, with other words on standard error, is not a refusal: its code is returned and --wait does not wait", () => {
+  const s = servers([{ name: "tower", status: FREE, runExit: NO_ROOM, runErr: `${BUILD}\nboxd-pod: no room for another thing was said earlier\nmy tool failed` }, { name: "laptop", status: FREE }]), rp = newRepo();
+  const r = waits(rp, s, ["--vm", "true"]);
+  assert.equal(r.code, NO_ROOM);
+  assert.equal(r.calls.filter((c) => c.includes(" pod run ")).length, 1);
+  assert.ok(!r.err.includes("waiting for room"));
 });
 
 test("a host that does not print box_room (an older server) is never judged for a container call", () => {

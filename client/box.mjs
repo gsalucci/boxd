@@ -19,7 +19,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-export const VERSION = "0.4.30";
+export const VERSION = "0.4.31";
 const BOX = /^[a-z0-9][a-z0-9_.-]{0,62}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const MAC = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i;
@@ -1582,7 +1582,7 @@ export function main(args, env = process.env, inner) {
     const names = flags.flatMap((f, j) => f === "--env" ? [flags[j + 1]] : []);
     const sshEnv = { ...env, ...Object.fromEntries(names.map((n) => [`BOXD_SECRET_${n}`, env[n]])) };
     const sendEnv = names.flatMap((n) => ["-o", `SendEnv=BOXD_SECRET_${n}`]);
-    // One try on one host: sync, then the call. err is the start of its stderr (not kept on a terminal).
+    // One try on one host: sync, then the call. err is the end of its stderr (not kept on a terminal).
     // shortcut: with a terminal ssh -t merges stderr into stdout, so a refusal for room is not recognised there: no retry, no hint.
     async function attempt(name) {
         const HOST = `boxd-${name}`;
@@ -1645,7 +1645,8 @@ export function main(args, env = process.env, inner) {
         const orphanMs = run || env.BOXD_KEEP_ORPHAN === "1" ? 0 : Number(env.BOXD_ORPHAN_CHECK_MS ?? 1000);
         return watched(HOST, remote, box, run ? 0 : minutes * 60_000, sendEnv, sshEnv, orphanMs);
     }
-    const refused = (r) => r.code === NO_ROOM && r.err.startsWith(NO_ROOM_TEXT);
+    // The server writes the refusal as the last line before it exits 75 (an image build or a removal note may come first), so the last non-empty line decides.
+    const refused = (r) => r.code === NO_ROOM && (r.err.trimEnd().split("\n").pop() ?? "").startsWith(NO_ROOM_TEXT);
     const quote = (w) => /^[\w@%+=:,./-]+$/.test(w) ? w : `'${w.replace(/'/g, `'\\''`)}'`;
     return (async () => {
         let name = fixed, spare = [], fresh = false, waiting = false, shown = "";
@@ -1805,7 +1806,7 @@ export function main(args, env = process.env, inner) {
 // A call whose output is passed through, watched for silence: after `afterMs` with nothing on stdout or
 // stderr, the box's processes (pod ps) go to stderr, every line prefixed, and the wait starts again (afterMs 0: never).
 // Reports only: the call is never ended or changed. Owner decision 2026-11-13 (default 15 minutes, --ps-after 0 = off).
-// Resolves with the exit code and the first 2 KB of stderr (the client tells a refusal for room from it).
+// Resolves with the exit code and the last 4 KB of stderr (the client tells a refusal for room from its last line).
 // Also ends the call when the process that started it is gone (the parent process id changed): a foreground call lives as
 // long as its starter, so an agent that was killed leaves no command running in the box. orphanMs is how often that is
 // looked at (0: never, for --detach and $BOXD_KEEP_ORPHAN=1). Ending: ssh gets a termination, the server's session rule
@@ -1841,8 +1842,7 @@ export function watched(host, remote, box, afterMs, sshArgs = [], sshEnv = proce
         const pass = (to) => (d) => { silentMs = 0; arm(); to.write(d); };
         child.stdout.on("data", pass(process.stdout));
         child.stderr.on("data", pass(process.stderr));
-        child.stderr.on("data", (d) => { if (err.length < 2048)
-            err += d; });
+        child.stderr.on("data", (d) => { err = (err + d).slice(-4096); });
         child.on("close", (c) => { done = true; clearTimeout(timer); clearInterval(look); resolve(orphaned ? { code: 129, err, stop: true } : { code: c ?? 1, err }); });
         arm();
     });

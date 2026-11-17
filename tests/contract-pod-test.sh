@@ -1200,14 +1200,16 @@ printf '#!/bin/sh\necho "usermod $*" >> "$FAKE_U/log"\n' > "$U/bin/usermod"
 printf '#!/bin/sh\n[ -z "${FAKE_NODOCKER:-}" ]\n' > "$U/bin/getent"
 printf '#!/bin/sh\necho "chown $*" >> "$FAKE_U/log"\n' > "$U/bin/chown"
 printf '#!/bin/sh\necho "find $*" >> "$FAKE_U/log"\n' > "$U/bin/find"
-chmod +x "$U"/bin/id "$U"/bin/useradd "$U"/bin/groupadd "$U"/bin/usermod "$U"/bin/getent "$U"/bin/chown "$U"/bin/find
+printf '#!/bin/sh\necho "${FAKE_HOME_UID:-1000}"\n' > "$U/bin/stat"   # the owner of the home: the account's number unless a case says otherwise
+chmod +x "$U"/bin/stat "$U"/bin/id "$U"/bin/useradd "$U"/bin/groupadd "$U"/bin/usermod "$U"/bin/getent "$U"/bin/chown "$U"/bin/find
 printf 'root:x:0:0::/root:/bin/sh\n' > "$U/etc/passwd"; printf 'root:x:0:\n' > "$U/etc/group"; : > "$U/log"
 userguest() { : > "$U/log"; env PATH="$U/bin" FAKE_U="$U" BOXD_GUEST_JOB="$U/job" BOXD_GUEST_ETC="$U/etc" BOXD_GUEST_DMESG="$U/dmesg" "$@" /bin/sh -c "$GUEST_USER" _ 1000; }
 eq "guest user: the text has no single quote" "" "$(case $GUEST_USER in *\'*) echo bad ;; esac)"
 out=$(userguest FAKE_GROUPS=); eq "guest user: no account with the number: the group and the account are made with it, home /job/home, member of docker, name printed" \
     "box|groupadd -g 1000 box|useradd -M -u 1000 -g 1000 -d $U/job/home -s /bin/sh box|usermod -aG docker box" "$out|$(paste -sd'|' "$U/log")"
-eq "guest user: the home folder was made, dmesg was opened for every account" "yes 0" "$([ -d "$U/job/home" ] && echo yes) $(cat "$U/dmesg")"
-eq "guest user: no file is changed: no chown, no find" 0 "$(grep -c '^chown\|^find' "$U/log")"
+eq "guest user: dmesg was opened for every account; the guest does not make the home (the host does: a folder made by the guest's root is root's)" "0 no" "$(cat "$U/dmesg") $([ -e "$U/job/home" ] && echo yes || echo no)"
+eq "guest user: a home that is the account's already: no chown, no find" 0 "$(grep -c '^chown\|^find' "$U/log")"
+userguest FAKE_GROUPS=docker FAKE_HOME_UID=0 >/dev/null; eq "guest user: a home that is root's (made by an older server): handed over once, with one chown -R of the home only" "chown -R 1000:1000 $U/job/home" "$(grep '^chown\|^find' "$U/log")"
 printf 'debian:x:1000:1000::/home/debian:/bin/bash\n' >> "$U/etc/passwd"
 out=$(userguest FAKE_GROUPS="debian docker"); eq "guest user: the image has an account with the number under another name: that name is used, nothing is made, already in docker" "debian|" "$out|$(cat "$U/log")"
 out=$(userguest FAKE_GROUPS="debian"); eq "guest user: that account not yet in docker: added" "debian|usermod -aG docker debian" "$out|$(cat "$U/log")"

@@ -19,7 +19,7 @@ CGROOT=${BOXD_CGROOT:-/sys/fs/cgroup}
 CGROUP=${BOXD_CGROUP:-$CGROOT/boxd}
 PROC=${BOXD_PROC:-/proc}   # test hook, like BOXD_MEMINFO: where `pod report` finds a box's process and its cgroup
 KVM=${BOXD_KVM:-/dev/kvm}   # test hook: the device a --kvm box gets
-VERSION=0.4.30
+VERSION=0.4.31
 # Keys that may only read, one "<type> <key> [comment]" per line (view_only below); and the largest answer of pod calls and pod log.
 VIEW_KEYS=${BOXD_VIEW_KEYS:-/etc/boxd/view_keys}
 READ_MAX=${BOXD_READ_MAX:-1048576}
@@ -162,7 +162,9 @@ VM_UID=1000
 # (VM_UID, fixed at creation, see pod_run): the guest shows every file under /job and /cache, also one a later sync wrote, as that
 # owner, and the host's owner stays the build account (measured 2026-11-17, microsandbox 0.7.15). So nothing is changed per file.
 # This script runs as root in the guest before every command of such a machine ($1 is VM_UID) and prints the account's name:
-# 1. the account with that uid: the one the image already has, whatever its name, or else "box" is made (a group with that gid is
+# 0. (not here) the home is made on the host by the caller: a folder made by the guest's root shows as root's under the mounts and the
+# account could not write it. Homes that machines of 0.4.28 to 0.4.30 made that way are handed over here, once: only when the home's
+# owner (stat -c %u) is not the number, one chown -R of the home, never of /job/src or /cache. 1. the account with that uid: the one the image already has, whatever its name, or else "box" is made (a group with that gid is
 # used when the image has one, else made; home /job/home); no groupadd, no useradd, or one that fails, ends with status 3 and the call is
 # refused, never run as root; 2. member of docker when that group exists and it is not yet; 3. dmesg opens for every account, so the
 # kernel's kill lines of a detached run (GUEST_KILLS) still come when the command runs as the account. The command is given
@@ -179,7 +181,7 @@ if [ -z "$n" ]; then
   n=box
 fi
 case $n in ""|*[!A-Za-z0-9_.-]*) exit 3 ;; esac
-mkdir -p "$j/home"
+[ "$(stat -c %u "$j/home" 2>/dev/null)" = "$i" ] || chown -R "$i:$i" "$j/home" >/dev/null 2>&1
 case " $(id -nG "$n" 2>/dev/null) " in *" docker "*) ;; *) ! getent group docker >/dev/null 2>&1 || usermod -aG docker "$n" >/dev/null 2>&1 || : ;; esac
 { echo 0 >"${BOXD_GUEST_DMESG:-/proc/sys/kernel/dmesg_restrict}"; } 2>/dev/null
 echo "$n"'
@@ -1205,6 +1207,7 @@ pod_run() {
     local -a vu=()
     if [ -n "$vm" ] && [ -n "$user" ]; then
         local un
+        mkdir -p "$J/home" || die "cannot create $J/home"   # on the host: the mounts present it as the account's (made by the guest's root it would be root's)
         un=$(vmx exec -w / "$name" -- sh -c "$GUEST_USER" _ "$VM_UID" </dev/null 2>/dev/null); rc=$?
         [ $rc -ne 3 ] || die "--user needs useradd in the machine's image"
         un=${un##*$'\n'}

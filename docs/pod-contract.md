@@ -112,10 +112,10 @@ refusal `boxd-pod: box <box> was made without --user, asked for --user; add --re
 owner from the mounts: such a machine is created with `--mount-dir /work/jobs/<box>:/job:host-perms=mirror,uid=1000,gid=1000` and
 `--mount-dir /work/cache/pod:/cache:host-perms=mirror,uid=1000,gid=1000` (a machine without `--user` keeps the lines without the two
 ids). The guest then shows every file under `/job` and `/cache`, also one a later sync wrote, as 1000:1000, while on the host the owner stays
-the build account; no file is changed at any call. Before the command, after the sync and after `--snapshot`, each call that runs in such a
+the build account; no file is changed at any call. The home `/work/jobs/<box>/home` is made on the host (`mkdir -p`, as the container side does) before the guest step, so the mounts present it as the account's from the start: a folder made by the guest's root would show as root's. Before the command, after the sync and after `--snapshot`, each call that runs in such a
 machine runs one `msb exec -w / pod-<box> -- sh -c <script> _ 1000` as root in the guest (the script text starts with `: boxd-user-setup`).
 It finds the account with that number in `/etc/passwd`, whatever its name, or else makes `box` (group 1000 made unless it exists, home
-`/job/home`, `useradd -M -u 1000 -g 1000`), makes `/job/home`, adds the account to the group `docker` when the image has it and it is not
+`/job/home`, `useradd -M -u 1000 -g 1000`), hands `/job/home` over with one `chown -R` of that folder when its owner is not the account's number (homes made by the guest's root, as machines of 0.4.28 to 0.4.30 did; a healthy home runs no `chown`), adds the account to the group `docker` when the image has it and it is not
 a member, opens `dmesg` for every account (so the kill lines of a detached run still come), and prints the account's name. The command
 then runs as `msb exec [-t|--stream] -u <name> -e HOME=/job/home ...` (foreground, with and without a terminal, and detached; `HOME` is
 the same as in a container box whatever home the account has); the server's own helper commands (the start script, `pod ps`, the cleanup
