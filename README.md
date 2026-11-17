@@ -141,7 +141,7 @@ Inside any git worktree:
 box npm test                                         # this worktree's own container box
 box --vm --image localhost/toolbox docker run --rm hello-world
 box --image-file ci/Containerfile make test          # the box's image built from a file in the worktree
-box --vm --size small -- nproc                       # 2 processors and 2 GB; medium and large exist
+box --vm --size small -- nproc                       # 2 processors and 2 GB; medium, large and xlarge (8 processors, 12 GB) exist
 box --vm --env API_TOKEN ./deploy-check              # hand over one secret from your environment
 box --detach make release                            # background run; prints how to read its log
 box log <run> --state                                # still running, or ended: exit code, when, how long

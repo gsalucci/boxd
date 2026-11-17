@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.22
+
+- **A fourth machine size: `--size xlarge`, 8 processors and 12 GB.** For work that needs more than the 8 GB of `large` in
+  one machine. Admission counts it as 12288 MB in every rule (the sum of the running machines' sizes, the room for one
+  more, the removal of idle machines to make room, the refusal text with its numbers); a host whose cap cannot hold it
+  refuses with the usual line (`0 MB in use + 12288 MB asked > 8192 MB cap`). The size is fixed and does not follow
+  `BOXD_VM_LIMITS`. As with the other sizes, a box keeps the size it was made with and another one needs `--recreate`.
+  The client sends a worktree that asks for it to a host that can fit 12288 MB when another registered host cannot
+  (`vm_fit_mb` of `pod status`). Take it only when the work needs it: fewer machines fit beside it. Asked for by a user
+  whose three reviewers ran one after another only for lack of memory.
+
 ## 0.4.21
 
 - **GitHub makes the public release by itself.** A pushed tag `v<version>` runs the tests, builds the Void packages in a Void

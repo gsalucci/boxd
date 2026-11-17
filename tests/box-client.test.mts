@@ -1600,6 +1600,14 @@ test("room for the size asked: a smaller size is judged by vm_fit_mb, the defaul
   assert.ok(one(fits("5000").replace(/engines=[^\t]*/, "engines=container"), { vm: true, size: "medium" }).refusal, "no engine stays refused");
 });
 
+test("room for the size asked: xlarge (12288 MB) is judged by vm_fit_mb like the smaller sizes, a missing word by vm_room", () => {
+  assert.equal(one(fits("12288"), { vm: true, size: "xlarge" }).host, "tower", "xlarge fits exactly 12288 although vm_room=no");
+  assert.deepEqual(one(fits("8192"), { vm: true, size: "xlarge" }).refusal, ["tower: 8192 MB fit, 12288 MB asked"]);
+  assert.equal(one(FREE, { vm: true, size: "xlarge" }).host, "tower", "no vm_fit_mb: vm_room=yes still places");
+  const both = choose([{ name: "tower", state: "awake", status: fits("8192") }, { name: "laptop", state: "awake", status: fits("20000") }], { vm: true, size: "xlarge" });
+  assert.equal(both.host, "laptop", "the host that can hold it, not the first");
+});
+
 test("room for the size asked, through the command: medium is placed on a vm_room=no host with 5000 MB fit; 3000 MB is exit 75 with the numbers; default stays refused", () => {
   const rp = newRepo(), ok = go(rp, servers([{ name: "tower", status: fits("5000") }, { name: "laptop", status: FULL }]), ["--no-sync", "--vm", "--size", "medium", "true"]);
   assert.equal(ok.code, 0, ok.err);

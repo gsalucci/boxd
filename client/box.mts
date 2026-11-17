@@ -1,5 +1,5 @@
 // box: runs a command in the calling worktree's own box on a boxd build server (see docs/pod-contract.md).
-//   box [--host <name>] [--pod <name>] [--image <ref> | --image-file <path>] [--vm|--container] [--size small|medium|large] [--user] [--kvm] [--recreate] [--no-sync] [--snapshot] [--detach] [--wait] [--pull <path>]... [--] <command...>
+//   box [--host <name>] [--pod <name>] [--image <ref> | --image-file <path>] [--vm|--container] [--size small|medium|large|xlarge] [--user] [--kvm] [--recreate] [--no-sync] [--snapshot] [--detach] [--wait] [--pull <path>]... [--] <command...>
 //   box image push [--host <name>] [--vm|--container] <ref>
 //   box setup <host> [--hostname <name>] [--port <n>] [--user <name>] [--identity <file>] [--wake <mac>,<mac> --broadcast <addr>] [--default]
 //   box hosts
@@ -18,7 +18,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-export const VERSION = "0.4.21";
+export const VERSION = "0.4.22";
 const BOX = /^[a-z0-9][a-z0-9_.-]{0,62}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const MAC = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i;
@@ -74,9 +74,9 @@ container or, with --vm, a small virtual machine; the same box on every call) an
   --vm             a new box is a small virtual machine (own kernel, root, docker or podman inside); an existing
                    box keeps its engine when you leave this out, switching needs --recreate
   --container      ask for a container box explicitly (to switch a virtual machine back, with --recreate)
-  --size <size>    size of a new virtual machine box: small (2 processors, 2 GB), medium (4 processors, 4 GB) or
-                   large (the server's default machine, also what no --size means). An existing box keeps its size;
-                   naming another one needs --recreate. Virtual machine boxes only
+  --size <size>    size of a new virtual machine box: small (2 processors, 2 GB), medium (4 processors, 4 GB),
+                   large (the server's default machine, also what no --size means) or xlarge (8 processors, 12 GB). An
+                   existing box keeps its size; naming another one needs --recreate. Virtual machine boxes only
   --env <NAME>     hand the credential NAME from your environment to the command (repeatable; names ending in
                    _TOKEN, _KEY, _SECRET or _PASSWORD); sent by ssh's own environment passing, never on the command
                    line, in a file or a log
@@ -179,7 +179,7 @@ export function plan(toplevel: string, flags: string[], argv: string[]): Plan {
   // A plain relative path inside the worktree, as the server checks it again: no leading slash, no . or .. component.
   if (imageFile && (!/^[A-Za-z0-9_.-]+(\/[A-Za-z0-9_.-]+)*$/.test(imageFile) || imageFile.length > 200 || imageFile.split("/").some((c) => c === "." || c === ".."))) return { error: "box: --image-file must be a relative path inside the worktree", exit: 2 };
   if (vm && container) return { error: "box: --vm and --container cannot go together", exit: 2 };
-  if (flags.includes("--size") && !["small", "medium", "large"].includes(size as string)) return { error: "box: --size needs small, medium or large", exit: 2 };
+  if (flags.includes("--size") && !["small", "medium", "large", "xlarge"].includes(size as string)) return { error: "box: --size needs small, medium, large or xlarge", exit: 2 };
   const badEnv = envs.find((n) => !SECRET.test(n));
   if (badEnv !== undefined) return { error: `box: --env ${badEnv}: only names ending in _TOKEN, _KEY, _SECRET or _PASSWORD`, exit: 2 };
   if (run !== undefined && !/^[A-Za-z0-9_.-]{1,64}$/.test(run)) return { error: "box: bad run id", exit: 2 };
@@ -334,7 +334,7 @@ export const parseStatus = (line: string): Record<string, string> =>
   Object.fromEntries(line.trim().split("\t").filter((w) => w.includes("=")).map((w) => [w.slice(0, w.indexOf("=")), w.slice(w.indexOf("=") + 1)]));
 
 export type HostState = { name: string; state: "asleep" | "awake" | "unreachable"; status?: string };
-export type Request = { vm: boolean; image?: string; size?: "small" | "medium" };   // size only when below the default: the server's vm_room judges the default (8192 MB)
+export type Request = { vm: boolean; image?: string; size?: "small" | "medium" | "xlarge" };   // size only when it is not the default: the server's vm_room judges the default (8192 MB); a size above it is judged by vm_fit_mb like the ones below
 export type Choice =
   | { host: string; reason: "order" | "spread" | "overflow"; room: string[]; notes: string[] }
   | { refusal: string[]; notes: string[]; wait: boolean };
@@ -347,7 +347,7 @@ export type Choice =
 // first host: on 2026-11-15 the first host took every new worktree until its kernel killed a machine, the second stayed idle.
 // `room` lists every host that can take the call, best first (the retry after a lost race walks it); `notes` is one
 // "<host>=<state or reason>" per host.
-const SIZE_MB = { small: 2048, medium: 4096 };
+const SIZE_MB = { small: 2048, medium: 4096, xlarge: 12288 };
 export function choose(hosts: HostState[], req: Request): Choice {
   const want = req.image?.startsWith("localhost/") ? (req.image.slice("localhost/".length).split(":")[0] as string) : undefined;
   const room: { name: string; free: number }[] = [], late: string[] = [], why: string[] = [];
@@ -1011,7 +1011,7 @@ export function main(args: string[], env: Env = process.env): number | Promise<n
   const minutes = Number(psAfter), { box, remote } = p;
   const image = flags[flags.indexOf("--image") + 1];
   const sz = flags[flags.indexOf("--size") + 1];
-  const req: Request = { vm: flags.includes("--vm"), ...(flags.includes("--image") && image ? { image } : {}), ...(flags.includes("--size") && (sz === "small" || sz === "medium") ? { size: sz } : {}) };
+  const req: Request = { vm: flags.includes("--vm"), ...(flags.includes("--image") && image ? { image } : {}), ...(flags.includes("--size") && (sz === "small" || sz === "medium" || sz === "xlarge") ? { size: sz } : {}) };
   // --env: the value rides in ssh's own environment passing (SendEnv / the host's AcceptEnv BOXD_SECRET_*), never in
   // the command line, a file or a log.
   const names = flags.flatMap((f, j) => f === "--env" ? [flags[j + 1] as string] : []);

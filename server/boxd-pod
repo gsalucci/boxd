@@ -19,7 +19,7 @@ CGROOT=${BOXD_CGROOT:-/sys/fs/cgroup}
 CGROUP=${BOXD_CGROUP:-$CGROOT/boxd}
 PROC=${BOXD_PROC:-/proc}   # test hook, like BOXD_MEMINFO: where `pod report` finds a box's process and its cgroup
 KVM=${BOXD_KVM:-/dev/kvm}   # test hook: the device a --kvm box gets
-VERSION=0.4.21
+VERSION=0.4.22
 # Keys that may only read, one "<type> <key> [comment]" per line (view_only below); and the largest answer of pod calls and pod log.
 VIEW_KEYS=${BOXD_VIEW_KEYS:-/etc/boxd/view_keys}
 READ_MAX=${BOXD_READ_MAX:-1048576}
@@ -279,7 +279,7 @@ vm_used() {
     echo "$n"
 }
 # The msb create options of a machine size.
-size_lim() { case $1 in small) echo "-c 2 -m 2G" ;; medium) echo "-c 4 -m 4G" ;; *) echo "$VM_LIMITS" ;; esac; }
+size_lim() { case $1 in small) echo "-c 2 -m 2G" ;; medium) echo "-c 4 -m 4G" ;; xlarge) echo "-c 8 -m 12G" ;; *) echo "$VM_LIMITS" ;; esac; }
 # lim_mb <msb create options>: the memory of a machine made with them, in megabytes; nothing when they name none.
 lim_mb() { [[ $1 =~ -m\ ([0-9]+)([MG]) ]] || return 0; [ "${BASH_REMATCH[2]}" = M ] && echo "${BASH_REMATCH[1]}" || echo $((BASH_REMATCH[1] * 1024)); }
 # vm_refusal <own sandbox name> <megabytes asked>: why one more machine of that size cannot start now; prints nothing
@@ -800,7 +800,7 @@ pod_run() {
             --user) user=1; shift ;;
             --kvm) kvm=1; shift ;;
             --size) [ $# -ge 2 ] || die "--size needs a value"
-                case $2 in small|medium|large) size=$2 ;; *) die "bad size $2" ;; esac; shift 2 ;;
+                case $2 in small|medium|large|xlarge) size=$2 ;; *) die "bad size $2" ;; esac; shift 2 ;;
             --env) [ $# -ge 2 ] || die "--env needs a name"
                 [[ $2 =~ $SECRET_RE ]] || die "--env $2: only names ending in _TOKEN, _KEY, _SECRET or _PASSWORD"
                 envs+=("$2"); shift 2 ;;

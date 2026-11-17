@@ -646,6 +646,8 @@ pod "pod run $box --vm -- $B64"; eq "a later call without --size keeps it" "smal
 pod "pod run $box --vm --recreate --size medium -- $B64"; eq "--recreate with --size records the new size" medium "$(cat "$W/jobs/$box/.vm-size")"
 pod "pod run $box --vm --recreate -- $B64"; eq "--recreate without --size keeps the recorded size" medium "$(cat "$W/jobs/$box/.vm-size")"
 pod "pod run $box --vm --size large -- $B64"; eq "a refused size change leaves the record" "125 medium" "$rc $(cat "$W/jobs/$box/.vm-size")"
+pod "pod run $box --vm --recreate --size xlarge -- $B64"; eq "--size xlarge is recorded at creation" xlarge "$(cat "$W/jobs/$box/.vm-size")"
+pod "pod run $box --vm --size medium -- $B64"; eq "a refused change away from xlarge leaves the record" "125 xlarge" "$rc $(cat "$W/jobs/$box/.vm-size")"
 # A refused creation records nothing
 setup; mkdir -p "$BOXD_CGROOT/boxd"; printf 'anon %s\n' $((30000 * 1048576)) > "$BOXD_CGROOT/boxd/memory.stat"; echo $((28672 * 1048576)) > "$BOXD_CGROOT/boxd/memory.max"
 pod "pod run $box --vm --size small -- $B64"; eq "a refused creation records no size" "75 no" "$rc $([ -e "$W/jobs/$box/.vm-size" ] && echo yes || echo no)"
@@ -673,6 +675,13 @@ eq "commitment: an idle group still refuses past the cap" "75 boxd-pod: no room 
 eq "commitment: a refused machine records no size" no "$([ -e "$W/jobs/b3/.vm-size" ] && echo yes || echo no)"
 pod "pod run b1 --vm -- $B64"; eq "commitment: a running machine is not counted against itself" 0 "$rc"
 pod "pod stop b2"; pod "pod run b3 --vm --size small -- $B64"; eq "commitment: a stopped machine frees its size" 0 "$rc"
+# xlarge counts as 12288 MB in the commit rule, in pod status and in idle eviction (cap 28672 MB: two fit, a third does not)
+cg28() { setup; mkdir -p "$BOXD_CGROOT/boxd"; printf 'anon 0\nshmem 0\n' > "$BOXD_CGROOT/boxd/memory.stat"; echo $((28672 * 1048576)) > "$BOXD_CGROOT/boxd/memory.max"; }
+cg28; for b in x1 x2; do pod "pod run $b --vm --size xlarge -- $B64"; eq "xlarge: machine $b fits the cap of 28672 MB" 0 "$rc"; done
+pod "pod run x3 --vm --size xlarge -- $B64"; eq "xlarge: the commit rule refuses a third with the sizes in megabytes" "75 boxd-pod: no room for another virtual machine (24576 MB of running machines + 12288 MB asked > 28672 MB, 100% of the 28672 MB cap); wait for one to end or stop one" "$rc $(cat "$T/e/err")"
+pod "pod status"; eq "xlarge: vm_fit_mb counts a running xlarge machine as 12288 MB" 4096 "$(tr '\t' '\n' < "$T/e/out" | grep '^vm_fit_mb=' | cut -d= -f2)"
+touch -d @100 "$W/jobs/x1/.last-used"
+pod "pod run x3 --vm --size xlarge -- $B64"; eq "xlarge: an idle machine is removed to make room for it" "0 no" "$rc $([ -e "$FAKE_VM_STATE/pod-x1" ] && echo yes || echo no)"
 # Idle machines give their room back (owner, 2026-11-16: an idle 8 GB machine held a slot on a full host for the reaper's 30
 # minutes). Idle: unused for BOXD_VM_IDLE_MIN seconds and no run or call in it. The longest unused goes first.
 hasvm() { [ -e "$FAKE_VM_STATE/pod-$1" ] && echo yes || echo no; }

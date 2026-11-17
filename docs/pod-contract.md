@@ -50,7 +50,7 @@ session and every box is under the total cap. The main sshd (port 22) refuses `b
   leading characters outside [a-z0-9] dropped (nothing left: `worktree`), basename cut to 40 characters;
   `--pod <name>` overrides it (same validation). The name does not depend on the engine.
 - Options of `pod run` may come in any order on the host side; the client sends them in the order
-  `--image` or `--image-file` (not both: 125), `--vm`, `--container`, `--size`, `--user`, `--kvm`, `--env`, `--recreate`, `--snapshot`, `--detach`. `--vm`, `--container`, `--user` and `--kvm` take no value; `--size` takes `small`, `medium` or `large`.
+  `--image` or `--image-file` (not both: 125), `--vm`, `--container`, `--size`, `--user`, `--kvm`, `--env`, `--recreate`, `--snapshot`, `--detach`. `--vm`, `--container`, `--user` and `--kvm` take no value; `--size` takes `small`, `medium`, `large` or `xlarge`.
 - `<ref>`: an image reference from `docker.io`, `ghcr.io` or another registry listed in `BOXD_REGISTRIES` (short names like `rust:1.83`
   mean `docker.io/library/rust:1.83`); anything else exit 125. Default: `docker.io/library/debian:stable-slim`.
   Also allowed: a local image `localhost/<name>[:<tag>]` (name `[a-z0-9][a-z0-9_.-]*`, no further slash; no tag
@@ -107,16 +107,16 @@ rule for the build account's user id (`setfacl -m u:<account>:rw /dev/kvm`, put 
 inside the box, but container root, and the `--user` uid, are that user id on the host. The device stays 0660
 `root:kvm`. Without `--kvm` a box has no `/dev/kvm`.
 
-**`--size small|medium|large` (virtual machine boxes only).** The machine's processors and guest memory:
+**`--size small|medium|large|xlarge` (virtual machine boxes only).** The machine's processors and guest memory:
 `small` = `-c 2 -m 2G`, `medium` = `-c 4 -m 4G`, `large` = `BOXD_VM_LIMITS` (default `-c 4 -m 8G`, the machine every
-box had before sizes existed). No `--size` on a new box means `large`. Sticky like engine and image: the size is
+box had before sizes existed), `xlarge` = `-c 8 -m 12G` (fixed, whatever `BOXD_VM_LIMITS` says; admitted as 12288 MB by every rule that counts sizes, so a host whose cap cannot hold 12288 MB refuses it with the usual no-room line). No `--size` on a new box means `large`. Sticky like engine and image: the size is
 written at creation to `/work/jobs/<box>/.vm-size` (the word, no newline; a virtual machine box without that file, made
 by an older server, is `large`), and a later call without `--size` keeps it, also with `--recreate`. A call that names a
 different size than the box has is refused without `--recreate` (exit 125,
 `boxd-pod: box <box> is <have>, asked for <want>; add --recreate`); with `--recreate` the box is replaced at the new
 size and the file rewritten. A refusal changes nothing, the file included. `--size` for the container engine, asked
 (`--container`) or existing, is refused (exit 125, `boxd-pod: --size is only for virtual machine boxes`); any other
-word than the three is refused (exit 125, `boxd-pod: bad size <word>`), a missing value too
+word than the four is refused (exit 125, `boxd-pod: bad size <word>`), a missing value too
 (`boxd-pod: --size needs a value`). The client refuses an unknown word with exit 2 before any call.
 
 **Running, for a virtual machine,** means `msb ls` lists the sandbox as running AND its host process exists.
@@ -317,7 +317,7 @@ logs nothing: the log never creates the folder, and a failed write is ignored.
 
 | Concern | container | vm |
 |---|---|---|
-| Memory per box | `--memory 12g`; page cache can be taken back by the host | `-m 8G` of guest memory (`large`; `--size small` 2G, `medium` 4G). The guest kernel ends a process inside the box at that size; the box lives on. Guest memory is host memory charged to the box process once the guest touches it, page cache included, until the box stops (UNVERIFIED whether libkrun gives freed pages back). Hence 8G, not 12G. |
+| Memory per box | `--memory 12g`; page cache can be taken back by the host | `-m 8G` of guest memory (`large`; `--size small` 2G, `medium` 4G, `xlarge` 12G). The guest kernel ends a process inside the box at that size; the box lives on. Guest memory is host memory charged to the box process once the guest touches it, page cache included, until the box stops (UNVERIFIED whether libkrun gives freed pages back). Hence 8G, not 12G. |
 | Swap per box | `--memory-swap 16g` (4G of swap) | None inside the guest. The host may swap guest memory to zram within the build cgroup's swap cap (UNVERIFIED). |
 | Processors | `--cpu-shares 1024`: a weight, no cap | `-c 4`: four virtual processors, a cap. Each is a host thread that competes like any build thread. |
 | Processes | `--pids-limit 4096` | No host limit needed (about 22 host threads per box), none inside the guest. |
@@ -409,7 +409,7 @@ engine call that starts, stops or changes anything (they ask `podman ps` and `ms
   module's state folder `BOXD_IDLE_STATE`, `BOXD_RESET_AT`; each a dash when the power module is off, or its file cannot be read), and
   last `keepawake`: `held`, `free`, or `none` when the lock file (`BOXD_KEEPAWAKE_LOCK`) does not exist.
 - One `box` line per box, sorted by name: `box`, `engine`, `image`, `state` (`running` or `stopped`, as `pod list`), `last_used` (epoch
-  seconds, 0 when never), `user` (`yes`, `no`; a dash for a virtual machine), `size` (`small`, `medium`, `large`; a dash for a
+  seconds, 0 when never), `user` (`yes`, `no`; a dash for a virtual machine), `size` (`small`, `medium`, `large`, `xlarge`; a dash for a
   container), `mem_limit_mb`, `mem_mb` (a dash when stopped or unreadable), `busy` (`yes` while a foreground or detached run holds the
   box's `.running` lock, tested without waiting, as the reaper does), `runs` (detached runs still running). `mem_mb` of a virtual
   machine is the resident memory (`VmRSS`) of its machine process; of a container, `memory.current` of the cgroup of the
@@ -604,7 +604,7 @@ The call log line is unchanged (a refusal or a failed build is a 125 line with i
 The cgroup `/sys/fs/cgroup/boxd`: `memory.max` `BOXD_MEM_MAX` (default 85 % of the host's memory less half of the swap the group may put on zram, computed when `boxd-sshd` starts), `memory.swap.max` `BOXD_SWAP_MAX` (default 25 %), no `memory.high` (the spike showed
 it makes a runaway job crawl instead of dying). Per container box 12G of memory and 4G of swap
 (`--memory-swap 16g`). Swap is 16G of compressed memory (zram, zstd, service `zramen`, enabled by `boxd-setup` when the package is installed). A new virtual machine (a creation or the start of a stopped one) is admitted when the memory the build group
-really uses (`anon` plus `shmem` of its `memory.stat`, plus `memory.swap.current`) plus the memory of its size (`small` 2G, `medium` 4G, `large`
+really uses (`anon` plus `shmem` of its `memory.stat`, plus `memory.swap.current`) plus the memory of its size (`small` 2G, `medium` 4G, `xlarge` 12G, `large`
 `BOXD_VM_LIMITS`, 8G by default) is at most the group's cap, and while the sizes of the running machines plus the new
 one fit `BOXD_VM_COMMIT` percent (100) of that cap (step 5b); `BOXD_VM_MAX`, when set, is a hard ceiling on the
 count on top. Guest memory is not page cache the host can take back. Limit, in plain words: this is overcommit.
@@ -628,7 +628,7 @@ goes after `BOXD_TTL`.
 
 ## Client (`box` on the agents' machine)
 
-`box [--host <name>] [--pod <name>] [--image <ref> | --image-file <path>] [--vm|--container] [--size small|medium|large] [--user] [--kvm] [--env <NAME>]... [--recreate] [--no-sync] [--snapshot] [--detach] [--wait] [--pull <path>]... [--ps-after <minutes>] [--] <command...>`
+`box [--host <name>] [--pod <name>] [--image <ref> | --image-file <path>] [--vm|--container] [--size small|medium|large|xlarge] [--user] [--kvm] [--env <NAME>]... [--recreate] [--no-sync] [--snapshot] [--detach] [--wait] [--pull <path>]... [--ps-after <minutes>] [--] <command...>`
 run from inside a worktree (git toplevel of the current directory):
 
 1. Sync (skipped with `--no-sync`), the recipe of `remote-cargo.sh`:
@@ -772,6 +772,7 @@ Owner decisions 2026-11-13; the reasoning is in `docs/designs/load-management.md
 - **The choice** takes, among the hosts with room for this call, the one with the most free memory (`mem_free_mb` of its status line: room left under boxd's cap); ties keep the order, and a host whose figure is unknown comes after those that report it. Spreading, not filling the first host: on 2026-11-15 the first host took every new worktree until its kernel killed a machine while the second stayed idle. Asleep has room and counts as the most free (nothing runs there; the
   call wakes it). Unreachable has none. Awake: a container always has room (the server never refuses one for room); a virtual
   machine (`--vm`) needs `vm` in `engines` and `vm_room=yes`; a local image (`--image localhost/<name>`) must be in `images`.
+  A virtual machine of a size other than the default (`--size small`, `medium` or `xlarge`) is judged by `vm_fit_mb` against its size in megabytes (2048, 4096, 12288) instead of `vm_room`, so a worktree is not sent to a host that cannot fit 12288 MB while another can; a host that prints no `vm_fit_mb` is judged by `vm_room`, as before.
   Awake with no status is the last resort, used only when no other host has room. The pure function is `choose`, with the cases
   under `choose` in `contract/cases.json`; `source` (same file) is the precedence above.
 - **No host has room:** the client exits 75 at once, before any sync, with `box: no build server has room for this call` and one
