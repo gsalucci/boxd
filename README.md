@@ -95,7 +95,8 @@ streams the output back with the command's exit code. On the host a dedicated ss
 
 Built packages are attached to every release at <https://github.com/gsalucci/boxd/releases>.
 
-On Void, use the release as a package repository (the first sync asks you to accept the signing key):
+On Void, use the release as a package repository. The first sync asks you to accept the signing key "boxd"; its
+fingerprint is `18:b7:39:2f:ce:fb:df:54:31:9a:e3:ab:e9:fb:d4:7b`:
 
 ```sh
 echo 'repository=https://github.com/gsalucci/boxd/releases/latest/download' | sudo tee /etc/xbps.d/boxd.conf
