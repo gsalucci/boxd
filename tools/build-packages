@@ -1,0 +1,64 @@
+#!/bin/sh
+# Build the boxd packages with xbps-src. Runs on the build host (native Void), inside a box,
+# as the unprivileged build account. Builds only: it never signs and never sees a signing key.
+# Output: unsigned .xbps files in $BOXD_PKG_WORK/void-packages/hostdir/binpkgs
+#
+# Environment (all optional):
+#   BOXD_PKG_WORK     work folder, default $HOME/boxd-packages (nothing is written outside it)
+#   BOXD_VOID_PACKAGES  git address of void-packages, default https://github.com/void-linux/void-packages
+#   BOXD_PKG_UPDATE   set to 1 to pull the newest void-packages first
+#   BOXD_SOURCE_ARCHIVE  tar.gz of the tag (top folder boxd-<version>/) for a checkout without git history, e.g. a box
+#   BOXD_PACKAGES     packages to build, default "boxd microsandbox-bin"
+set -eu
+
+here=$(cd "$(dirname "$0")" && pwd)
+repo=$(dirname "$here")
+work=${BOXD_PKG_WORK:-$HOME/boxd-packages}
+upstream=${BOXD_VOID_PACKAGES:-https://github.com/void-linux/void-packages}
+packages=${BOXD_PACKAGES:-boxd microsandbox-bin}
+vp=$work/void-packages
+
+mkdir -p "$work"
+if [ ! -d "$vp/.git" ]; then
+	git clone --depth 1 "$upstream" "$vp"
+elif [ "${BOXD_PKG_UPDATE:-0}" = 1 ]; then
+	git -C "$vp" pull --ff-only
+fi
+
+# Fresh copy of our templates every run; symlinked subpackages are kept as links.
+for t in "$repo"/srcpkgs/*; do
+	n=$(basename "$t")
+	rm -rf "$vp/srcpkgs/$n"
+	cp -a "$t" "$vp/srcpkgs/$n"
+done
+
+# A template still holding the all-zero placeholder gets the real checksum of the tag archive,
+# in the work copy only; the repository is never edited here.
+zeros=0000000000000000000000000000000000000000000000000000000000000000
+tpl=$vp/srcpkgs/boxd/template
+if grep -q "^checksum=$zeros" "$tpl"; then
+	ver=$(sed -n 's/^version=//p' "$tpl")
+	# The repository is private: its web archive needs a login (anonymous requests get an html login page)
+	# and Gitea archives are not byte-stable. So the archive is made from the tag in this checkout and
+	# placed where xbps-src looks for the distfile; that file is the one checksummed and verified.
+	src=$vp/hostdir/sources/boxd-$ver
+	mkdir -p "$src"
+	if [ -n "${BOXD_SOURCE_ARCHIVE:-}" ]; then
+		cp "$BOXD_SOURCE_ARCHIVE" "$src/boxd-$ver.tar.gz"
+	else
+		git -C "$repo" archive --format=tar.gz --prefix="boxd-$ver/" -o "$src/boxd-$ver.tar.gz" "v$ver"
+	fi
+	sum=$(sha256sum "$src/boxd-$ver.tar.gz" | cut -d" " -f1)
+	sed -i "s/^checksum=$zeros/checksum=$sum/" "$tpl"
+	echo "build-packages: placeholder checksum replaced in the work copy: $sum"
+fi
+
+cd "$vp"
+[ -d masterdir-x86_64 ] || ./xbps-src binary-bootstrap
+for p in $packages; do
+	./xbps-src -A x86_64 lint "$p" 2>/dev/null || true
+	./xbps-src pkg "$p"
+done
+
+echo "build-packages: unsigned packages are in $vp/hostdir/binpkgs"
+ls "$vp/hostdir/binpkgs"/*.xbps

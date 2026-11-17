@@ -1,0 +1,1 @@
+version=0.2.0	engines=container,vm	cpus=16	load1=0.92	vm_used=0	vm_max=none	vm_room=yes	boxes=1	disk_pct=31	mem_free_mb=11800	images=toolbox

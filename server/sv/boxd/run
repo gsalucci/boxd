@@ -1,0 +1,25 @@
+#!/bin/sh
+# The one service the owner controls (boxctl start|stop). Conditions first, then the members, then the reaper loop
+# (box reaping used to ride on the power service; it belongs here because core boxd works without power).
+# Stopping it runs finish (./finish under runit, ExecStop under systemd), which stops the members and removes every box.
+# Under systemd the unit boxd.service runs this same file as /usr/libexec/boxd/boxd-run with BOXD_MANAGER=systemd.
+exec 2>&1
+CONF=${BOXD_CONF:-/etc/boxd/boxd.conf}
+[ -r "$CONF" ] && . "$CONF"
+U=${BOXD_USER:-boxd}
+LOCK=${BOXD_KEEPAWAKE_LOCK:-/run/boxd-keepawake.lock}
+# svc start|stop <service>: the same words for runit's sv and for systemctl.
+svc() { if [ "${BOXD_MANAGER:-runit}" = systemd ]; then systemctl "$@"; else sv "$@"; fi; }
+boxctl check || exit 1
+: > "$LOCK" && chmod 644 "$LOCK"   # boxd-keepawake users only need to read it
+svc start boxd-sshd || { echo "boxd: boxd-sshd did not start"; exit 1; }
+if [ "${BOXD_POWER:-off}" = on ]; then
+    svc start boxd-power || { echo "boxd: boxd-power did not start"; exit 1; }
+elif [ -e "${SVDIR:-/var/service}/boxd-power" ] || { [ "${BOXD_MANAGER:-runit}" = systemd ] && systemctl cat boxd-power.service >/dev/null 2>&1; }; then
+    svc stop boxd-power >/dev/null 2>&1   # the module is off in the settings: it must not keep running from before
+fi
+echo "boxd: up"
+while :; do
+    runuser -u "$U" -- boxd-pod reap || echo "boxd: reap failed"
+    sleep 60 || exit 1
+done

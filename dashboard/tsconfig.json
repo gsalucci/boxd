@@ -1,0 +1,16 @@
+{
+  // Build: ~/.local/share/pnpm/bin/tsc-rs -p dashboard (emits fleet.mjs and boxd-dashboard.mjs next to the sources;
+  // tests/dashboard-service.test.mts fails when a committed .mjs is stale). Same settings as client/tsconfig.json.
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "skipLibCheck": true,
+    "removeComments": false,
+    "types": ["node"],
+    "outDir": "."
+  },
+  "files": ["fleet.mts", "boxd-dashboard.mts"]
+}

@@ -1,0 +1,113 @@
+# Template file for 'boxd'
+# One source archive, one version, four packages: boxd (documents only),
+# boxd-server, boxd-power, boxd-client. The paths follow docs/designs/layout.md.
+pkgname=boxd
+version=0.4.19
+revision=1
+archs="x86_64"
+short_desc="Build boxes for agents: shared documents (see boxd-server, boxd-client)"
+maintainer="boxd maintainers <gsalucci@users.noreply.github.com>"
+license="MIT"
+homepage="https://github.com/gsalucci/boxd"
+distfiles="${homepage}/archive/v${version}.tar.gz>boxd-${version}.tar.gz"
+# tools/build-packages replaces this placeholder in its work copy when it is still all zeros;
+# tools/release (or the owner) writes the real value into this file when a tag is cut.
+checksum=0000000000000000000000000000000000000000000000000000000000000000
+
+do_install() {
+	local s
+
+	# --- boxd-server ---
+	vbin server/boxd-pod
+	vbin server/boxd-reset
+	vbin server/boxd-keepawake
+	vbin server/boxctl
+	vbin server/boxd-setup
+	vinstall server/images-build 755 usr/libexec/boxd
+	vinstall server/work-setup 755 usr/libexec/boxd
+	vmkdir usr/share/boxd
+	vcopy images usr/share/boxd
+	vinstall server/boxd.conf 644 etc/boxd
+	vinstall server/sshd_config 644 etc/boxd
+	vinstall server/storage.conf 644 etc/boxd
+	vinstall server/containers.conf 644 etc/boxd
+	vmkdir etc/sv
+	vcopy server/sv/boxd etc/sv
+	vcopy server/sv/boxd-sshd etc/sv
+
+	# --- boxd-power ---
+	vbin power/boxd-idle
+	vcopy power/sv/boxd-power etc/sv
+
+	# --- service directories: executable scripts, supervise links, down files ---
+	for s in boxd boxd-sshd boxd-power; do
+		chmod 755 ${DESTDIR}/etc/sv/$s/run
+		[ -f ${DESTDIR}/etc/sv/$s/log/run ] && chmod 755 ${DESTDIR}/etc/sv/$s/log/run
+		[ -f ${DESTDIR}/etc/sv/$s/finish ] && chmod 755 ${DESTDIR}/etc/sv/$s/finish
+		[ -f ${DESTDIR}/etc/sv/$s/check ] && chmod 755 ${DESTDIR}/etc/sv/$s/check
+		ln -s /run/runit/supervise.$s ${DESTDIR}/etc/sv/$s/supervise
+		[ -d ${DESTDIR}/etc/sv/$s/log ] && ln -s /run/runit/supervise.$s-log ${DESTDIR}/etc/sv/$s/log/supervise
+	done
+	# Members wait for `boxd` to start them (same trick as /etc/sv/scx_lavd/down in Void).
+	touch ${DESTDIR}/etc/sv/boxd-sshd/down ${DESTDIR}/etc/sv/boxd-power/down
+
+	# --- boxd-client ---
+	vinstall client/box.mjs 644 usr/lib/boxd
+	vinstall client/box-wake.mjs 644 usr/lib/boxd
+	vinstall client/skill/SKILL.md 644 usr/share/boxd/skill
+	printf '#!/bin/sh\nexec node /usr/lib/boxd/box.mjs "$@"\n' > box.shim
+	vbin box.shim box
+
+	# --- boxd (main package) ---
+	vdoc README.md
+	vlicense LICENSE
+}
+
+boxd-server_package() {
+	short_desc="Build boxes for agents: build host (account setup, build sshd, runit services)"
+	archs="x86_64"
+	# microsandbox-bin is NOT a dependency: boxd-setup installs it where /dev/kvm and virtualization exist.
+	depends="bash podman catatonit rsync git util-linux btrfs-progs openssh zramen socat"
+	conf_files="
+	 /etc/boxd/boxd.conf
+	 /etc/boxd/sshd_config
+	 /etc/boxd/storage.conf
+	 /etc/boxd/containers.conf"
+	make_dirs="
+	 /var/lib/boxd/images 0755 root root
+	 /var/log/boxd 0750 root root
+	 /var/log/boxd-sshd 0750 root root"
+	pkg_install() {
+		vmove usr/bin/boxd-pod
+		vmove usr/bin/boxd-reset
+		vmove usr/bin/boxd-keepawake
+		vmove usr/bin/boxctl
+		vmove usr/bin/boxd-setup
+		vmove usr/libexec/boxd
+		vmove usr/share/boxd/images
+		vmove etc/boxd
+		vmove etc/sv/boxd
+		vmove etc/sv/boxd-sshd
+	}
+}
+
+boxd-power_package() {
+	short_desc="Build boxes for agents: optional power module (sleep when quiet, wake on network)"
+	archs="x86_64"
+	depends="boxd-server>=${version}_${revision} ethtool iw"
+	pkg_install() {
+		vmove usr/bin/boxd-idle
+		vmove etc/sv/boxd-power
+	}
+}
+
+boxd-client_package() {
+	short_desc="Build boxes for agents: the box command for the machine that sends work"
+	archs="x86_64"
+	depends="nodejs rsync openssh"
+	pkg_install() {
+		vmove usr/bin/box
+		vmove usr/lib/boxd
+		vmove usr/share/boxd/skill
+	}
+}

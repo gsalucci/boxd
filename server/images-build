@@ -1,0 +1,27 @@
+#!/bin/sh
+# Builds the shared toolbox image as the build account and archives it (root; boxd-setup --images runs it, long).
+# The archive in /var/lib/boxd/images survives `boxd-reset all`; boxd-pod loads it when a box needs it.
+set -eu
+CONF=${BOXD_CONF:-/etc/boxd/boxd.conf}
+[ -r "$CONF" ] && . "$CONF"
+U=${BOXD_USER:-boxd}
+WORK=${BOXD_WORK:-/var/lib/boxd/work}
+SHARE=${BOXD_SHARE:-/usr/share/boxd}
+NAME=toolbox
+DATE=$(date +%Y%m%d)
+SRC=$WORK/tmp/images-$NAME
+OUT=${BOXD_IMAGES_DIR:-/var/lib/boxd/images}
+
+rm -rf "$SRC"; install -d -o "$U" -g "$U" "$SRC"
+cp -r "$SHARE/images/$NAME/." "$SRC/"; chown -R "$U:$U" "$SRC"
+runuser -l "$U" -c "cd $SRC && podman build -t localhost/$NAME:$DATE -t localhost/$NAME:latest ."
+runuser -l "$U" -c "podman run --rm localhost/$NAME:latest toolbox-check"
+
+install -d -m755 -o root -g root "$OUT"
+tmp=$OUT/.$NAME.tar.part
+rm -f "$tmp"
+runuser -l "$U" -c "podman save -o $SRC/$NAME.tar localhost/$NAME:latest localhost/$NAME:$DATE"
+install -m644 -o root -g root "$SRC/$NAME.tar" "$tmp"
+mv "$tmp" "$OUT/$NAME.tar"
+rm -rf "$SRC"
+echo "image localhost/$NAME:$DATE archived in $OUT/$NAME.tar"

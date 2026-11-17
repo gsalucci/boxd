@@ -1,0 +1,6 @@
+# Only the files the image copies go into the build; the owner's settings and the private key never do.
+*
+!Containerfile
+!dashboard/boxd-dashboard.mjs
+!dashboard/fleet.mjs
+!dashboard/web

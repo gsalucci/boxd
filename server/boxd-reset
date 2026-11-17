@@ -1,0 +1,109 @@
+#!/bin/sh
+# boxd-reset [work|all] [--force]: gives the build area back in a clean state in seconds,
+# by swapping btrfs subvolumes instead of deleting files (the space comes back in the background). A work area that is not
+# btrfs (a plain folder with the marker .boxd-dir-mode, see work-setup) is refreshed from the folder BOXD_WORK-clean with
+# rsync instead: same result, but it takes as long as deleting the files.
+#   work    (default) the work area becomes a fresh copy of @work-clean; the caches under cache/ are kept
+#   all     work, plus an empty @cache
+# Refuses (exit 1) while anyone holds boxd-keepawake or the build account has an ssh session; --force ignores
+# both. Either way it then removes every box on both engines (boxd-pod clear as build) and kills what is left of the build
+# account's processes. Run as root.
+set -eu
+CONF=${BOXD_CONF:-/etc/boxd/boxd.conf}
+[ -r "$CONF" ] && . "$CONF"
+BUILD_USER=${BOXD_USER:-boxd}
+WORK=${BOXD_WORK:-/var/lib/boxd/work}
+LOCK=${BOXD_KEEPAWAKE_LOCK:-/run/boxd-keepawake.lock}
+TOP=/run/boxd-btrfs-top
+what=work force=
+for a in "$@"; do
+    case $a in
+        work|all) what=$a ;;
+        --force) force=1 ;;
+        *) echo "usage: boxd-reset [work|all] [--force]" >&2; exit 2 ;;
+    esac
+done
+[ "$(id -u)" = 0 ] || { echo "boxd-reset: run as root" >&2; exit 2; }
+
+busy() { # per-connection sshd process of the build account (named sshd, or sshd-session since OpenSSH 9.8)
+    pgrep -u "$BUILD_USER" -x "sshd|sshd-session" >/dev/null && { echo "$BUILD_USER has an ssh session"; return 0; }
+    [ -e "$LOCK" ] && ! flock -n -x "$LOCK" true && { echo "someone holds boxd-keepawake"; return 0; }
+    return 1
+}
+if reason=$(busy); then
+    [ -n "$force" ] || { echo "boxd-reset: refused, $reason (use --force)" >&2; exit 1; }
+fi
+# Boxes first (a clean stop for their processes), then everything else of the build account, the podman
+# pause process and the virtual machine processes too: anything left inside the work area would block the unmount.
+runuser -l "$BUILD_USER" -c "boxd-pod clear" >/dev/null || echo "boxd-reset: boxd-pod clear failed, killing the processes instead" >&2
+pkill -KILL -u "$BUILD_USER" || true
+while pgrep -u "$BUILD_USER" >/dev/null; do :; done   # SIGKILL lands within moments; wait for the exits
+
+if [ -e "$WORK/.boxd-dir-mode" ] && ! mountpoint -q "$WORK"; then
+    # Directory mode: nothing to unmount. rsync makes the area equal to the pristine folder; the cache is left out of
+    # both the copy and the delete, `all` empties it by hand.
+    CLEAN=${WORK%/}-clean
+    [ -e "$CLEAN/.boxd-dir-mode" ] || { echo "boxd-reset: $CLEAN is missing (run boxd-setup)" >&2; exit 1; }
+    rsync -a --delete --exclude=/cache "$CLEAN/" "$WORK/"
+    if [ "$what" = all ]; then
+        find "$WORK/cache" -mindepth 1 -delete
+        chown "$BUILD_USER:$BUILD_USER" "$WORK/cache"
+    fi
+    echo "boxd-reset: work area is clean$([ "$what" = all ] && echo ', caches emptied')"
+    exit 0
+fi
+
+dev=$(findmnt -n -o SOURCE --target "$WORK" | sed 's/\[.*//')
+mkdir -p "$TOP"
+mount -o subvolid=5 "$dev" "$TOP"
+trap 'umount "$TOP" 2>/dev/null; rmdir "$TOP" 2>/dev/null' EXIT
+
+# Deletes a subvolume with every subvolume nested inside it, children first: an unprivileged user may
+# create subvolumes in folders it owns, and a nested one would block the delete. `list -o` shows direct
+# children only, as paths from the top of the file system.
+drop() {
+    btrfs subvolume list -o "$TOP/$1" | sed 's/^.* path //; s|^<FS_TREE>/||' |
+        while IFS= read -r child; do drop "$child"; done
+    btrfs subvolume delete "$TOP/$1" >/dev/null
+}
+holders() { # processes in this namespace using the mount, and processes whose own mount namespace holds a copy
+    init_ns=$(readlink /proc/1/ns/mnt)
+    for p in /proc/[0-9]*; do
+        n=${p#/proc/}
+        ns=$(readlink "$p/ns/mnt" 2>/dev/null) || continue
+        if [ "$ns" != "$init_ns" ]; then
+            grep -q " $1 " "$p/mountinfo" 2>/dev/null || continue
+        else
+            (readlink "$p/cwd"; ls -l "$p/fd" 2>/dev/null) 2>/dev/null | grep -q "$1" || continue
+        fi
+        echo "  pid $n ($(ps -o user= -p "$n" | tr -d " ")): $(tr "\0" " " < "$p/cmdline" | cut -c1-80)"
+    done
+}
+unmount() { # refuse rather than lazily detach: a process still inside would keep writing to the old copy
+    # Right after the boxes are killed the kernel may still be releasing their files (a virtual machine shares
+    # thousands of file handles into its guest): no process holds the mount, yet umount says busy for a moment.
+    # Wait for that to finish, up to 30 seconds, then report.
+    n=0
+    until umount "$1" 2>/dev/null; do
+        n=$((n + 1))
+        [ "$n" -lt 300 ] || { echo "boxd-reset: $1 is still in use after 30 seconds:" >&2; holders "$1" >&2; exit 1; }
+        sleep 0.1
+    done
+    [ "$n" = 0 ] || echo "boxd-reset: $1 was busy for $n tries of 0.1 s while the kernel released it" >&2
+}
+
+case $what in
+    work|all)
+        mountpoint -q "$WORK/cache" && unmount "$WORK/cache"
+        unmount "$WORK"
+        drop @work
+        btrfs subvolume snapshot "$TOP/@work-clean" "$TOP/@work" >/dev/null
+        if [ "$what" = all ]; then
+            drop @cache
+            btrfs subvolume create "$TOP/@cache" >/dev/null
+            chown "$BUILD_USER:$BUILD_USER" "$TOP/@cache"
+        fi
+        mount "$WORK"
+        mount "$WORK/cache"   # both fstab lines carry rprivate (see work-setup), so the new mounts stay private
+        echo "boxd-reset: work area is clean$([ "$what" = all ] && echo ', caches emptied')" ;;
+esac

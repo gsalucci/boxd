@@ -1,0 +1,16 @@
+#!/bin/sh
+set -e
+case "$1" in
+remove|purge)
+    # boxd-setup enabled the unit with systemctl enable; this is the link it made.
+    rm -f /etc/systemd/system/multi-user.target.wants/boxd.service
+    [ ! -d /run/systemd/system ] || systemctl daemon-reload || true ;;
+esac
+if [ "$1" = purge ]; then
+    # What boxd-setup linked or wrote outside the package. The build account, its work area, its ssh key and the
+    # fstab lines hold data and stay: removing them is the owner's decision (docs/packaging-debian.md).
+    rm -f /etc/containers/containers.conf.d/boxd.conf /etc/containers/storage.conf.d/boxd.conf \
+          /etc/ssh/sshd_config.d/20-boxd.conf /var/lib/systemd/linger/boxd /etc/profile.d/boxd-env.sh
+    echo "boxd-server: purged. The build account, its work area and /etc/ssh/authorized_keys/<account> are left in place."
+fi
+exit 0

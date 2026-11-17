@@ -1,0 +1,28 @@
+#!/bin/sh
+# Writes the install bundle of the dashboard stack: a tar.gz with exactly the files the stack needs, the same bytes every time
+# for the same sources (sorted names, owner 0, fixed times and modes, no gzip name or time).
+#   make-bundle [-r <git ref>] [-o <file>]
+# Without -r the files are read from this checkout's working tree. With -r (a tag, for example) they are read from that commit, and
+# the working tree is not looked at. The default output is ./boxd-dashboard.tar.gz. Needs GNU tar and git.
+set -eu
+ref= out=boxd-dashboard.tar.gz
+while getopts r:o: o; do case $o in r) ref=$OPTARG ;; o) out=$OPTARG ;; *) echo "usage: make-bundle [-r <git ref>] [-o <file>]" >&2; exit 2 ;; esac; done
+root=$(cd "$(dirname "$0")/../.." && pwd)
+case $out in /*) ;; *) out=$PWD/$out ;; esac
+stage=$(mktemp -d) && trap 'rm -rf "$stage"' EXIT
+mkdir "$stage/b"
+
+if [ -n "$ref" ]; then
+  git -C "$root" archive "$ref" dashboard/stack dashboard/boxd-dashboard.mjs dashboard/fleet.mjs dashboard/web | tar -x -C "$stage"
+  when=$(git -C "$root" log -1 --format=%ct "$ref")
+else
+  mkdir -p "$stage/dashboard" && cp -R "$root/dashboard/stack" "$root/dashboard/boxd-dashboard.mjs" "$root/dashboard/fleet.mjs" "$root/dashboard/web" "$stage/dashboard/"
+  when=$(git -C "$root" log -1 --format=%ct HEAD)
+fi
+
+# The stack's own files go to the top of the bundle; the program files keep their dashboard/ paths (the Containerfile copies them from there).
+for f in Containerfile compose.yaml dashboard.json.example INSTALL.md .dockerignore; do cp "$stage/dashboard/stack/$f" "$stage/b/$f"; done
+mkdir "$stage/b/dashboard" && cp -R "$stage/dashboard/boxd-dashboard.mjs" "$stage/dashboard/fleet.mjs" "$stage/dashboard/web" "$stage/b/dashboard/"
+find "$stage/b" -type d -exec chmod 755 {} + && find "$stage/b" -type f -exec chmod 644 {} +
+
+(cd "$stage/b" && tar --sort=name --owner=0 --group=0 --numeric-owner --mtime="@$when" --format=gnu -cf - .) | gzip -n -9 > "$out"

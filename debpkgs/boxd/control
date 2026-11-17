@@ -1,0 +1,10 @@
+Package: boxd
+Section: doc
+Priority: optional
+Architecture: all
+Maintainer: boxd maintainers <gsalucci@users.noreply.github.com>
+Suggests: boxd-server, boxd-client
+Homepage: https://github.com/gsalucci/boxd
+Description: build boxes for agents: documents
+ Documents of boxd (readme, Debian packaging notes, file layout). Install
+ boxd-server on the build host and boxd-client on the machine that sends work.

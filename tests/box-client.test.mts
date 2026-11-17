@@ -1,0 +1,1764 @@
+// CLI behaviour of client/box.mjs with fake ssh and rsync first on PATH, each recording its argv.
+// Every wait is on process exit, never on a clock.
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { spawn, spawnSync, execFileSync } from "node:child_process";
+import { chmodSync, closeSync, constants, openSync, mkdtempSync, mkdirSync, readdirSync, symlinkSync, readFileSync, rmSync, writeFileSync, existsSync, statSync } from "node:fs";
+import { once } from "node:events";
+import net from "node:net";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
+const REPO = path.resolve(import.meta.dirname, "..");
+const TOOL = path.join(REPO, "client/box.mjs");
+const { plan, gitExactRules, BASE_FILTER, psTable, duration, runAge, lastLine } = await import(TOOL);
+
+const root = mkdtempSync(path.join(tmpdir(), "box-client-"));
+// The real rsync, found before the fakes go first on PATH: dry runs and the equality test use it.
+const REAL_RSYNC = execFileSync("sh", ["-c", "command -v rsync"], { encoding: "utf8" }).trim();
+const bin = path.join(root, "bin");
+const log = path.join(root, "calls.log");
+const home = path.join(root, "home"); // a user with no saved host and no ssh config
+mkdirSync(home);
+mkdirSync(bin);
+// With FAKE_REMOTE set, the fake rsync then runs the real one, the folder FAKE_REMOTE standing in for the server's work area.
+const rsyncRemote = `[ -z "\${FAKE_RSYNC_ERR:-}" ] || { echo "$FAKE_RSYNC_ERR" >&2; exit 12; }\n[ -n "$FAKE_REMOTE" ] || exit 0\nfor a; do shift; case $a in boxd-test:*) a="$FAKE_REMOTE/\${a#boxd-test:}";; esac; set -- "$@" "$a"; done\nexec ${REAL_RSYNC} "$@"`;
+// With FAKE_PS_COUNT set, the fake ssh plays a silent run: `pod ps` answers one process and counts its calls; the
+// run itself blocks on the fifo FAKE_PS_FIFO, which the second `pod ps` call writes (the second call proves the
+// first report was written, since the client asks again only after writing); then it prints "done" and exits 3.
+// It blocks on that event, never on a clock.
+const psFake = `if [ -n "\${FAKE_PS_COUNT:-}" ]; then
+  case "$*" in *" pod ps "*)
+    printf '7\\t3600\\t0\\t/job/src\\tsleep 99\\n'; echo x >> "$FAKE_PS_COUNT"
+    [ "$(wc -l < "$FAKE_PS_COUNT")" -eq 2 ] && echo go > "$FAKE_PS_FIFO"
+    exit 0;; esac
+  read -r _ < "$FAKE_PS_FIFO"
+  echo done; exit 3
+fi
+`;
+// With FAKE_HOSTS set (a folder), the fake ssh plays several build servers, one set of files per ssh alias:
+// <alias>.status is what `pod status` prints (absent: the host is unreachable, exit 255), <alias>.run.exit and
+// <alias>.run.err are the exit code and the stderr of `pod run`.
+const hostFake = `if [ -n "\${FAKE_LOGDIR:-}" ]; then
+  case "$*" in *" pod log "*) echo x >> "$FAKE_LOGDIR/count"; cat "$FAKE_LOGDIR/$(wc -l < "$FAKE_LOGDIR/count" | tr -d ' ')"; exit "$(cat "$FAKE_LOGDIR/exit" 2>/dev/null || echo 0)";; esac
+fi
+if [ -n "\${FAKE_BLOCK_DIR:-}" ]; then
+  case "$*" in *" pod run "*)
+    (read -r _ < "$FAKE_BLOCK_DIR/hold") & held=$!
+    trap 'kill $held 2>/dev/null; echo term > "$FAKE_BLOCK_DIR/term"; exit 143' TERM
+    echo up > "$FAKE_BLOCK_DIR/started"
+    wait $held;; esac
+fi
+if [ -n "\${FAKE_HOSTS:-}" ]; then
+  for a; do case $a in boxd-*) h=$a; break;; esac; done
+  case "$*" in
+    *" pod status") [ -f "$FAKE_HOSTS/$h.status" ] || exit 255
+      [ -z "\${FAKE_STATUS_HOLD:-}" ] || read -r _ < "$FAKE_STATUS_HOLD"
+      echo x >> "$FAKE_HOSTS/$h.probes"; n=$(wc -l < "$FAKE_HOSTS/$h.probes" | tr -d ' ')
+      if [ -f "$FAKE_HOSTS/$h.status.$n" ]; then cat "$FAKE_HOSTS/$h.status.$n"; else cat "$FAKE_HOSTS/$h.status"; fi; exit 0;;
+    *" pod report") echo x >> "$FAKE_HOSTS/$h.reports"; n=$(wc -l < "$FAKE_HOSTS/$h.reports" | tr -d ' ')
+      [ ! -f "$FAKE_HOSTS/$h.report.fail.$n" ] || exit 1
+      if [ -f "$FAKE_HOSTS/$h.report.$n" ]; then cat "$FAKE_HOSTS/$h.report.$n"; else cat "$FAKE_HOSTS/$h.report" 2>/dev/null; fi; exit 0;;
+    *" pod log "*) r=\${*% *}; cat "$FAKE_HOSTS/$h.log.\${r##* }" 2>/dev/null; exit 0;;
+    *" pod list") cat "$FAKE_HOSTS/$h.list" 2>/dev/null; exit 0;;
+    *" pod ps "*) cat "$FAKE_HOSTS/$h.ps.\${*##* }" 2>/dev/null; exit 0;;
+    *" pod stop "*) exit "$(cat "$FAKE_HOSTS/$h.stop.exit" 2>/dev/null || echo 0)";;
+    *" pod drop "*) cat "$FAKE_HOSTS/$h.drop.out" 2>/dev/null; exit "$(cat "$FAKE_HOSTS/$h.drop.exit" 2>/dev/null || echo 0)";;
+    *" pod run "*) if [ -f "$FAKE_HOSTS/$h.run.refuse" ] && [ "$(cat "$FAKE_HOSTS/$h.run.refuse")" -gt 0 ]; then
+        echo $(( $(cat "$FAKE_HOSTS/$h.run.refuse") - 1 )) > "$FAKE_HOSTS/$h.run.refuse"
+        echo "boxd-pod: no room for another virtual machine (3 of 3 running); wait for one to end or stop one" >&2; exit 75
+      fi
+      [ ! -f "$FAKE_HOSTS/$h.run.err" ] || cat "$FAKE_HOSTS/$h.run.err" >&2
+      [ ! -f "$FAKE_HOSTS/$h.run.exit" ] || exit "$(cat "$FAKE_HOSTS/$h.run.exit")";;
+  esac
+fi
+`;
+// box image push: the fake ssh answers `pod image has` with FAKE_HAS_EXIT (default 1: not there) and keeps what `pod image load`
+// reads on standard input in FAKE_LOAD_IN; a fake podman or docker (own folder, so a test can leave both out) logs its calls.
+// With FAKE_FWD_DIR set, `pod forward` is a relay: the fake ssh records its process id and echoes its input (cat), or with
+// FAKE_FWD_ERR prints that to stderr and exits 125 like a refusing server.
+const fwdFake = `if [ -n "\${FAKE_FWD_DIR:-}" ]; then
+  case "$*" in *" pod forward "*)
+    [ -z "\${FAKE_FWD_ERR:-}" ] || { echo "$FAKE_FWD_ERR" >&2; exit 125; }
+    echo $$ > "$FAKE_FWD_DIR/pid.$$"; exec cat;; esac
+fi
+`;
+const imgFake = `case "$*" in *"pod image has "*) exit "\${FAKE_HAS_EXIT:-1}";; *"pod image load "*) cat > "$FAKE_LOAD_IN"; exit "\${FAKE_LOAD_EXIT:-0}";; esac\n`;
+function fakeEngine(dir: string, name: string) {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(path.join(dir, name), `#!/bin/sh
+[ "$1" = --version ] && exit 0
+echo "${name} $*" >> "$CALLS"
+case $1 in
+  pull) exit "\${FAKE_PULL_EXIT:-0}";;
+  image) echo "\${FAKE_IMAGE_ID:-sha256:0123456789ab0123456789ab0123456789ab0123456789ab0123456789abcdef}";;
+  save) printf 'ARCHIVE-OF-%s' "$2"; exit "\${FAKE_SAVE_EXIT:-0}";;
+esac
+`);
+  chmodSync(path.join(dir, name), 0o755);
+}
+const withPodman = path.join(root, "with-podman"), withDocker = path.join(root, "with-docker"), withNone = path.join(root, "with-none");
+fakeEngine(withPodman, "podman"); fakeEngine(withDocker, "docker"); mkdirSync(withNone);
+// The fakes need a few basic tools but must not find a real podman or docker: PATH is these links, never the machine's own.
+const basics = path.join(root, "basics");
+mkdirSync(basics);
+for (const t of ["cat", "sed", "env", "printf", "echo", "wc", "sh"]) symlinkSync(execFileSync("sh", ["-c", `command -v ${t}`], { encoding: "utf8" }).trim(), path.join(basics, t));
+for (const name of ["ssh", "rsync"]) {
+  // one line per call: the tool name, then its arguments joined by single spaces; ssh exits with FAKE_SSH_EXIT
+  // rsync dry runs (-n: the client asks what its filter would send) go to the real rsync and are not recorded.
+  const dry = name === "rsync" ? `case " $* " in *" -n "*) exec ${REAL_RSYNC} "$@";; esac\n` : "";
+  writeFileSync(path.join(bin, name), `#!/bin/sh\n${dry}echo "${name} $*" >> "$CALLS"\n${name === "ssh" ? 'for v in $(env | sed -n "s/^\\(BOXD_SECRET_[A-Z0-9_]*\\)=.*/\\1/p"); do echo "ssh-env $v" >> "$CALLS"; done\n' + imgFake + fwdFake + hostFake + psFake + '[ -z "${FAKE_SSH_OUT:-}" ] || printf "%s\\n" "$FAKE_SSH_OUT"\nexit "${FAKE_SSH_EXIT:-0}"' : rsyncRemote}\n`);
+  chmodSync(path.join(bin, name), 0o755);
+}
+const repo = path.join(root, "My Repo");
+mkdirSync(repo);
+execFileSync("git", ["init", "-q"], { cwd: repo });
+const top = execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: repo, encoding: "utf8" }).trim();
+const box = plan(top, [], ["x"]).box;
+
+function runBox(args: string[], opts: { cwd?: string; env?: Record<string, string> } = {}) {
+  rmSync(log, { force: true });
+  const r = spawnSync(process.execPath, [TOOL, ...args], {
+    cwd: opts.cwd ?? repo,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    env: { PATH: `${bin}:${process.env.PATH ?? ""}`, HOME: home, BOXD_HOST: "test", BOXD_GC: "0", CALLS: log, ...opts.env },
+  });
+  const calls = existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : [];
+  return { code: r.status, out: r.stdout, err: r.stderr, calls };
+}
+const b64 = (...w: string[]) => Buffer.from(w.join("\0")).toString("base64");
+
+test("syncs with the contract recipe, then runs; no -t without terminals", () => {
+  const r = runBox(["cargo", "test"]);
+  assert.equal(r.code, 0);
+  assert.deepEqual(r.calls, [
+    `rsync -a --delete --mkpath --safe-links --exclude=/.git --filter=:- .gitignore ${top}/ boxd-test:jobs/${box}/src/`,
+    `ssh boxd-test pod run ${box} -- ${b64("cargo", "test")}`,
+  ]);
+});
+
+test("the sync carries exactly git's files: force-added, negated, info/exclude and ignored outputs", () => {
+  const r2 = path.join(root, "acme");
+  for (const d of ["build/deep", "t", "keep", "out"]) mkdirSync(path.join(r2, d), { recursive: true });
+  execFileSync("git", ["init", "-q"], { cwd: r2 });
+  writeFileSync(path.join(r2, ".gitignore"), "*.log\n!keep/*.log\nbuild/\nout/\n");
+  writeFileSync(path.join(r2, ".git/info/exclude"), "secret.txt\n");
+  for (const f of ["x.log", "t/a[1]*.log", "build/deep/k.txt", "build/other.txt", "keep/run-98.journal.log", "keep/expected.json", "other.log", "secret.txt", "out/o", "a.txt"])
+    writeFileSync(path.join(r2, f), f);
+  execFileSync("git", ["add", "-f", "x.log", "t/a[1]*.log", "build/deep/k.txt"], { cwd: r2 });
+  execFileSync("git", ["add", "keep/run-98.journal.log"], { cwd: r2 });
+  const top2 = execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: r2, encoding: "utf8" }).trim();
+  const gitFiles = execFileSync("git", ["ls-files", "-co", "--exclude-standard"], { cwd: top2, encoding: "utf8" }).trim().split("\n").sort();
+  // The client calls the fake rsync (dry runs reach the real one); with rules it passes them as a merge file.
+  const r = runBox(["true"], { cwd: r2 });
+  assert.match(r.calls[0] ?? "", /^rsync -a --delete --mkpath --filter=\. \S+\/rules --safe-links --exclude=\/\.git --filter=:- \.gitignore /);
+  // Run the client's real rules through the real rsync into a scratch folder, as the sync would.
+  const dest = path.join(root, "dest"), rules = path.join(root, "rules");
+  writeFileSync(rules, `${gitExactRules(top2).join("\n")}\n`);
+  execFileSync(REAL_RSYNC, ["-a", "--delete", "--mkpath", `--filter=. ${rules}`, ...BASE_FILTER, `${top2}/`, `${dest}/`]);
+  const got = execFileSync("find", [".", "-type", "f"], { cwd: dest, encoding: "utf8" }).trim().split("\n").map((p) => p.slice(2)).sort();
+  assert.deepEqual(got, gitFiles);
+  // A file deleted locally disappears on the next sync; an ignored output there survives.
+  rmSync(path.join(r2, "a.txt")); mkdirSync(path.join(dest, "out")); writeFileSync(path.join(dest, "out", "o"), "remote build output");
+  writeFileSync(rules, `${gitExactRules(top2).join("\n")}\n`);
+  execFileSync(REAL_RSYNC, ["-a", "--delete", "--mkpath", `--filter=. ${rules}`, ...BASE_FILTER, `${top2}/`, `${dest}/`]);
+  assert.equal(existsSync(path.join(dest, "a.txt")), false);
+  assert.equal(readFileSync(path.join(dest, "out", "o"), "utf8"), "remote build output");
+});
+
+test("the client's real remote rsync command lines pass the server's allowlist", () => {
+  // Real rsync, with its remote shell replaced by a script that prints the words rsync asks the server to run and fails.
+  const cap = path.join(root, "cap"), words = path.join(cap, "words");
+  mkdirSync(cap);
+  writeFileSync(path.join(cap, "rsh"), `#!/bin/sh\nshift\necho "$*" >> ${words}\nexit 1\n`);
+  chmodSync(path.join(cap, "rsh"), 0o755);
+  writeFileSync(path.join(cap, "ssh"), "#!/bin/sh\nexit 0\n");
+  chmodSync(path.join(cap, "ssh"), 0o755);
+  const run = (args: string[]) => spawnSync(process.execPath, [TOOL, ...args], {
+    cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+    env: { PATH: `${cap}:${path.dirname(REAL_RSYNC)}:${process.env.PATH ?? ""}`, HOME: home, BOXD_HOST: "test", RSYNC_RSH: path.join(cap, "rsh") },
+  });
+  run(["true"]); // the sync
+  run(["--no-sync", "--pull", "target/out", "true"]); // a pull
+  const lines = readFileSync(words, "utf8").trim().split("\n");
+  assert.equal(lines.length, 2, lines.join("\n"));
+  assert.match(lines[0] ?? "", new RegExp(`^rsync --server -\\S+ --delete --safe-links --mkpath \\. jobs/${box}/src/$`));
+  assert.match(lines[1] ?? "", new RegExp(`^rsync --server --sender -\\S+ \\. jobs/${box}/src/target/out$`));
+  // The server side, with its own rsync replaced by a recorder: every captured line reaches rsync unchanged, inside the work area.
+  const work = path.join(root, "srvwork"), rec = path.join(root, "rsync-recorded");
+  mkdirSync(path.join(cap, "srv"));
+  writeFileSync(path.join(cap, "srv", "rsync"), `#!/bin/sh\necho "$*" > ${rec}\npwd >> ${rec}\n`);
+  chmodSync(path.join(cap, "srv", "rsync"), 0o755);
+  mkdirSync(work);
+  for (const line of lines) {
+    const r = spawnSync("bash", [path.join(REPO, "server/boxd-pod")], {
+      encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+      env: { PATH: `${cap}/srv:${process.env.PATH ?? ""}`, HOME: home, BOXD_CONF: "/nonexistent", BOXD_WORK: work, SSH_ORIGINAL_COMMAND: line },
+    });
+    assert.equal(r.status, 0, `${line}: ${r.stderr}`);
+    assert.equal(readFileSync(rec, "utf8"), `${line.slice("rsync ".length)}\n${work}\n`);
+  }
+});
+
+test("--no-sync skips rsync; options reach the remote line; -- ends options", () => {
+  const r = runBox(["--no-sync", "--image", "rust:1.83", "--recreate", "--snapshot", "--", "--version"]);
+  assert.deepEqual(r.calls, [`ssh boxd-test pod run ${box} --image rust:1.83 --recreate --snapshot -- ${b64("--version")}`]);
+});
+
+test("exit code passes through, including 125", () => {
+  for (const n of ["3", "101", "125"]) assert.equal(runBox(["--no-sync", "true"], { env: { FAKE_SSH_EXIT: n } }).code, Number(n));
+});
+
+test("--pull copies each path back after a foreground run, also after a failed command", () => {
+  const r = runBox(["--no-sync", "--pull", "target/out", "--pull", "a.txt", "make"], { env: { FAKE_SSH_EXIT: "2" } });
+  assert.equal(r.code, 2);
+  assert.deepEqual(r.calls.slice(1), [
+    `rsync -a --mkpath boxd-test:jobs/${box}/src/target/out ${top}/target/`,
+    `rsync -a --mkpath boxd-test:jobs/${box}/src/a.txt ${top}/`,
+  ]);
+});
+
+test("--pull of a folder, twice and with a trailing slash, gives the folder itself, never a copy inside it", () => {
+  const remote = path.join(root, "remote");
+  const src = path.join(remote, "jobs", box, "src");
+  mkdirSync(path.join(src, "out/sub"), { recursive: true });
+  writeFileSync(path.join(src, "out/sub/f"), "built");
+  writeFileSync(path.join(src, "one.txt"), "file");
+  for (const p of ["out", "out/", "one.txt"]) {
+    assert.equal(runBox(["--no-sync", "--pull", p, "true"], { env: { FAKE_REMOTE: remote } }).code, 0);
+  }
+  assert.equal(readFileSync(path.join(top, "out/sub/f"), "utf8"), "built");
+  assert.equal(existsSync(path.join(top, "out/out")), false);
+  assert.equal(readFileSync(path.join(top, "one.txt"), "utf8"), "file");
+  rmSync(path.join(top, "out"), { recursive: true }); rmSync(path.join(top, "one.txt"));
+});
+
+test("--pull is skipped when the box refused (125)", () => {
+  assert.equal(runBox(["--no-sync", "--pull", "x", "true"], { env: { FAKE_SSH_EXIT: "125" } }).calls.length, 1);
+});
+
+test("--detach sends a run id, prints it and the log command", () => {
+  const r = runBox(["--no-sync", "--detach", "sleep", "9"]);
+  const id = /^ssh boxd-test pod run \S+ --detach (\d{8}-\d{6}-[0-9a-f]{4}) -- /.exec(r.calls[0] ?? "")?.[1];
+  assert.ok(id, r.calls[0]);
+  assert.match(r.out, new RegExp(`^run ${id}\\nread its log: box log ${id} \\(--follow waits for the end and exits with its code\\)\\n`));
+  assert.match(r.out, /\nfiles outside \/job go when the idle box is removed \(after the host's time limit, 30 minutes by default\); keep results under \/job\/src and fetch them later with: box --no-sync --pull <path> true\n$/);
+});
+
+test("--detach: the fetch command it prints works (same host and box, --no-sync, a pull after a `true`), and --pull with --detach is said to do nothing", () => {
+  const r = runBox(["--no-sync", "--host", "test", "--pod", "shared", "--detach", "--pull", "out", "sleep", "9"]);
+  assert.equal(r.code, 0);
+  assert.match(r.err, /^box: --pull is ignored with --detach .*fetch later with: box --no-sync --pull <path> true\n$/);
+  assert.equal(r.calls.length, 1, "no pull was tried");
+  const fetch = /fetch them later with: (box .*)\n$/.exec(r.out)?.[1]?.replace("<path>", "dist/x").split(" ").slice(1);
+  assert.deepEqual(fetch, ["--host", "test", "--pod", "shared", "--no-sync", "--pull", "dist/x", "true"]);
+  const again = runBox(fetch ?? []);
+  assert.deepEqual(again.calls, [`ssh boxd-test pod run shared -- ${b64("true")}`, `rsync -a --mkpath boxd-test:jobs/shared/src/dist/x ${top}/dist/`]);
+  assert.equal(runBox(["--no-sync", "--detach", "sleep", "9"]).err, "", "nothing to warn about without --pull");
+});
+
+test("--vm reaches the remote line after --image", () => {
+  const r = runBox(["--no-sync", "--vm", "--image", "localhost/toolbox", "true"]);
+  assert.deepEqual(r.calls, [`ssh boxd-test pod run ${box} --image localhost/toolbox --vm -- ${b64("true")}`]);
+});
+
+test("--user reaches the remote line after --vm and --container, and is in the help", () => {
+  const r = runBox(["--no-sync", "--recreate", "--user", "--container", "true"]);
+  assert.deepEqual(r.calls, [`ssh boxd-test pod run ${box} --container --user --recreate -- ${b64("true")}`]);
+  assert.match(runBox(["--help"]).out, /--user /);
+});
+
+test("--detach prints a box log command that repeats --pod, and none of the options that make or change a box", () => {
+  const r = runBox(["--no-sync", "--pod", "shared", "--image", "localhost/toolbox", "--vm", "--detach", "true"]);
+  assert.match(r.out, /read its log: box log \S+ --pod shared \(--follow/);
+  assert.doesNotMatch(r.out, /--image|--vm|cat /);
+  assert.doesNotMatch(r.out, /--detach|--recreate|--snapshot/);
+});
+
+test("not in a git repository: exit 2, nothing run", () => {
+  const r = runBox(["true"], { cwd: root });
+  assert.equal(r.code, 2);
+  assert.match(r.err, /not inside a git worktree/);
+  assert.deepEqual(r.calls, []);
+});
+
+test("--image-file goes right after where --image goes and before --vm", () => {
+  const r = runBox(["--no-sync", "--vm", "--recreate", "--image-file", "ci/Containerfile", "true"]);
+  assert.deepEqual(r.calls, [`ssh boxd-test pod run ${box} --image-file ci/Containerfile --vm --recreate -- ${b64("true")}`]);
+});
+
+test("--image-file: with --image, without a value, or with a path outside the worktree is a usage error, nothing sent", () => {
+  for (const args of [
+    ["--image", "rust:1.83", "--image-file", "Containerfile", "true"], ["--image-file", "Containerfile", "--image", "rust:1.83", "true"],
+    ["--image-file"], ["--image-file", "/etc/passwd", "true"], ["--image-file", "../x", "true"], ["--image-file", "a/../x", "true"],
+    ["--image-file", "a//b", "true"], ["--image-file", "a b", "true"], ["--image-file", ".", "true"],
+  ]) {
+    const r = runBox(["--no-sync", ...args]);
+    assert.equal(r.code, 2, args.join(" "));
+    assert.deepEqual(r.calls, [], args.join(" "));
+  }
+});
+
+test("usage errors exit 2; --help exits 0", () => {
+  assert.equal(runBox([]).code, 2);
+  assert.equal(runBox(["--bogus", "x"]).code, 2);
+  assert.equal(runBox(["--pod", "Bad Name", "true"]).code, 2);
+  assert.equal(runBox(["--image"]).code, 2);
+  const h = runBox(["--help"]);
+  assert.equal(h.code, 0);
+  assert.match(h.out, /--detach/);
+  assert.deepEqual(h.calls, []);
+});
+
+test("the host comes from --host, then BOXD_HOST, then the host box setup saved; none is an error", () => {
+  assert.deepEqual(runBox(["--no-sync", "--host", "other", "true"]).calls, [`ssh boxd-other pod run ${box} -- ${b64("true")}`]);
+  mkdirSync(path.join(home, ".config/boxd"), { recursive: true });
+  writeFileSync(path.join(home, ".config/boxd/host"), "saved\n");
+  assert.deepEqual(runBox(["--no-sync", "true"], { env: { BOXD_HOST: "" } }).calls, [`ssh boxd-saved pod run ${box} -- ${b64("true")}`]);
+  rmSync(path.join(home, ".config/boxd/host"));
+  const r = runBox(["--no-sync", "true"], { env: { BOXD_HOST: "" } });
+  assert.equal(r.code, 2);
+  assert.match(r.err, /no build server named/);
+  assert.deepEqual(r.calls, []);
+  assert.equal(runBox(["--no-sync", "--host", "bad name", "true"]).code, 2);
+});
+
+test("--detach repeats --host in the log command", () => {
+  const r = runBox(["--no-sync", "--host", "other", "--detach", "true"]);
+  assert.match(r.out, /read its log: box log \S+ --host other /);
+});
+
+test("setup writes the ssh entry, the default host, the skill; a second run changes nothing", () => {
+  const h = mkdtempSync(path.join(root, "setup-"));
+  const skill = path.join(root, "SKILL.md");
+  writeFileSync(skill, "---\nname: box\n---\n");
+  const run = (...a: string[]) => spawnSync(process.execPath, [TOOL, "setup", ...a], { encoding: "utf8", env: { HOME: h, BOXD_SKILL: skill } });
+  mkdirSync(path.join(h, ".ssh"));
+  writeFileSync(path.join(h, ".ssh/config"), "Host other\n  HostName elsewhere\n");
+  const r = run("srv", "--hostname", "srv.example", "--identity", "/k/id");
+  assert.equal(r.status, 0, r.stderr);
+  const conf = readFileSync(path.join(h, ".ssh/config"), "utf8");
+  assert.equal(conf, [
+    "Host other", "  HostName elsewhere", "",
+    "# boxd:host:boxd-srv:begin", "Host boxd-srv", "  HostName srv.example", "  Port 2222", "  User boxd", "  IdentityFile /k/id", "  IdentitiesOnly yes", "# boxd:host:boxd-srv:end", "",
+  ].join("\n"));
+  assert.equal(readFileSync(path.join(h, ".config/boxd/host"), "utf8"), "srv\n");
+  assert.equal(readFileSync(path.join(h, ".config/boxd/hosts.order"), "utf8"), "srv\n");
+  assert.equal(readFileSync(path.join(h, ".claude/skills/box/SKILL.md"), "utf8"), "---\nname: box\n---\n");
+  assert.equal(readFileSync(path.join(h, ".config/boxd/wake.json"), "utf8"), "{}\n");
+  assert.equal(run("srv", "--hostname", "srv.example", "--identity", "/k/id").status, 0);
+  assert.equal(readFileSync(path.join(h, ".ssh/config"), "utf8"), conf, "a second run must not add a second block");
+  assert.equal(statSync(path.join(h, ".ssh/config")).mode & 0o777, 0o600);
+  // a second host keeps the first as the default, --default switches
+  run("lap", "--port", "22", "--user", "build");
+  assert.equal(readFileSync(path.join(h, ".config/boxd/host"), "utf8"), "srv\n");
+  assert.equal(readFileSync(path.join(h, ".config/boxd/hosts.order"), "utf8"), "srv\nlap\n", "a new host goes last");
+  run("lap", "--default");
+  assert.equal(readFileSync(path.join(h, ".config/boxd/host"), "utf8"), "lap\n");
+  assert.equal(readFileSync(path.join(h, ".config/boxd/hosts.order"), "utf8"), "lap\nsrv\n", "--default puts it first");
+});
+
+test("setup with wake addresses puts the Match line at the top and the addresses in wake.json; without them both go away", () => {
+  const h = mkdtempSync(path.join(root, "setup-"));
+  const run = (...a: string[]) => spawnSync(process.execPath, [TOOL, "setup", ...a], { encoding: "utf8", env: { HOME: h } });
+  mkdirSync(path.join(h, ".ssh"));
+  writeFileSync(path.join(h, ".ssh/config"), "Host other\n  HostName elsewhere\n");
+  assert.equal(run("srv", "--wake", "00:11:22:33:44:55,00:11:22:33:44:66", "--broadcast", "10.9.9.255").status, 0);
+  const conf = readFileSync(path.join(h, ".ssh/config"), "utf8").split("\n");
+  assert.equal(conf[0], "# boxd:wake:boxd-srv:begin");
+  assert.match(conf[1] ?? "", /^Match originalhost boxd-srv exec "node \/.*box-wake\.mjs %n"$/);
+  assert.ok(conf.indexOf("Host other") > conf.indexOf("# boxd:wake:boxd-srv:end"), "the hook sits before every Host block");
+  assert.deepEqual(JSON.parse(readFileSync(path.join(h, ".config/boxd/wake.json"), "utf8")),
+    { "boxd-srv": { target: "srv:2222", macs: ["00:11:22:33:44:55", "00:11:22:33:44:66"], broadcast: "10.9.9.255" } });
+  assert.equal(run("srv").status, 0);
+  assert.doesNotMatch(readFileSync(path.join(h, ".ssh/config"), "utf8"), /Match originalhost/);
+  assert.equal(readFileSync(path.join(h, ".config/boxd/wake.json"), "utf8"), "{}\n");
+});
+
+test("setup refuses bad input and writes nothing", () => {
+  const h = mkdtempSync(path.join(root, "setup-"));
+  const run = (...a: string[]) => spawnSync(process.execPath, [TOOL, "setup", ...a], { encoding: "utf8", env: { HOME: h } });
+  for (const bad of [[], ["a b"], ["srv", "--port", "0"], ["srv", "--port", "x"], ["srv", "--wake", "zz"], ["srv", "--wake", "00:11:22:33:44:55"],
+    ["srv", "--broadcast", "not an address"], ["srv", "--user", "a b"], ["srv", "--bogus", "1"], ["srv", "--port"], ["srv", "two"]]) {
+    assert.equal(run(...bad).status, 2, JSON.stringify(bad));
+  }
+  assert.equal(run("--help").status, 0);
+  assert.equal(existsSync(path.join(h, ".ssh")), false);
+});
+
+test("no machine address, card name or account is written into the program", () => {
+  const src = readFileSync(TOOL, "utf8") + readFileSync(path.join(REPO, "client/box-wake.mjs"), "utf8");
+  assert.doesNotMatch(src, /\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b|[0-9a-f]{2}(:[0-9a-f]{2}){5}|tower|\/work\b/i);
+});
+
+test("committed box.mjs matches a fresh tsc-rs build", () => {
+  const out = mkdtempSync(path.join(tmpdir(), "box-build-"));
+  try {
+    execFileSync(path.join(process.env.HOME ?? "", ".local/share/pnpm/bin/tsc-rs"), ["-p", path.join(REPO, "client"), "--outDir", out]);
+    assert.equal(readFileSync(TOOL, "utf8"), readFileSync(path.join(out, "box.mjs"), "utf8"), "stale: run tsc-rs -p client");
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
+});
+
+test("box ps asks the host for this worktree's box and prints a table, oldest first as sent", () => {
+  const r = runBox(["ps"], { env: { FAKE_SSH_OUT: "4242\t7300\t65\t/job/src\tvitest run\n77\t42\t0\t?\tsleep 5" } });
+  assert.equal(r.code, 0);
+  assert.deepEqual(r.calls, [`ssh boxd-test pod ps ${box}`]);
+  assert.deepEqual(r.out.trimEnd().split("\n").map((l: string) => l.split(/ {2,}/)), [
+    ["PID", "AGE", "CPU", "FOLDER", "COMMAND"],
+    ["4242", "2h01m", "1m05s", "/job/src", "vitest run"],
+    ["77", "42s", "0s", "?", "sleep 5"],
+  ]);
+});
+
+test("box ps --pod names the box; the host's exit code passes through; nothing is synced", () => {
+  const r = runBox(["ps", "--pod", "other-box"], { env: { FAKE_SSH_EXIT: "125" } });
+  assert.equal(r.code, 125);
+  assert.deepEqual(r.calls, ["ssh boxd-test pod ps other-box"]);
+  assert.equal(runBox(["ps", "--bogus"]).code, 2);
+});
+
+test("a silent foreground call gets the box ps table on stderr, every line prefixed; stdout and exit code untouched", () => {
+  const count = path.join(root, "ps-count");
+  const fifo = path.join(root, "ps-fifo");
+  rmSync(count, { force: true }); rmSync(fifo, { force: true });
+  execFileSync("mkfifo", [fifo]);
+  const r = runBox(["--no-sync", "--ps-after", "0.0001", "--", "make"], { env: { FAKE_PS_COUNT: count, FAKE_PS_FIFO: fifo } });
+  assert.equal(r.code, 3);
+  assert.equal(r.out, "done\n");
+  const lines = r.err.trimEnd().split("\n");
+  assert.ok(lines.length >= 3, r.err);
+  for (const l of lines) assert.match(l, /^\[box ps\] /, l);
+  assert.match(lines[0] as string, new RegExp(`^\\[box ps\\] no output for \\d+s; processes in box ${box}, oldest first:$`));
+  assert.match(r.err, /\[box ps\] PID +AGE +CPU +FOLDER +COMMAND\n\[box ps\] 7 +1h00m +0s +\/job\/src +sleep 99\n/);
+  assert.ok(r.calls.includes(`ssh boxd-test pod ps ${box}`));
+});
+
+test("--ps-after 0 and BOXD_PS_AFTER=0 turn the report off; a bad value is a usage error", () => {
+  for (const env of [{}, { BOXD_PS_AFTER: "0" }]) {
+    const r = runBox(["--no-sync", ...("BOXD_PS_AFTER" in env ? [] : ["--ps-after", "0"]), "--", "make"], { env });
+    assert.equal(r.code, 0);
+    assert.equal(r.calls.filter((c: string) => c.includes(" pod ps ")).length, 0);
+  }
+  assert.equal(runBox(["--no-sync", "--ps-after", "soon", "--", "make"]).code, 2);
+});
+
+test("--env: the value travels only in ssh's environment (SendEnv), the name on the command line", () => {
+  const r = runBox(["--no-sync", "--env", "GH_TOKEN", "--", "make"], { env: { GH_TOKEN: "s3cr3t-value" } });
+  assert.equal(r.code, 0);
+  assert.ok(r.calls.includes("ssh-env BOXD_SECRET_GH_TOKEN"), r.calls.join("\n"));
+  const call = r.calls.find((c: string) => c.startsWith("ssh ") && c.includes("pod run")) as string;
+  assert.match(call, /-o SendEnv=BOXD_SECRET_GH_TOKEN /);
+  assert.match(call, / pod run \S+ --env GH_TOKEN -- /);
+  assert.ok(!r.calls.join("\n").includes("s3cr3t-value"));
+});
+
+test("--env refuses a name that is not set, or not a credential name, before any call", () => {
+  assert.equal(runBox(["--no-sync", "--env", "GH_TOKEN", "--", "make"]).code, 2);
+  const r = runBox(["--no-sync", "--env", "PATH", "--", "make"], { env: { PATH: process.env.PATH ?? "" } });
+  assert.equal(r.code, 2);
+  assert.deepEqual(r.calls, []);
+});
+
+test("duration: seconds, minutes, hours", () => {
+  assert.deepEqual([0, 59, 60, 3599, 3600, 7322].map(duration), ["0s", "59s", "1m00s", "59m59s", "1h00m", "2h02m"]);
+});
+
+test("psTable keeps a line it cannot parse and says when nothing runs", () => {
+  assert.equal(psTable(""), "no processes running in the box\n");
+  assert.match(psTable("odd line without tabs\n"), /^PID.*\nodd line without tabs\n$/);
+});
+
+// Seam: the real server script (PS_SCRIPT in server/boxd-pod, run here on this machine's /proc as it runs in a box)
+// feeds the real client formatter: every line it prints is a five-column row the client understands.
+test("seam: every line the server's process report prints is a row psTable parses", () => {
+  const src = readFileSync(path.join(REPO, "server/boxd-pod"), "utf8");
+  const script = execFileSync("bash", ["-c", 'eval "$(sed -n "/^PS_SCRIPT=/,/sort -t/p" "$1")"; printf %s "$PS_SCRIPT"', "_", path.join(REPO, "server/boxd-pod")], { encoding: "utf8" });
+  assert.ok(src.includes("PS_SCRIPT=") && script.includes("/proc/uptime"));
+  const raw = execFileSync("sh", ["-c", script], { encoding: "utf8" });
+  const lines = psTable(raw).trimEnd().split("\n");
+  assert.ok(lines.length > 2, "the report found processes");
+  for (const l of lines.slice(1)) assert.match(l, /^\d+ +\d+[hms]\S* +\d+[hms]\S* +\S/, l);
+});
+
+// ---- choosing among several build servers (docs/designs/load-management.md; acceptance scenarios 1 to 9 against the
+// fake ssh; the same scenarios against real hosts are in tests/pod-acceptance.sh) ----
+
+// Seam: a status line captured from the REAL boxd-pod (fake podman and msb first on PATH), never typed by hand.
+function realStatus(vmRunning: number, capMb?: number): string {
+  const d = mkdtempSync(path.join(root, "srv-")), sbin = path.join(d, "bin"), work = path.join(d, "work"), imgs = path.join(d, "images");
+  for (const x of [sbin, work, imgs]) mkdirSync(x);
+  writeFileSync(path.join(imgs, "toolbox.tar"), "");
+  const fake = { podman: "exit 0", pgrep: "exit 0", // every listed sandbox has a machine process
+    msb: `[ "$1" = ls ] || exit 0\necho "NAME IMAGE STATUS"\ni=0; while [ $i -lt ${vmRunning} ]; do echo "pod-v$i img running"; i=$((i+1)); done` };
+  for (const [n, body] of Object.entries(fake)) { writeFileSync(path.join(sbin, n), `#!/bin/sh\n${body}\n`); chmodSync(path.join(sbin, n), 0o755); }
+  if (capMb !== undefined) {   // a measurable build cgroup: nothing in use, so mem_free_mb is the cap
+    mkdirSync(path.join(d, "cg/boxd"), { recursive: true });
+    writeFileSync(path.join(d, "cg/boxd/memory.max"), `${capMb * 1048576}\n`);
+    writeFileSync(path.join(d, "cg/boxd/memory.stat"), "anon 0\nshmem 0\n");
+  }
+  const r = spawnSync("bash", [path.join(REPO, "server/boxd-pod")], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+    env: { PATH: `${sbin}:${process.env.PATH ?? ""}`, HOME: home, BOXD_CONF: "/nonexistent", BOXD_WORK: work, BOXD_IMAGES_DIR: imgs, BOXD_CGROOT: path.join(d, "cg"), BOXD_VM_MAX: "3", SSH_ORIGINAL_COMMAND: "pod status" } });
+  assert.equal(r.status, 0, r.stderr);
+  return r.stdout.trim();
+}
+const FULL = realStatus(3), FREE = realStatus(1);
+const REFUSAL = "boxd-pod: no room for another virtual machine (3 of 3 running); wait for one to end or stop one";
+const { parseStatus, choose, NO_ROOM, VERSION } = await import(TOOL);
+
+type Fake = { name: string; status?: string; runExit?: number; runErr?: string };
+// A user with the given build servers registered (ssh config markers, hosts.order) and one folder of fake host files.
+function servers(hs: Fake[], opts: { wake?: Record<string, string>; order?: string[] } = {}) {
+  const d = mkdtempSync(path.join(root, "servers-")), h = path.join(d, "home"), fh = path.join(d, "fake");
+  for (const x of [path.join(h, ".ssh"), path.join(h, ".config/boxd"), fh]) mkdirSync(x, { recursive: true });
+  writeFileSync(path.join(h, ".ssh/config"), hs.map((x) => `# boxd:host:boxd-${x.name}:begin\nHost boxd-${x.name}\n# boxd:host:boxd-${x.name}:end\n`).join("\n"));
+  writeFileSync(path.join(h, ".config/boxd/hosts.order"), `${(opts.order ?? hs.map((x) => x.name)).join("\n")}\n`);
+  writeFileSync(path.join(h, ".config/boxd/host"), `${hs[0]?.name}\n`);
+  if (opts.wake) writeFileSync(path.join(h, ".config/boxd/wake.json"), JSON.stringify(Object.fromEntries(Object.entries(opts.wake).map(([n, t]) => [`boxd-${n}`, { target: t, macs: [], broadcast: "x" }]))));
+  const s = { home: h, fake: fh, set(x: Fake) {
+    const f = (e: string) => path.join(fh, `boxd-${x.name}.${e}`);
+    for (const e of ["status", "run.exit", "run.err"]) rmSync(f(e), { force: true });
+    if (x.status !== undefined) writeFileSync(f("status"), `${x.status}\n`);
+    if (x.runExit !== undefined) writeFileSync(f("run.exit"), `${x.runExit}\n`);
+    if (x.runErr !== undefined) writeFileSync(f("run.err"), `${x.runErr}\n`);
+  } };
+  hs.forEach((x) => s.set(x));
+  return s;
+}
+let repoN = 0;
+function newRepo() {
+  const cwd = path.join(root, `worktree-${++repoN}`);
+  mkdirSync(cwd);
+  execFileSync("git", ["init", "-q"], { cwd });
+  const top = execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd, encoding: "utf8" }).trim();
+  return { cwd, top, box: plan(top, [], ["x"]).box, placed: () => { try { return readFileSync(path.join(cwd, ".git/boxd-host"), "utf8"); } catch { return undefined; } } };
+}
+type Repo = ReturnType<typeof newRepo>;
+type Servers = ReturnType<typeof servers>;
+const go = (rp: Repo, s: Servers, args: string[], env: Record<string, string> = {}) => runBox(args, { cwd: rp.cwd, env: { BOXD_HOST: "", HOME: s.home, FAKE_HOSTS: s.fake, ...env } });
+const probes = (calls: string[]) => calls.filter((c) => c.endsWith(" pod status")).sort();
+const probe = (n: string) => `ssh -o ConnectTimeout=3 -o BatchMode=yes boxd-${n} pod status`;
+const rest = (calls: string[]) => calls.filter((c) => !c.endsWith(" pod status"));
+const sync = (rp: Repo, n: string) => `rsync -a --delete --mkpath --safe-links --exclude=/.git --filter=:- .gitignore ${rp.top}/ boxd-${n}:jobs/${rp.box}/src/`;
+const runLine = (rp: Repo, n: string, ...opts: string[]) => `ssh boxd-${n} pod run ${rp.box} ${opts.join(" ")} -- ${b64("true")}`.replace("  --", " --");
+const choices = (s: Servers) => { try { return readFileSync(path.join(s.home, ".local/state/boxd/choices.log"), "utf8").trim().split("\n").map((l) => l.split("\t")); } catch { return []; } };
+const closedPort = async () => { const s = net.createServer().listen(0, "127.0.0.1"); await once(s, "listening"); const p = (s.address() as net.AddressInfo).port; s.close(); await once(s, "close"); return p; };
+
+test("seam: the real server's status line is what the client's choice reads", () => {
+  assert.deepEqual(Object.keys(parseStatus(FULL)), ["version", "engines", "cpus", "load1", "vm_used", "vm_max", "vm_room", "boxes", "disk_pct", "mem_free_mb", "images", "mem_avail_mb", "group_mem_used_mb", "group_mem_max_mb", "vm_why", "vm_fit_mb"]);
+  assert.equal(parseStatus(FULL).vm_room, "no");
+  assert.equal(parseStatus(FREE).vm_room, "yes");
+  assert.equal(parseStatus(FREE).images, "toolbox");
+  const on = (status: string, req: object) => choose([{ name: "a", state: "awake", status }], req);
+  assert.deepEqual(on(FULL, { vm: true }).refusal, ["a: 3 of 3 running"]);
+  assert.equal(on(FREE, { vm: true, image: "localhost/toolbox:latest" }).host, "a");
+  assert.deepEqual(on(FREE, { vm: false, image: "localhost/other" }).refusal, ["a: image other missing"]);
+});
+
+test("scenario 1 overflow: the first vm call of a worktree goes to the next host when the first is full; placement and log", () => {
+  const s = servers([{ name: "tower", status: FULL }, { name: "laptop", status: FREE }]), rp = newRepo();
+  const r = go(rp, s, ["--vm", "true"]);
+  assert.equal(r.code, 0, r.err);
+  assert.deepEqual(probes(r.calls), [probe("laptop"), probe("tower")]);
+  assert.deepEqual(rest(r.calls), [sync(rp, "laptop"), runLine(rp, "laptop", "--vm")]);
+  assert.equal(rp.placed(), "laptop\n");
+  const log = choices(s);
+  assert.equal(log.length, 1);
+  assert.deepEqual(log[0]?.slice(1), [rp.box, "vm,-", "laptop", "overflow", "tower=3 of 3 running,laptop=awake"]);
+  assert.match(log[0]?.[0] ?? "", /^\d{4}-\d\d-\d\dT/);
+});
+
+test("scenarios 2 and 3 stickiness and move: later calls stay, ask nobody; --host moves and records", () => {
+  const s = servers([{ name: "tower", status: FULL }, { name: "laptop", status: FREE }]), rp = newRepo();
+  go(rp, s, ["--vm", "true"]);
+  s.set({ name: "tower", status: FREE }); // room again on the first host: the worktree still stays where its files are
+  const again = go(rp, s, ["--vm", "true"]);
+  assert.deepEqual(again.calls, [sync(rp, "laptop"), runLine(rp, "laptop", "--vm")]);
+  const moved = go(rp, s, ["--host", "tower", "--vm", "true"]);
+  assert.deepEqual(moved.calls, [sync(rp, "tower"), runLine(rp, "tower", "--vm")]);
+  assert.equal(rp.placed(), "tower\n");
+  assert.deepEqual(go(rp, s, ["--vm", "true"]).calls, [sync(rp, "tower"), runLine(rp, "tower", "--vm")]);
+  assert.deepEqual(choices(s).map((l) => l[4]), ["overflow", "moved"]);
+  // --host naming the host it is already on records and logs nothing more
+  go(rp, s, ["--host", "tower", "--vm", "true"]);
+  assert.equal(choices(s).length, 2);
+});
+
+// Spread (0.4.8): the first host in order with room took every new worktree until it refused, and it refused only once it
+// was out of memory (2026-11-15, the tower: eight machines, one killed by the kernel, laptop used only when asked).
+test("spread: a new worktree goes to the host with the most free memory; ties keep the box hosts order", () => {
+  const small = realStatus(1, 20000), big = realStatus(1, 30000);
+  assert.equal(parseStatus(big).mem_free_mb, "30000");
+  assert.equal(parseStatus(big).vm_room, "yes");
+  const pick = (a: string, b: string, vm: boolean) => choose([{ name: "tower", state: "awake", status: a }, { name: "laptop", state: "awake", status: b }], { vm });
+  assert.deepEqual([pick(small, big, true).host, pick(small, big, true).reason], ["laptop", "spread"]);
+  assert.deepEqual(pick(small, big, true).room, ["laptop", "tower"], "the retry after a lost race walks the rest by free memory too");
+  assert.equal(pick(small, big, false).host, "laptop", "containers spread the same way");
+  assert.deepEqual([pick(big, small, true).host, pick(big, small, true).reason], ["tower", "order"]);
+  assert.deepEqual([pick(big, big, true).host, pick(big, big, true).reason], ["tower", "order"]);
+  assert.equal(pick(FREE, big, true).host, "laptop", "a host whose memory is unknown comes after one that reports it");
+  assert.equal(choose([{ name: "tower", state: "asleep" }, { name: "laptop", state: "awake", status: big }], { vm: true }).host, "tower", "an asleep host runs nothing: most room");
+  assert.equal(pick(FULL, big, true).reason, "overflow", "the first host had no room: still overflow");
+});
+
+test("spread through the command: the placement and the choices log name the host with more free memory", () => {
+  const s = servers([{ name: "tower", status: realStatus(1, 20000) }, { name: "laptop", status: realStatus(1, 30000) }]), rp = newRepo();
+  const r = go(rp, s, ["--vm", "true"]);
+  assert.equal(r.code, 0, r.err);
+  assert.deepEqual(rest(r.calls), [sync(rp, "laptop"), runLine(rp, "laptop", "--vm")]);
+  assert.equal(rp.placed(), "laptop\n");
+  assert.deepEqual(choices(s)[0]?.slice(3, 5), ["laptop", "spread"]);
+});
+
+test("scenario 4 all full: exit 75 at once with one reason per host, nothing synced, nothing placed", () => {
+  const s = servers([{ name: "tower", status: FULL }, { name: "laptop", status: FULL }]), rp = newRepo();
+  const r = go(rp, s, ["--vm", "true"]);
+  assert.equal(r.code, NO_ROOM);
+  assert.match(r.err, /^box: no build server has room for this call\n  tower: 3 of 3 running\n  laptop: 3 of 3 running\n$/);
+  assert.deepEqual(rest(r.calls), []);
+  assert.equal(rp.placed(), undefined);
+  assert.equal(choices(s).length, 0);
+});
+
+test("scenario 5 sleeping build server first: it is chosen without any ssh to it, the call itself wakes it", async () => {
+  const s = servers([{ name: "tower" }, { name: "laptop", status: FREE }], { wake: { tower: `127.0.0.1:${await closedPort()}` } }), rp = newRepo();
+  const r = go(rp, s, ["--vm", "true"]);
+  assert.equal(r.code, 0, r.err);
+  assert.deepEqual(rest(r.calls), [sync(rp, "tower"), runLine(rp, "tower", "--vm")]);
+  assert.ok(!r.calls.some((c) => c.includes("boxd-tower pod status")), "a status ssh would have woken the sleeping host");
+  assert.deepEqual(choices(s)[0]?.slice(3), ["tower", "order", "tower=asleep,laptop=awake"]);
+});
+
+test("scenario 6 never wake to ask: box hosts says asleep and makes no ssh to a host that does not answer", async () => {
+  const up = net.createServer().listen(0, "127.0.0.1");
+  await once(up, "listening");
+  const upPort = (up.address() as net.AddressInfo).port;
+  const s = servers([{ name: "tower" }, { name: "laptop", status: FREE }, { name: "third" }], { wake: { tower: `127.0.0.1:${await closedPort()}`, laptop: `127.0.0.1:${upPort}` } });
+  const r = go(newRepo(), s, ["hosts"]);
+  up.close();
+  assert.equal(r.code, 0, r.err);
+  assert.deepEqual(r.out.trimEnd().split("\n"), ["tower\tsleeps\tasleep\t-", `laptop\tsleeps\tawake\t${FREE}`, "third\talways on\tunreachable\t-"]);
+  assert.deepEqual(r.calls.sort(), [probe("third"), probe("laptop")].sort());
+  assert.equal(go(newRepo(), { ...s, home: mkdtempSync(path.join(root, "bare-")) }, ["hosts"]).code, 2);
+});
+
+test("scenario 7 lost race: no room when the call arrives, so it is retried on the next host with room, and the placement follows", () => {
+  const s = servers([{ name: "tower", status: FREE, runExit: NO_ROOM, runErr: REFUSAL }, { name: "laptop", status: FREE }]), rp = newRepo();
+  const r = go(rp, s, ["--vm", "true"]);
+  assert.equal(r.code, 0, r.err);
+  assert.deepEqual(rest(r.calls), [sync(rp, "tower"), runLine(rp, "tower", "--vm"), sync(rp, "laptop"), runLine(rp, "laptop", "--vm")]);
+  assert.equal(rp.placed(), "laptop\n");
+  assert.deepEqual(choices(s).map((l) => [l[3], l[4]]), [["tower", "order"], ["laptop", "retry"]]);
+  assert.match(r.err, /no room for another virtual machine/, "the refusal of the first host is still shown");
+});
+
+test("lost race: exit 75 from the command itself (no refusal text) is never retried; a refusal with nowhere to go ends placed on nothing", () => {
+  const s = servers([{ name: "tower", status: FREE, runExit: NO_ROOM }, { name: "laptop", status: FREE }]), rp = newRepo();
+  const r = go(rp, s, ["--vm", "true"]);
+  assert.equal(r.code, NO_ROOM);
+  assert.equal(r.calls.filter((c) => c.includes(" pod run ")).length, 1);
+  assert.equal(rp.placed(), "tower\n");
+  const s2 = servers([{ name: "tower", status: FREE, runExit: NO_ROOM, runErr: REFUSAL }, { name: "laptop", status: FULL }]), rp2 = newRepo();
+  const r2 = go(rp2, s2, ["--vm", "true"]);
+  assert.equal(r2.code, NO_ROOM);
+  assert.match(r2.err, /box: no other build server has room\n  laptop: 3 of 3 running\n/);
+  assert.equal(rp2.placed(), undefined, "no box was made, so the worktree is not placed");
+});
+
+test("scenario 8 host down: refused naming it when the other is full, no delay or detour when the other has room", () => {
+  const s = servers([{ name: "tower", status: FULL }, { name: "laptop" }]), rp = newRepo();
+  const r = go(rp, s, ["--vm", "true"]);
+  assert.equal(r.code, NO_ROOM);
+  assert.match(r.err, /  tower: 3 of 3 running\n  laptop: unreachable\n/);
+  s.set({ name: "tower", status: FREE });
+  const ok = go(rp, s, ["--vm", "true"]);
+  assert.equal(ok.code, 0);
+  assert.deepEqual(rest(ok.calls), [sync(rp, "tower"), runLine(rp, "tower", "--vm")]);
+});
+
+test("a placed worktree whose host is full is refused with the exact command that moves it; nothing is moved", () => {
+  const s = servers([{ name: "tower", status: FULL, runExit: NO_ROOM, runErr: REFUSAL }, { name: "laptop", status: FREE }]), rp = newRepo();
+  go(rp, s, ["--host", "tower", "--no-sync", "true"]); // places it on tower (the fake refuses the run; the placement stays)
+  const r = go(rp, s, ["--no-sync", "--vm", "sh", "-c", "make all"]);
+  assert.equal(r.code, NO_ROOM);
+  assert.match(r.err, /box: tower has no room; hosts that do: laptop\. Move this worktree with: box --host laptop --no-sync --vm sh -c 'make all'\n$/);
+  assert.equal(rp.placed(), "tower\n");
+  assert.equal(r.calls.filter((c) => c.includes(" pod run ")).length, 1, "no automatic move");
+});
+
+test("precedence: BOXD_HOST is for this call only and records nothing; --recreate keeps the placement; a removed host is chosen again", () => {
+  const s = servers([{ name: "tower", status: FREE }, { name: "laptop", status: FREE }]), rp = newRepo();
+  const env = go(rp, s, ["--no-sync", "true"], { BOXD_HOST: "laptop" });
+  assert.deepEqual(env.calls, [runLine(rp, "laptop")]);
+  assert.equal(rp.placed(), undefined);
+  assert.deepEqual(choices(s), []);
+  go(rp, s, ["true"]); // placed on tower by order
+  assert.equal(rp.placed(), "tower\n");
+  const re = go(rp, s, ["--recreate", "--no-sync", "true"]);
+  assert.deepEqual(re.calls, [runLine(rp, "tower", "--recreate")]);
+  writeFileSync(path.join(rp.cwd, ".git/boxd-host"), "gone\n");
+  const again = go(rp, s, ["--no-sync", "true"]);
+  assert.equal(probes(again.calls).length, 2);
+  assert.equal(rp.placed(), "tower\n");
+});
+
+test("the order is hosts.order: the first listed host with room wins, and a single registered host is not probed", () => {
+  const s = servers([{ name: "tower", status: FREE }, { name: "laptop", status: FREE }], { order: ["laptop", "tower"] }), rp = newRepo();
+  assert.deepEqual(rest(go(rp, s, ["--no-sync", "true"]).calls), [runLine(rp, "laptop")]);
+  const one = servers([{ name: "solo", status: FREE }]), rp1 = newRepo();
+  assert.deepEqual(go(rp1, one, ["--no-sync", "true"]).calls, [runLine(rp1, "solo")]);
+  assert.equal(rp1.placed(), undefined);
+});
+
+test("box ps asks the host the worktree is placed on", () => {
+  const s = servers([{ name: "tower", status: FREE }, { name: "laptop", status: FREE }]), rp = newRepo();
+  writeFileSync(path.join(rp.cwd, ".git/boxd-host"), "laptop\n");
+  assert.deepEqual(go(rp, s, ["ps"]).calls, [`ssh boxd-laptop pod ps ${rp.box}`]);
+});
+
+// box image push ------------------------------------------------------------------------------------------------
+const ID = "0123456789ab0123456789ab0123456789ab0123456789ab0123456789abcdef", REF = "docker.io/library/busybox:stable";
+const loadIn = path.join(root, "load-in");
+const push = (args: string[], env: Record<string, string> = {}, dirs = [withPodman]) =>
+  runBox(["image", "push", ...args], { env: { PATH: [...dirs, bin, basics].join(":"), FAKE_LOAD_IN: loadIn, ...env } });
+
+test("image push: pulls here, asks the host with the id, streams the saved archive into the load call, nothing else", () => {
+  rmSync(loadIn, { force: true });
+  const r = push([REF]);
+  assert.equal(r.code, 0);
+  // save and the load call run at the same time, so only the order before them is fixed
+  assert.deepEqual(r.calls.slice(0, 3), [
+    `podman pull ${REF}`, `podman image inspect --format {{.Id}} ${REF}`,
+    `ssh boxd-test pod image has container ${REF} ${ID}`,
+  ]);
+  assert.deepEqual(r.calls.slice(3).sort(), [`podman save ${REF}`, `ssh boxd-test pod image load container ${REF} ${ID}`]);
+  assert.equal(readFileSync(loadIn, "utf8"), `ARCHIVE-OF-${REF}`);
+});
+
+test("image push: the host already has the image: one line, no save, no load, exit 0", () => {
+  rmSync(loadIn, { force: true });
+  const r = push(["--vm", "--host", "other", REF], { FAKE_HAS_EXIT: "0" });
+  assert.equal(r.code, 0);
+  assert.match(r.out, /already on boxd-other for vm, nothing sent/);
+  assert.deepEqual(r.calls.filter((l: string) => l.startsWith("ssh")), [`ssh boxd-other pod image has vm ${REF} ${ID}`]);
+  assert.equal(r.calls.some((l: string) => l.startsWith("podman save")), false);
+  assert.equal(existsSync(loadIn), false);
+});
+
+test("image push: the host's refusal passes through and nothing is sent", () => {
+  const r = push([REF], { FAKE_HAS_EXIT: "125" });
+  assert.equal(r.code, 125);
+  assert.equal(r.calls.some((l: string) => l.startsWith("podman save")), false);
+});
+
+test("image push: a failed pull exits with its code and never reaches the host", () => {
+  const r = push([REF], { FAKE_PULL_EXIT: "7" });
+  assert.equal(r.code, 7);
+  assert.equal(r.calls.some((l: string) => l.startsWith("ssh")), false);
+});
+
+test("image push: a failed save is reported and its code wins over the host's", () => {
+  const r = push([REF], { FAKE_SAVE_EXIT: "4", FAKE_LOAD_EXIT: "125" });
+  assert.equal(r.code, 4);
+  assert.match(r.err, /podman save failed/);
+});
+
+test("image push: the host's load refusal is the exit code", () => assert.equal(push([REF], { FAKE_LOAD_EXIT: "125" }).code, 125));
+
+test("image push: docker when podman is missing, its sha256: prefix dropped from the id", () => {
+  const r = push([REF], {}, [withDocker]);
+  assert.equal(r.code, 0);
+  assert.deepEqual(r.calls.filter((l: string) => l.startsWith("ssh"))[0], `ssh boxd-test pod image has container ${REF} ${ID}`);
+  assert.equal(r.calls.some((l: string) => l.startsWith("docker save")), true);
+});
+
+test("image push: neither podman nor docker is a usage error, exit 2, no ssh", () => {
+  const r = runBox(["image", "push", REF], { env: { PATH: withNone } });
+  assert.equal(r.code, 2);
+  assert.match(r.err, /neither podman nor docker/);
+  assert.deepEqual(r.calls, []);
+});
+
+test("image push: usage errors exit 2 and call nothing; no password option exists", () => {
+  for (const a of [[], ["--vm", "--container", REF], ["--password", "x", REF], ["bad ref"]]) {
+    const r = push(a);
+    assert.equal(r.code, 2);
+    assert.deepEqual(r.calls, []);
+  }
+  assert.equal(runBox(["image"]).code, 2);
+});
+
+// ---- a foreground call lives as long as the process that started it ----------------------------------------------------
+// The starter (a small program) spawns the client and exits once the fake ssh is up; the client is then re-parented. The
+// client's exit code reaches the test through a preloaded file that writes it into a fifo when the client exits: a wait
+// on an event, never on a clock. BOXD_ORPHAN_CHECK_MS only sets how soon the client looks; no assertion depends on it.
+const preload = path.join(root, "preload.cjs");
+writeFileSync(preload, `const fs = require("fs"), first = process.ppid, e = process.env;
+if (e.TEST_REPARENTED) { const t = setInterval(() => { if (process.ppid !== first) { clearInterval(t); fs.writeFileSync(e.TEST_REPARENTED, "x"); } }, 1); t.unref(); }
+process.on("exit", (c) => fs.writeFileSync(e.TEST_EXITED, String(c)));
+`);
+const starter = path.join(root, "starter.mjs");
+writeFileSync(starter, `import { spawn } from "node:child_process";
+import { openSync, readFileSync } from "node:fs";
+const [tool, pre, errFile, started, ...args] = process.argv.slice(2);
+spawn(process.execPath, ["--require", pre, tool, ...args], { stdio: ["ignore", "ignore", openSync(errFile, "w")] });
+readFileSync(started);
+process.exit(0);
+`);
+// Lets the fake ssh finish (it waits for a writer on the hold fifo); with no reader waiting this does nothing.
+function release(hold: string) {
+  try { closeSync(openSync(hold, constants.O_WRONLY | constants.O_NONBLOCK)); } catch { /* the fake already ended */ }
+}
+async function startStarter(extra: Record<string, string>, watchReparent: boolean) {
+  const { readFile } = await import("node:fs/promises");
+  const { spawn } = await import("node:child_process");
+  const dir = mkdtempSync(path.join(root, "orphan-"));
+  const p = (n: string) => path.join(dir, n);
+  for (const n of ["hold", "started", "exited", "reparented"]) execFileSync("mkfifo", [p(n)]);
+  const exited = readFile(p("exited"), "utf8");
+  const reparented = watchReparent ? readFile(p("reparented"), "utf8") : undefined;
+  const st = spawn(process.execPath, [starter, TOOL, preload, p("err"), p("started"), "--no-sync", "sleep", "1"], { stdio: "ignore",
+    env: { PATH: `${bin}:${process.env.PATH ?? ""}`, HOME: home, BOXD_HOST: "test", BOXD_GC: "0", CALLS: log, FAKE_BLOCK_DIR: dir, TEST_EXITED: p("exited"),
+      ...(watchReparent ? { TEST_REPARENTED: p("reparented") } : {}), BOXD_ORPHAN_CHECK_MS: "1", ...extra } });
+  await once(st, "exit");
+  return { exited, reparented, p, err: () => readFileSync(p("err"), "utf8") };
+}
+
+test("a foreground call ends when the process that started it is gone: the message, exit 129, ssh told to end", { timeout: 30_000 }, async () => {
+  const t = await startStarter({}, false);
+  try {
+    assert.equal(await t.exited, "129");
+    assert.equal(t.err(), "box: the process that started this call is gone; ending the call (use --detach for work that must outlive its starter)\n");
+    assert.equal(readFileSync(t.p("term"), "utf8"), "term\n"); // the fake ssh got its termination before the client ended
+  } finally { release(t.p("hold")); } // a failing run must not leave the fake ssh waiting
+});
+
+test("BOXD_KEEP_ORPHAN=1 keeps the call going when its starter is gone", { timeout: 30_000 }, async () => {
+  const t = await startStarter({ BOXD_KEEP_ORPHAN: "1" }, true);
+  try {
+    await t.reparented; // the client's own parent is gone for good; its interval has had every chance to fire
+    writeFileSync(t.p("hold"), "go\n"); // the fake ssh finishes by itself
+    assert.equal(await t.exited, "0");
+    assert.equal(t.err(), "");
+    assert.equal(existsSync(t.p("term")), false);
+  } finally { release(t.p("hold")); }
+});
+
+// ---- box log: a detached run's log is read without starting the box ---------------------------------------------------
+function logRun(args: string[], answers: string[], env: Record<string, string> = {}) {
+  const dir = mkdtempSync(path.join(root, "logdir-"));
+  answers.forEach((a, i) => writeFileSync(path.join(dir, String(i + 1)), a));
+  return runBox(args, { env: { FAKE_LOGDIR: dir, BOXD_LOG_POLL_MS: "1", ...env } });
+}
+const head = (size: number, from: number, next: number, state: string, exit = "-") => `log\tsize=${size}\tfrom=${from}\tnext=${next}\tstate=${state}\texit=${exit}\n`;
+
+test("box log reads from offset 0 with `pod log`, prints the text, starts nothing and syncs nothing", () => {
+  const r = logRun(["log", "run-1"], [`${head(6, 0, 6, "ended", "0")}hello\n`]);
+  assert.equal(r.code, 0);
+  assert.equal(r.out, "hello\n");
+  assert.deepEqual(r.calls, [`ssh boxd-test pod log ${box} run-1 0`]);
+});
+
+test("box log --pod and --host name the box and the host; a log longer than one answer is read on at once", () => {
+  const r = logRun(["log", "run-1", "--pod", "other", "--host", "h2"], [`${head(10, 0, 4, "running")}abc\n`, `${head(10, 4, 10, "ended", "0")}defgh\n`]);
+  assert.equal(r.out, "abc\ndefgh\n");
+  assert.deepEqual(r.calls, ["ssh boxd-h2 pod log other run-1 0", "ssh boxd-h2 pod log other run-1 4"]);
+});
+
+test("box log --follow asks again from the returned offset until the run ended and exits with the run's code", () => {
+  const r = logRun(["log", "run-1", "--follow"], [`${head(2, 0, 2, "running")}a\n`, head(2, 2, 2, "running"), `${head(10, 2, 10, "ended", "3")}b\nEXIT 3\n`]);
+  assert.equal(r.out, "a\nb\nEXIT 3\n");
+  assert.equal(r.code, 3);
+  assert.deepEqual(r.calls, [0, 2, 2].map((o) => `ssh boxd-test pod log ${box} run-1 ${o}`));
+});
+
+test("box log --state: one line with the state and the code, no log text, one call", () => {
+  const a = logRun(["log", "run-1", "--state"], [`${head(9, 0, 9, "running")}a\nb\n`]);
+  assert.deepEqual([a.out, a.code, a.calls.length], ["run-1\tstate=running\texit=-\n", 0, 1]);
+  assert.equal(logRun(["log", "run-1", "--state"], [`${head(9, 0, 9, "ended", "3")}a\nEXIT 3\n`]).out, "run-1\tstate=ended\texit=3\n");
+  assert.equal(logRun(["log", "run-1", "--state"], [`${head(2, 0, 2, "ended")}a\n`]).out, "run-1\tstate=ended\texit=-\n");
+  // ended and seconds: shown in UTC without milliseconds when valid; any other header word never reaches the terminal
+  const st = (words: string, state = "ended") => logRun(["log", "run-1", "--state"], [`${head(2, 0, 2, state, "3").trimEnd()}${words}\na\n`]).out;
+  assert.equal(st("\tended=1794851327\tseconds=125"), "run-1\tstate=ended\texit=3\tended=2026-11-16T17:48:47Z\tseconds=125\n");
+  assert.equal(st("\tended=1794851327"), "run-1\tstate=ended\texit=3\tended=2026-11-16T17:48:47Z\n");
+  assert.equal(st("\tended=1794851327\tseconds=12a"), "run-1\tstate=ended\texit=3\tended=2026-11-16T17:48:47Z\n");
+  assert.equal(st("\tended=1794851327\tseconds=1234567890"), "run-1\tstate=ended\texit=3\tended=2026-11-16T17:48:47Z\n");
+  for (const bad of ["\tended=17a", "\tended=1234567890123", "\tended=", "\tended=-5\tseconds=3", "\tseconds=3", "\tsecret=x"]) assert.equal(st(bad), "run-1\tstate=ended\texit=3\n", bad);
+  assert.equal(st("\tended=1794851327\tseconds=5", "running"), "run-1\tstate=running\texit=3\n");
+});
+
+test("box log without --follow does not wait for a running run and exits 0; an ended run without an EXIT code follows to 129", () => {
+  assert.equal(logRun(["log", "run-1"], [`${head(2, 0, 2, "running")}a\n`]).code, 0);
+  assert.equal(logRun(["log", "run-1", "--follow"], [`${head(2, 0, 2, "ended")}a\n`]).code, 129);
+});
+
+test("box log --tail <n>: the last n lines without --follow, more than the log holds prints all, a last line without a newline counts", () => {
+  assert.equal(logRun(["log", "run-1", "--tail", "2"], [`${head(10, 0, 10, "ended", "0")}1\n2\n3\n4\n5\n`]).out, "4\n5\n");
+  assert.equal(logRun(["log", "run-1", "--tail", "100000"], [`${head(6, 0, 6, "ended", "0")}1\n2\n3\n`]).out, "1\n2\n3\n");
+  assert.equal(logRun(["log", "run-1", "--tail", "2"], [`${head(5, 0, 5, "ended", "0")}1\n2\n3`]).out, "2\n3");
+  assert.equal(logRun(["log", "run-1", "--tail", "0"], [`${head(2, 0, 2, "ended", "0")}1\n`]).out, "");
+});
+
+test("box log --tail <n>: a log served in several chunks is held back and cut to its last n lines once caught up", () => {
+  const r = logRun(["log", "run-1", "--tail", "4"], [`${head(12, 0, 4, "running")}1\n2\n`, `${head(12, 4, 8, "running")}3\n4\n`, `${head(12, 8, 12, "ended", "0")}5\n6\n`]);
+  assert.equal(r.out, "3\n4\n5\n6\n");
+  assert.equal(r.calls.length, 3);
+});
+
+test("box log --tail 0 --follow prints nothing old, only what comes in later rounds, and exits with the run's code", () => {
+  const r = logRun(["log", "run-1", "--follow", "--tail", "0"], [`${head(4, 0, 4, "running")}a\nb\n`, `${head(10, 4, 10, "ended", "3")}c\nEXIT 3\n`]);
+  assert.equal(r.out, "c\nEXIT 3\n");
+  assert.equal(r.code, 3);
+  const k = logRun(["log", "run-1", "--follow", "--tail", "1"], [`${head(4, 0, 4, "running")}a\nb\n`, `${head(10, 4, 10, "ended", "3")}c\nEXIT 3\n`]);
+  assert.equal(k.out, "b\nc\nEXIT 3\n"); // the last old line, then everything after
+  assert.equal(k.code, 3);
+});
+
+test("box log --tail: a value that is not a whole number from 0 to 100000 is a usage error and calls nothing", () => {
+  for (const v of [["--tail"], ["--tail", "x"], ["--tail", "-1"], ["--tail", "1.5"], ["--tail", "100001"], ["--tail", ""]]) {
+    const r = runBox(["log", "run-1", ...v]);
+    assert.equal(r.code, 2, v.join(" "));
+    assert.match(r.err, /--tail needs a whole number from 0 to 100000/);
+    assert.deepEqual(r.calls, []);
+  }
+});
+
+test("box log: the host's refusal passes through; an answer that is not a log is an error; usage errors call nothing", () => {
+  const refused = logRun(["log", "run-1"], ["boxd-pod: no run run-1 in box x\n"], {});
+  assert.equal(refused.code, 1); // an answer without the log header
+  assert.match(refused.err, /not a log/);
+  const dir = mkdtempSync(path.join(root, "logdir-"));
+  writeFileSync(path.join(dir, "1"), ""); writeFileSync(path.join(dir, "exit"), "125\n");
+  assert.equal(runBox(["log", "run-1"], { env: { FAKE_LOGDIR: dir } }).code, 125);
+  const bad = logRun(["log", "run-1"], ["log\tsize=x\tfrom=0\tnext=1\tstate=ended\texit=0\nhi\n"]);
+  assert.equal(bad.code, 1);
+  for (const a of [["log"], ["log", "bad/run"], ["log", "a", "b"], ["log", "a", "--bogus"]]) {
+    const r = runBox(a);
+    assert.equal(r.code, 2, a.join(" "));
+    assert.deepEqual(r.calls, []);
+  }
+});
+
+// ---- the collector: box gc, the registry, and the pass after an ordinary call -------------------------------------------------
+const T0 = Date.UTC(2026, 10, 14, 12, 0, 0), MIN = 60_000, NOWHERE = path.join(root, "no-such-worktree");
+const entryPath = (s: Servers, host: string, b: string) => path.join(s.home, ".local/state/boxd/boxes", `${host}.${b}`);
+const putEntry = (s: Servers, host: string, b: string, worktree: string, missingSince?: number) => {
+  mkdirSync(path.dirname(entryPath(s, host, b)), { recursive: true });
+  writeFileSync(entryPath(s, host, b), `${JSON.stringify({ box: b, host, worktree, ...(missingSince === undefined ? {} : { missingSince }) })}\n`);
+};
+const getEntry = (s: Servers, host: string, b: string) => { try { return JSON.parse(readFileSync(entryPath(s, host, b), "utf8")); } catch { return undefined; } };
+const hostFile = (s: Servers, host: string, ext: string, text: string) => writeFileSync(path.join(s.fake, `boxd-${host}.${ext}`), text);
+const gcLog = (s: Servers) => { try { return readFileSync(path.join(s.home, ".local/state/boxd/gc.log"), "utf8").trim().split("\n").map((l) => l.split("\t")); } catch { return []; } };
+const gc = (s: Servers, args: string[], now: number, env: Record<string, string> = {}) => runBox(args, { env: { BOXD_HOST: "", HOME: s.home, FAKE_HOSTS: s.fake, BOXD_NOW: String(now), ...env } });
+const stops = (calls: string[]) => calls.filter((c) => c.includes(" pod drop ") || c.includes(" pod stop ")); // the calls that remove
+const LINE = (b: string, st = "running") => `${b}\timg\t${st}\t1\tcontainer\n`;
+
+test("every call that reaches a host records its box, host and worktree, in one file that is never left half written", () => {
+  const s = servers([{ name: "test", status: FREE }]), rp = newRepo();
+  assert.equal(go(rp, s, ["--no-sync", "true"], { BOXD_HOST: "test" }).code, 0);
+  assert.deepEqual(getEntry(s, "test", rp.box), { box: rp.box, host: "test", worktree: rp.top });
+  assert.deepEqual(readdirSync(path.join(s.home, ".local/state/boxd/boxes")), [`test.${rp.box}`]);
+});
+
+test("gc: a worktree seen missing once is not removed; seen again too soon, not removed; 15 minutes later, stopped and logged", () => {
+  const s = servers([{ name: "test", status: FREE }]);
+  hostFile(s, "test", "list", LINE("gone-1", "stopped")); putEntry(s, "test", "gone-1", NOWHERE);
+  const first = gc(s, ["gc"], T0);
+  assert.equal(first.code, 0);
+  assert.match(first.out, /first sighting, nothing stopped/);
+  assert.deepEqual(stops(first.calls), []);
+  assert.equal(getEntry(s, "test", "gone-1").missingSince, T0);
+  const soon = gc(s, ["gc"], T0 + 14 * MIN);
+  assert.match(soon.out, /is missing since 14 minutes; a pass in 1 minute or later removes it\n/);
+  assert.match(gc(s, ["gc", "--dry-run"], T0 + 6 * MIN).out, /is missing since 6 minutes; a pass in 9 minutes or later removes it\n/);
+  assert.match(gc(s, ["gc", "--dry-run"], T0 + 6 * MIN + 30_000).out, /since 6 minutes; a pass in 9 minutes or later/); // minutes down for the past, up for the rest
+  assert.deepEqual(stops(soon.calls), []);
+  assert.equal(getEntry(s, "test", "gone-1").missingSince, T0); // the first sighting stays the first
+  const late = gc(s, ["gc"], T0 + 15 * MIN);
+  assert.deepEqual(stops(late.calls), ["ssh -o ConnectTimeout=3 -o BatchMode=yes -o ServerAliveInterval=5 -o ServerAliveCountMax=2 boxd-test pod drop gone-1"]);
+  assert.match(late.out, /removed test box gone-1 and its files: worktree .* is gone\n/);
+  assert.equal(getEntry(s, "test", "gone-1"), undefined);
+  assert.deepEqual(gcLog(s), [[new Date(T0 + 15 * MIN).toISOString(), "test", "gone-1", NOWHERE, "idle"]]);
+});
+
+test("gc: the size the server measured is relayed in both forms of the line; without it the line is as before", () => {
+  const run = (out: string, quiet: boolean) => {
+    const s = servers([{ name: "test", status: FREE }]), rp = newRepo();
+    hostFile(s, "test", "list", LINE("gone-1", "stopped")); putEntry(s, "test", "gone-1", NOWHERE, T0 - 20 * MIN); hostFile(s, "test", "drop.out", out);
+    return quiet ? go(rp, s, ["--no-sync", "true"], { BOXD_GC: "1", BOXD_NOW: String(T0), BOXD_HOST: "test" }).err : gc(s, ["gc"], T0).out;
+  };
+  const sized = "evicted gone-1 (worktree gone), 77 MB freed\n";
+  assert.match(run(sized, false), /^box gc: removed test box gone-1 and its files, 77 MB freed: worktree .* is gone\n$/);
+  assert.match(run(sized, true), /^\[box gc\] removed test box gone-1 and its files, 77 MB freed: worktree .* is gone\n$/);
+  for (const bad of ["", "evicted gone-1 (worktree gone), 12a MB freed\n", "evicted gone-1 (worktree gone), 1234567890 MB freed\n", "evicted gone-1 (worktree gone), 5 MB freed!\n"])
+    for (const q of [false, true]) assert.match(run(bad, q), /^(box gc: |\[box gc\] )removed test box gone-1 and its files: worktree .* is gone\n$/, JSON.stringify(bad));
+});
+
+test("gc --dry-run says what it would do and changes nothing, not even a first sighting", () => {
+  const s = servers([{ name: "test", status: FREE }]);
+  hostFile(s, "test", "list", LINE("gone-1", "stopped") + LINE("gone-2", "stopped")); putEntry(s, "test", "gone-1", NOWHERE); putEntry(s, "test", "gone-2", NOWHERE, T0 - 20 * MIN);
+  const r = gc(s, ["gc", "--dry-run"], T0);
+  assert.match(r.out, /would remove test box gone-2 and its files/);
+  assert.deepEqual(stops(r.calls), []);
+  assert.equal(getEntry(s, "test", "gone-1").missingSince, undefined);
+  assert.equal(getEntry(s, "test", "gone-2").missingSince, T0 - 20 * MIN);
+  assert.deepEqual(gcLog(s), []);
+});
+
+test("gc: a run still going in the box does not save it (and the log says so); a worktree that is still here is left alone", () => {
+  const s = servers([{ name: "test", status: FREE }]), rp = newRepo();
+  hostFile(s, "test", "list", LINE("gone-1") + LINE(rp.box)); hostFile(s, "test", "ps.gone-1", "7\t100\t0\t/job/src\tsleep 99\n");
+  putEntry(s, "test", "gone-1", NOWHERE, T0 - 20 * MIN); putEntry(s, "test", rp.box, rp.top, T0 - 20 * MIN);
+  const r = gc(s, ["gc"], T0);
+  assert.equal(stops(r.calls).length, 1);
+  assert.match(r.out, /removed test box gone-1 and its files: .* \(a run was still going\)/);
+  assert.equal(gcLog(s)[0]?.[4], "run live");
+  assert.equal(getEntry(s, "test", rp.box).missingSince, undefined); // it is back: the mark is cleared
+});
+
+test("gc: a folder that is not a git worktree top folder counts as missing", () => {
+  const s = servers([{ name: "test", status: FREE }]), plain = path.join(root, "plain-folder");
+  mkdirSync(plain, { recursive: true });
+  hostFile(s, "test", "list", LINE("gone-1", "stopped")); putEntry(s, "test", "gone-1", plain, T0 - 20 * MIN);
+  assert.equal(stops(gc(s, ["gc"], T0).calls).length, 1);
+});
+
+test("gc: a box on the host with no record is 'unknown owner', listed with the command that stops it, never stopped", () => {
+  const s = servers([{ name: "test", status: FREE }]);
+  hostFile(s, "test", "list", LINE("stranger", "stopped"));
+  const r = gc(s, ["gc"], T0);
+  assert.match(r.out, /box stranger: unknown owner .*to stop it: ssh boxd-test pod stop stranger\n/);
+  assert.deepEqual(stops(r.calls), []);
+});
+
+// The box of an idle worktree is reaped after 30 minutes, its folder stays on the host: the record must outlive the box, or
+// the folder of a worktree deleted later would wait for the 14-day rule.
+test("gc: a record outlives its box: the worktree here keeps it, the worktree gone drops the folder; a host that is not asked keeps its records", () => {
+  const s = servers([{ name: "test", status: FREE }, { name: "down" }]), rp = newRepo();
+  hostFile(s, "test", "list", ""); putEntry(s, "test", "vanished", NOWHERE, T0 - 20 * MIN); putEntry(s, "test", rp.box, rp.top); putEntry(s, "down", "kept", NOWHERE, T0 - 20 * MIN);
+  const r = gc(s, ["gc"], T0);
+  assert.deepEqual(stops(r.calls).map((c) => c.replace(/^.* pod /, "")), ["drop vanished"]);
+  assert.equal(getEntry(s, "test", "vanished"), undefined);
+  assert.notEqual(getEntry(s, "test", rp.box), undefined);
+  assert.notEqual(getEntry(s, "down", "kept"), undefined);
+  assert.match(r.out, /down is unreachable \(skipped\)/);
+});
+
+test("gc: a server older than 0.4.0 has no pod drop: the box is stopped as before, its folder waits for that server's upgrade", () => {
+  const s = servers([{ name: "test", status: FREE }]);
+  hostFile(s, "test", "list", LINE("gone-1", "stopped")); hostFile(s, "test", "drop.exit", "125"); putEntry(s, "test", "gone-1", NOWHERE, T0 - 20 * MIN);
+  const r = gc(s, ["gc"], T0);
+  assert.deepEqual(stops(r.calls).map((c) => c.replace(/^.* pod /, "")), ["drop gone-1", "stop gone-1"]);
+  assert.match(r.out, /stopped test box gone-1 \(this server cannot remove its files yet\): worktree .* is gone\n/);
+  assert.equal(getEntry(s, "test", "gone-1"), undefined);
+  hostFile(s, "test", "stop.exit", "1"); putEntry(s, "test", "gone-1", NOWHERE, T0 - 20 * MIN);
+  const bad = gc(s, ["gc"], T0);
+  assert.match(bad.out, /box gc: test: removing gone-1 failed; kept\n/);
+  assert.notEqual(getEntry(s, "test", "gone-1"), undefined);
+});
+
+test("gc: a sleeping host is never contacted and is named", async () => {
+  const s = servers([{ name: "sleepy" }, { name: "test", status: FREE }], { wake: { sleepy: `127.0.0.1:${await closedPort()}` } });
+  hostFile(s, "test", "list", ""); putEntry(s, "sleepy", "box-a", NOWHERE, T0 - 20 * MIN);
+  const r = gc(s, ["gc"], T0);
+  assert.equal(r.calls.filter((c) => c.includes("boxd-sleepy")).length, 0);
+  assert.match(r.out, /sleepy is asleep \(not woken, not asked\)/);
+  assert.notEqual(getEntry(s, "sleepy", "box-a"), undefined);
+});
+
+test("gc reports commands running longer than 6 hours (it never ends them) and says nothing of shorter ones", () => {
+  const s = servers([{ name: "test", status: FREE }]);
+  hostFile(s, "test", "list", LINE("busy-1")); putEntry(s, "test", "busy-1", repo);
+  hostFile(s, "test", "ps.busy-1", "9\t25000\t5\t/job/src\tcargo test\n10\t21599\t0\t/job/src\tshort\n");
+  const r = gc(s, ["gc"], T0);
+  assert.match(r.out, /box gc: test box busy-1: running 6h56m in \/job\/src: cargo test\n/);
+  assert.doesNotMatch(r.out, /short/);
+  assert.deepEqual(stops(r.calls), []);
+});
+
+test("gc: bad words are a usage error", () => assert.equal(runBox(["gc", "--now"]).code, 2));
+
+test("an ordinary call runs the collector after itself, quietly, once per 15 minutes; exit code and stdout untouched", () => {
+  const s = servers([{ name: "test", status: FREE }]), rp = newRepo();
+  hostFile(s, "test", "list", LINE("gone-1", "stopped")); putEntry(s, "test", "gone-1", NOWHERE, T0 - 20 * MIN); hostFile(s, "test", "run.exit", "3\n");
+  const env = (t: number) => ({ BOXD_GC: "1", BOXD_NOW: String(t), BOXD_HOST: "test" });
+  const a = go(rp, s, ["--no-sync", "true"], env(T0));
+  assert.equal(a.code, 3);
+  assert.equal(a.out, "");
+  assert.match(a.err, /^\[box gc\] removed test box gone-1 and its files: worktree .* is gone\n$/);
+  assert.equal(a.calls.filter((c) => c.endsWith(" pod list")).length, 1);
+  assert.ok(a.calls[0]?.startsWith("ssh boxd-test pod run "), "the call comes first"); // the collector runs after it
+  const b = go(rp, s, ["--no-sync", "true"], env(T0 + 14 * MIN));
+  assert.equal(b.calls.filter((c) => c.endsWith(" pod list") || c.endsWith(" pod status")).length, 0);
+  const c = go(rp, s, ["--no-sync", "true"], env(T0 + 15 * MIN));
+  assert.equal(c.calls.filter((x) => x.endsWith(" pod list")).length, 1);
+});
+
+test("the collector after a call is off with BOXD_GC=0 and never runs for ps, hosts, log or gc itself, nor after a call that did not reach its host", () => {
+  const s = servers([{ name: "test", status: FREE }]), rp = newRepo();
+  hostFile(s, "test", "list", ""); hostFile(s, "test", "run.exit", "0\n");
+  const lists = (r: { calls: string[] }) => r.calls.filter((c) => c.endsWith(" pod list")).length;
+  assert.equal(lists(go(rp, s, ["--no-sync", "true"], { BOXD_GC: "0", BOXD_HOST: "test" })), 0);
+  for (const a of [["ps"], ["hosts"], ["runs"], ["log", "r-1"]]) assert.equal(lists(go(rp, s, a, { BOXD_GC: "1", BOXD_HOST: "test", FAKE_LOGDIR: s.fake })), 0, a.join(" "));
+  assert.equal(lists(go(rp, s, ["gc"], { BOXD_GC: "1" })), 1); // its own pass only, not a second one
+  const down = go(rp, servers([{ name: "test" }]), ["--no-sync", "true"], { BOXD_GC: "1", BOXD_HOST: "test", FAKE_SSH_EXIT: "255" });
+  assert.equal(down.code, 255);
+  assert.deepEqual(down.calls.filter((c) => c.includes("pod list") || c.includes("pod status")), []);
+});
+
+// Defect report 2026-11-14: rsync's "cannot delete non-empty directory" (exit 0) was read as "not started" and a paid
+// run was relaunched four times. The client now says in its own words that the sync succeeded and what stayed.
+test("a folder deleted here that holds ignored files on the server: the sync says it succeeded, the run starts", () => {
+  const r2 = path.join(root, "kept-repo"), remote = path.join(root, "kept-remote");
+  mkdirSync(path.join(r2, "gone"), { recursive: true });
+  execFileSync("git", ["init", "-q"], { cwd: r2 });
+  writeFileSync(path.join(r2, ".gitignore"), "*.log\n");
+  writeFileSync(path.join(r2, "gone", "kept.txt"), "x");
+  const b2 = plan(execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: r2, encoding: "utf8" }).trim(), [], ["x"]).box;
+  assert.equal(runBox(["true"], { cwd: r2, env: { FAKE_REMOTE: remote } }).code, 0);
+  writeFileSync(path.join(remote, "jobs", b2, "src", "gone", "build.log"), "made in the box");
+  rmSync(path.join(r2, "gone"), { recursive: true });
+  const r = runBox(["--detach", "true"], { cwd: r2, env: { FAKE_REMOTE: remote } });
+  assert.equal(r.code, 0);
+  assert.match(r.out, /^run \d{8}-\d{6}-[0-9a-f]{4}\n/);
+  assert.doesNotMatch(r.out + r.err, /cannot delete/);
+  assert.equal(r.err, "box: sync complete; 1 folder deleted here stays on the server because it holds files git ignores: gone\n");
+  assert.equal(r.calls.filter((c) => c.startsWith("ssh ")).length, 1);
+  assert.ok(existsSync(path.join(remote, "jobs", b2, "src", "gone", "build.log")));
+  assert.ok(!existsSync(path.join(remote, "jobs", b2, "src", "gone", "kept.txt")));
+});
+
+test("a sync that fails starts nothing and says so in one line", () => {
+  const r = runBox(["--detach", "true"], { env: { FAKE_REMOTE: "/dev/null/not-a-folder" } });
+  assert.notEqual(r.code, 0);
+  assert.match(r.err, /box: sync failed \(rsync exit \d+\); nothing was started\n$/);
+  assert.doesNotMatch(r.out, /^run /m);
+  assert.equal(r.calls.filter((c) => c.startsWith("ssh ")).length, 0);
+});
+
+// Feedback of another project's session, 2026-11-14: its run journal was a file git ignores (*.log), so a run continued in a
+// fresh box started from nothing; and ignored files of an earlier run sat in the folder of the next measurement.
+function ignoringRepo(name: string) {
+  const r = path.join(root, name), remote = path.join(root, `${name}-remote`);
+  mkdirSync(path.join(r, "sub"), { recursive: true });
+  execFileSync("git", ["init", "-q"], { cwd: r });
+  writeFileSync(path.join(r, ".gitignore"), "*.log\ncache/\n");
+  for (const f of ["a.txt", "run.log", "other.log", "sub/j.log", "sub/k.txt"]) writeFileSync(path.join(r, f), f);
+  const b = plan(execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: r, encoding: "utf8" }).trim(), [], ["x"]).box;
+  return { r, src: path.join(remote, "jobs", b, "src"), env: { FAKE_REMOTE: remote } };
+}
+const tree = (d: string) => (readdirSync(d, { recursive: true, withFileTypes: true }) as import("node:fs").Dirent[]).filter((e) => e.isFile()).map((e) => path.relative(d, path.join(e.parentPath, e.name))).sort();
+
+test("--include sends the named ignored files and folders, and nothing else that git ignores", () => {
+  const { r, src, env } = ignoringRepo("inc-repo");
+  mkdirSync(path.join(r, "cache", "deep"), { recursive: true });
+  writeFileSync(path.join(r, "cache", "deep", "x.bin"), "x"); writeFileSync(path.join(r, "cache", "y.log"), "y");
+  assert.equal(runBox(["true"], { cwd: r, env }).code, 0);
+  assert.deepEqual(tree(src), [".gitignore", "a.txt", "sub/k.txt"]);
+  assert.equal(runBox(["--include", "run.log", "--include", "sub/", "--include", "cache/deep", "true"], { cwd: r, env }).code, 0);
+  assert.deepEqual(tree(src), [".gitignore", "a.txt", "cache/deep/x.bin", "run.log", "sub/j.log", "sub/k.txt"]);
+});
+
+test("--include refuses a path outside the worktree, a missing one, and --no-sync", () => {
+  const { r, env } = ignoringRepo("inc-bad");
+  for (const [args, text] of [
+    [["--include", "../x", "true"], "box: --include ../x: not a path inside this worktree\n"],
+    [["--include", "/etc/passwd", "true"], "box: --include /etc/passwd: not a path inside this worktree\n"],
+    [["--include", ".git/config", "true"], "box: --include .git/config: not a path inside this worktree\n"],
+    [["--include", "nope.log", "true"], "box: --include nope.log: no such file or folder in this worktree\n"],
+    [["--no-sync", "--include", "run.log", "true"], "box: --include and --clean need the sync; drop --no-sync\n"],
+    [["--no-sync", "--clean", "true"], "box: --include and --clean need the sync; drop --no-sync\n"],
+  ] as const) {
+    const x = runBox([...args], { cwd: r, env });
+    assert.equal(x.code, 2, args.join(" ")); assert.ok(x.err.startsWith(text), x.err); assert.deepEqual(x.calls, []);
+  }
+});
+
+test("--clean makes the box's source tree exactly the worktree: ignored leftovers go, --include files stay", () => {
+  const { r, src, env } = ignoringRepo("clean-repo");
+  assert.equal(runBox(["true"], { cwd: r, env }).code, 0);
+  mkdirSync(path.join(src, "results")); writeFileSync(path.join(src, "results", "old.log"), "earlier run"); writeFileSync(path.join(src, "stale.log"), "s");
+  assert.equal(runBox(["true"], { cwd: r, env }).code, 0);
+  assert.ok(existsSync(path.join(src, "results", "old.log")), "without --clean ignored files in the box stay");
+  const x = runBox(["--clean", "--include", "run.log", "true"], { cwd: r, env });
+  assert.equal(x.code, 0);
+  assert.match(x.calls[0] ?? "", /^rsync -a --delete --delete-excluded --mkpath /);
+  assert.deepEqual(tree(src), [".gitignore", "a.txt", "run.log", "sub/k.txt"]);
+});
+
+test("box log --follow on a run that ended without an exit code (its box or host went down): says so, exit 129", () => {
+  const dir = mkdtempSync(path.join(root, "lost-"));
+  writeFileSync(path.join(dir, "1"), "log\tsize=5\tfrom=0\tnext=5\tstate=ended\texit=-\nhalf\n");
+  const x = runBox(["log", "run-1", "--follow"], { env: { FAKE_LOGDIR: dir, BOXD_LOG_POLL_MS: "1" } });
+  assert.equal(x.code, 129);
+  assert.equal(x.out, "half\n");
+  assert.equal(x.err, "box log: run run-1 ended without an exit code: its box or the build server went down under it\n");
+});
+// box forward / box vnc: the client is a long-running process, so these run it with spawn and wait on its output and its
+// exit, never on a clock. PATH is the fakes plus basics only (no real xdg-open, no git: the box is named with --pod); the fake ssh relays with cat.
+const xdgBin = path.join(root, "xdg");
+mkdirSync(xdgBin);
+function startClient(args: string[], env: Record<string, string>, withXdg = false) {
+  const child = spawn(process.execPath, [TOOL, ...args], {
+    cwd: repo, stdio: ["ignore", "pipe", "pipe"],
+    env: { PATH: `${bin}:${withXdg ? xdgBin + ":" : ""}${basics}`, HOME: home, BOXD_HOST: "test", BOXD_GC: "0", CALLS: log, ...env },
+  });
+  let out = "", err = "";
+  const waiters: Array<() => void> = [];
+  child.stdout.on("data", (d: Buffer) => { out += d; waiters.splice(0).forEach((w) => w()); });
+  child.stderr.on("data", (d: Buffer) => { err += d; waiters.splice(0).forEach((w) => w()); });
+  let closed = false;
+  const until = async (re: RegExp, pick: () => string = () => out) => {
+    while (!re.test(pick())) { if (closed) assert.fail(`the client ended before ${re}: out=${out} err=${err}`); await new Promise<void>((r) => waiters.push(r)); }
+    return pick().match(re) as RegExpMatchArray;
+  };
+  const exit = new Promise<number | null>((res) => child.on("close", (c: number | null) => { closed = true; waiters.splice(0).forEach((w) => w()); res(c); }));
+  return { child, until, exit, out: () => out, err: () => err };
+}
+const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+async function viaPort(port: number, text: string) {
+  const s = net.connect(port, "127.0.0.1");
+  await once(s, "connect");
+  s.write(text);
+  const [d] = await once(s, "data");
+  return { s, got: String(d) };
+}
+
+test("box forward listens on 127.0.0.1, one ssh per connection relays both ways, SIGTERM ends the channel and the listener", async () => {
+  rmSync(log, { force: true });
+  const dir = mkdtempSync(path.join(root, "fwd-"));
+  const c = startClient(["forward", "--pod", "pbox", "0", "5900"], { FAKE_FWD_DIR: dir });
+  const m = await c.until(/^forwarding 127\.0\.0\.1:(\d+) -> box (\S+) port 5900 \(Ctrl\+C stops\)\n/);
+  assert.equal(m[2], "pbox");
+  const port = Number(m[1]);
+  const a = await viaPort(port, "hello");
+  const b = await viaPort(port, "again");
+  assert.deepEqual([a.got, b.got], ["hello", "again"]);
+  const pids = readdirSync(dir).map((f) => Number(f.replace("pid.", "")));
+  assert.equal(pids.length, 2);
+  c.child.kill("SIGTERM");
+  assert.equal(await c.exit, 0);
+  for (const p of pids) assert.equal(alive(p), false, "a relay ssh outlived the client");
+  a.s.destroy(); b.s.destroy();
+  await assert.rejects(async () => { const s = net.connect(port, "127.0.0.1"); await once(s, "connect"); }, "the listener is closed");
+  const calls = readFileSync(log, "utf8").trim().split("\n").filter((l) => l.startsWith("ssh"));
+  assert.deepEqual(calls, [`ssh boxd-test pod forward pbox 5900`, `ssh boxd-test pod forward pbox 5900`]);
+  assert.equal(calls.some((l) => /\s-L\s/.test(l)), false);
+});
+
+test("box forward --pod names the box, a closed connection ends its ssh, the server's refusal is shown", async () => {
+  rmSync(log, { force: true });
+  const dir = mkdtempSync(path.join(root, "fwd-"));
+  const c = startClient(["forward", "--pod", "other-box", "0", "8080"], { FAKE_FWD_DIR: dir });
+  const port = Number((await c.until(/forwarding 127\.0\.0\.1:(\d+) -> box other-box port 8080/))[1]);
+  const a = await viaPort(port, "x");
+  const pid = Number(readdirSync(dir)[0]?.replace("pid.", ""));
+  a.s.destroy();
+  while (alive(pid)) await new Promise((r) => setImmediate(r));
+  c.child.kill("SIGINT");
+  assert.equal(await c.exit, 0);
+  const d2 = mkdtempSync(path.join(root, "fwd-"));
+  const e = startClient(["forward", "--pod", "pbox", "0", "8080"], { FAKE_FWD_DIR: d2, FAKE_FWD_ERR: "boxd-pod: box x is not running" });
+  const p2 = Number((await e.until(/forwarding 127\.0\.0\.1:(\d+)/))[1]);
+  const s = net.connect(p2, "127.0.0.1"); s.on("error", () => {}); await once(s, "close");
+  await e.until(/boxd-pod: box x is not running\n/, e.err);
+  e.child.kill("SIGTERM");
+  await e.exit;
+});
+
+test("box forward against a server older than 0.4.0 says so", async () => {
+  const dir = mkdtempSync(path.join(root, "fwd-"));
+  const c = startClient(["forward", "--pod", "pbox", "0", "5900"], { FAKE_FWD_DIR: dir, FAKE_FWD_ERR: "boxd-pod: unknown command" });
+  const port = Number((await c.until(/forwarding 127\.0\.0\.1:(\d+)/))[1]);
+  const s = net.connect(port, "127.0.0.1"); s.on("error", () => {}); await once(s, "close");
+  await c.until(/older than 0\.4\.0, forward needs an upgrade\n/, c.err);
+  assert.doesNotMatch(c.err(), /unknown command/);
+  c.child.kill("SIGTERM");
+  await c.exit;
+});
+
+test("box forward usage errors exit 2 and run no ssh", () => {
+  for (const args of [["forward"], ["forward", "1"], ["forward", "1", "0"], ["forward", "1", "70000"], ["forward", "70000", "5900"], ["forward", "a", "5900"], ["forward", "1", "2", "3"], ["forward", "--bogus", "1", "2"], ["vnc", "--port", "0"], ["vnc", "--port", "x"], ["vnc", "5900"]].map((a) => [...a, "--pod", "pbox"])) {
+    const r = runBox(args);
+    assert.equal(r.code, 2, args.join(" "));
+    assert.deepEqual(r.calls, [], args.join(" "));
+  }
+});
+
+test("box vnc forwards box port 5900 on a free local port and opens vnc://127.0.0.1:<port>; --port changes the box port", async () => {
+  writeFileSync(path.join(xdgBin, "xdg-open"), "#!/bin/sh\necho \"xdg-open $*\" >> \"$CALLS\"\n");
+  chmodSync(path.join(xdgBin, "xdg-open"), 0o755);
+  rmSync(log, { force: true });
+  const dir = mkdtempSync(path.join(root, "fwd-"));
+  const c = startClient(["vnc", "--pod", "pbox", "--port", "5901"], { FAKE_FWD_DIR: dir }, true);
+  const m = await c.until(/forwarding 127\.0\.0\.1:(\d+) -> box \S+ port 5901/);
+  while (!existsSync(log) || !readFileSync(log, "utf8").includes("xdg-open")) await new Promise((r) => setTimeout(r, 5));
+  assert.match(readFileSync(log, "utf8"), new RegExp(`^xdg-open vnc://127\\.0\\.0\\.1:${m[1]}$`, "m"));
+  c.child.kill("SIGTERM");
+  assert.equal(await c.exit, 0);
+  assert.equal(c.out().includes("xdg-open not found"), false);
+});
+
+test("box vnc without xdg-open prints the address instead", async () => {
+  const dir = mkdtempSync(path.join(root, "fwd-"));
+  const c = startClient(["vnc", "--pod", "pbox"], { FAKE_FWD_DIR: dir }, false);
+  const m = await c.until(/forwarding 127\.0\.0\.1:(\d+) -> box \S+ port 5900/);
+  await c.until(new RegExp(`xdg-open not found; open a VNC viewer at 127\\.0\\.0\\.1:${m[1]}\\n`));
+  c.child.kill("SIGTERM");
+  assert.equal(await c.exit, 0);
+});
+
+test.after(() => rmSync(root, { recursive: true, force: true }));
+
+// Nothing of boxd stays running on the workstation by itself: a forwarder whose starter died (an agent killed) ends too.
+// The starter leaves only after the forwarder said it listens; the test then waits for the forwarder's stderr to close.
+test("box forward ends when the process that started it is gone: the message, the listener closed", { timeout: 30_000 }, async (t) => {
+  const { readFile } = await import("node:fs/promises");
+  const dir = mkdtempSync(path.join(root, "fwd-orphan-")), errFifo = path.join(dir, "err"), outFifo = path.join(dir, "out");
+  execFileSync("mkfifo", [errFifo, outFifo]);
+  const err = readFile(errFifo, "utf8");
+  const st = spawnSync("sh", ["-c", `"$0" "$1" forward --pod x 0 80 >"$3" 2>"$2" & echo $!; read -r line <"$3"; echo "$line"`, process.execPath, TOOL, errFifo, outFifo],
+    { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], env: { PATH: `${bin}:${basics}`, HOME: home, BOXD_HOST: "test", BOXD_GC: "0", CALLS: log, BOXD_ORPHAN_CHECK_MS: "1" } });
+  const [pid = "", line = ""] = st.stdout.split("\n");
+  const end = () => { try { process.kill(Number(pid)); } catch { /* it ended, as it should */ } };
+  t.signal.addEventListener("abort", end); // a forwarder that stayed would keep this test file from ending
+  const port = Number(/^forwarding 127\.0\.0\.1:(\d+) /.exec(line)?.[1]);
+  try {
+    assert.ok(port > 0, st.stdout);
+    assert.equal(await err, "box forward: the process that started it is gone; forwarding ended\n");
+    const s = net.connect(port, "127.0.0.1");
+    const [e] = await once(s, "error");
+    assert.equal((e as NodeJS.ErrnoException).code, "ECONNREFUSED");
+  } finally { end(); }
+});
+
+// ---- 0.4.10: closed pipes, options after the command, pulls of nothing, box runs, --wait --------------------------------------
+
+test("a closed output pipe ends the program quietly: exit 0, nothing on stderr (box hosts | head -1)", async () => {
+  const s = servers([{ name: "a", status: FREE }]), hold = path.join(root, `epipe-hold-${++repoN}`);
+  execFileSync("mkfifo", [hold]);
+  const child = spawn(process.execPath, [TOOL, "hosts"], { cwd: repo, stdio: ["ignore", "pipe", "pipe"],
+    env: { PATH: `${bin}:${process.env.PATH ?? ""}`, HOME: s.home, BOXD_GC: "0", CALLS: log, FAKE_HOSTS: s.fake, FAKE_STATUS_HOLD: hold } });
+  let err = "";
+  child.stderr.on("data", (d: Buffer) => { err += d; });
+  child.stdout.destroy(); // the reader is gone before the fake ssh lets the probe finish, so the one line printed meets a closed pipe
+  writeFileSync(hold, "go\n");
+  const [code] = await once(child, "close");
+  assert.equal(err, "");
+  assert.equal(code, 0);
+});
+
+test("a box option after the command, with no --, is handed to the command: one warning, the call goes on as before", () => {
+  const r = runBox(["--no-sync", "sh", "-c", "make", "--pull", "dist/x"]);
+  assert.equal(r.code, 0);
+  assert.equal(r.err, "box: --pull after the command is handed to the command, not to box; put box options before the command (or write -- before the command to silence this)\n");
+  assert.deepEqual(r.calls, [`ssh boxd-test pod run ${box} -- ${b64("sh", "-c", "make", "--pull", "dist/x")}`]);
+  for (const o of ["--include", "--env", "--detach", "--host", "--pod", "--no-sync"]) assert.match(runBox(["--no-sync", "true", o]).err, new RegExp(`^box: ${o} after the command`), o);
+  assert.equal(runBox(["--no-sync", "--", "sh", "-c", "make", "--pull", "dist/x"]).err, "", "an explicit -- silences it");
+  assert.equal(runBox(["--no-sync", "cargo", "--version"]).err, "", "only box's own options are named");
+});
+
+test("--pull of a path that is not in the box says so in one line; any other rsync failure keeps its words", () => {
+  const remote = path.join(root, "remote-empty");
+  mkdirSync(path.join(remote, "jobs", box, "src"), { recursive: true });
+  const r = runBox(["--no-sync", "--pull", "dist/x", "true"], { env: { FAKE_REMOTE: remote } });
+  assert.equal(r.err, "box: nothing at dist/x in the box, nothing pulled\n");
+  assert.equal(r.code, 23, "the exit code is rsync's, as before");
+  mkdirSync(path.join(remote, "jobs", box, "src", "dist")); // the folder is there, the file is not: rsync words it with link_stat, not change_dir
+  assert.equal(runBox(["--no-sync", "--pull", "dist/x", "true"], { env: { FAKE_REMOTE: remote } }).err, "box: nothing at dist/x in the box, nothing pulled\n");
+  const other = runBox(["--no-sync", "--pull", "dist/x", "true"], { env: { FAKE_RSYNC_ERR: "rsync: connection unexpectedly closed" } });
+  assert.equal(other.err, "rsync: connection unexpectedly closed\nbox: pull dist/x failed\n");
+  assert.equal(other.code, 12);
+});
+
+test("--help names box runs and --wait", () => {
+  const out = runBox(["--help"]).out;
+  assert.match(out, /box runs /);
+  assert.match(out, /--wait /);
+});
+
+test("runAge reads the run id as this machine's local time; lastLine keeps one clean line of at most 120 characters", () => {
+  const at = (h: number, m: number, s: number) => new Date(2026, 10, 16, h, m, s).getTime();
+  assert.equal(runAge("20261116-093000-abcd", at(9, 45, 0)), "15m00s");
+  assert.equal(runAge("20261116-093000-abcd", at(11, 31, 5)), "2h01m");
+  assert.equal(runAge("20261116-093000-abcd", at(9, 29, 0)), "0s", "a clock a little behind is never negative");
+  assert.equal(runAge("hand-made", at(9, 45, 0)), "-");
+  assert.equal(lastLine("a\nb\n\n  \n"), "b");
+  assert.equal(lastLine("10%\r50%\r100%\n"), "100%");
+  assert.equal(lastLine("x\ty\x1b[31m\x07z\u0000\n"), "x y[31mz", "tabs become spaces, control characters go");
+  assert.equal(lastLine(""), "-");
+  assert.equal(lastLine("\n\n"), "-");
+  assert.equal(lastLine("é".repeat(300)).length, 120);
+});
+
+test("box runs: one tab separated line per running detached run of this machine's boxes; ended runs and foreign boxes are left out", () => {
+  const s = servers([{ name: "tower", status: FREE }, { name: "laptop", status: FREE }]);
+  const id = "20261116-093000-abcd", NOW = new Date(2026, 10, 16, 9, 45, 0).getTime();
+  putEntry(s, "tower", "w-1", "/home/me/w1"); putEntry(s, "tower", "w-2", "/home/me/w2"); putEntry(s, "laptop", "w-3", "/home/me/w3");
+  hostFile(s, "tower", "report", [
+    "host\tversion=0.4.0\tengines=container",
+    "box\tbox=w-1\tengine=container\tstate=running\truns=1",
+    `run\tbox=w-1\tid=${id}\tstate=running\texit=-\tbytes=5000\tchanged=1`,
+    "run\tbox=w-1\tid=20261116-080000-1111\tstate=ended\texit=0\tbytes=10\tchanged=1",
+    "run\tbox=w-2\tid=20261116-094000-0001\tstate=running\texit=-\tbytes=100\tchanged=1",
+    "run\tbox=stranger\tid=20261116-094000-0002\tstate=running\texit=-\tbytes=100\tchanged=1",
+    "",
+  ].join("\n"));
+  hostFile(s, "tower", `log.${id}`, `${head(5000, 2952, 5000, "running")}half a li\nstep 2\t\x1b[31mred\x1b[0m\n\n`);
+  hostFile(s, "tower", "log.20261116-094000-0001", head(100, 0, 100, "running"));
+  hostFile(s, "laptop", "report", "run\tbox=w-3\tid=20261116-091500-0003\tstate=running\texit=-\tbytes=9\tchanged=1\n");
+  hostFile(s, "laptop", "log.20261116-091500-0003", `${head(9, 0, 9, "running")}${"x".repeat(300)}\n`);
+  const r = go(newRepo(), s, ["runs"], { BOXD_NOW: String(NOW) });
+  assert.equal(r.code, 0, r.err);
+  assert.deepEqual(r.out.trimEnd().split("\n"), [
+    `tower\tw-1\t${id}\t15m00s\t/home/me/w1\tstep 2 [31mred[0m`,
+    "tower\tw-2\t20261116-094000-0001\t5m00s\t/home/me/w2\t-",
+    `laptop\tw-3\t20261116-091500-0003\t30m00s\t/home/me/w3\t${"x".repeat(120)}`,
+  ]);
+  const ask = "ssh -o ConnectTimeout=3 -o BatchMode=yes -o ServerAliveInterval=5 -o ServerAliveCountMax=2";
+  assert.ok(r.calls.includes(`${ask} boxd-tower pod log w-1 ${id} 2952`), "the log is read from bytes minus 2048");
+  assert.ok(r.calls.includes(`${ask} boxd-tower pod log w-2 20261116-094000-0001 0`), "never below 0");
+  assert.ok(!r.calls.some((c) => c.includes("stranger") || c.includes("20261116-080000-1111")), "no log is read for a run that is not listed");
+  assert.deepEqual(r.calls.filter((c) => !c.includes(" pod ")), []);
+});
+
+test("box runs with nothing running says so, exit 0; a sleeping host is named and never contacted; an unreachable one is named", async () => {
+  const s = servers([{ name: "tower" }, { name: "laptop", status: FREE }, { name: "third" }], { wake: { tower: `127.0.0.1:${await closedPort()}` } });
+  hostFile(s, "laptop", "report", "host\tversion=0.4.0\n");
+  const r = go(newRepo(), s, ["runs"]);
+  assert.equal(r.code, 0, r.err);
+  assert.equal(r.out, "no detached run is running\nbox runs: tower is asleep (not woken, not asked)\nbox runs: third is unreachable (skipped)\n");
+  assert.ok(!r.calls.some((c) => c.includes("boxd-tower")), "a status ssh would have woken the sleeping host");
+  assert.equal(go(newRepo(), s, ["runs", "now"]).code, 2);
+  assert.equal(go(newRepo(), { ...s, home: mkdtempSync(path.join(root, "bare-")) }, ["runs"]).code, 2, "no build server set up");
+});
+
+// --wait: BOXD_WAIT_MS makes the interval short; nothing depends on it, the fake hosts change their answer by probe number.
+const TIGHT = realStatus(1, 100);
+const waits = (rp: Repo, s: Servers, args: string[]) => go(rp, s, ["--wait", ...args], { BOXD_WAIT_MS: "1" });
+
+test("--wait: no host has room, so it says so once with the reasons, says again only when they change, and goes on when room appears", () => {
+  const s = servers([{ name: "tower", status: FULL }, { name: "laptop", status: FULL }]), rp = newRepo();
+  hostFile(s, "tower", "status.2", `${TIGHT}\n`); hostFile(s, "tower", "status.3", `${FREE}\n`);
+  const r = waits(rp, s, ["--vm", "true"]);
+  assert.equal(r.code, 0, r.err);
+  assert.equal(r.err, "box: waiting for room, asking every 0.001 seconds:\n  tower: 3 of 3 running\n  laptop: 3 of 3 running\n"
+    + "box: the reasons changed: tower: 0 MB in use + 8192 MB asked > 100 MB cap; laptop: 3 of 3 running\n");
+  assert.equal(probes(r.calls).length, 6, "every host is asked again on each round");
+  assert.deepEqual(rest(r.calls), [sync(rp, "tower"), runLine(rp, "tower", "--vm")], "nothing was synced or run while waiting");
+  assert.equal(rp.placed(), "tower\n");
+  assert.equal(choices(s).length, 1);
+});
+
+test("--wait: a placed worktree whose host refuses at the call waits for that host only, never moves, then runs there", () => {
+  const s = servers([{ name: "tower", status: FREE }, { name: "laptop", status: FREE }]), rp = newRepo();
+  writeFileSync(path.join(rp.cwd, ".git/boxd-host"), "tower\n");
+  hostFile(s, "tower", "run.refuse", "1\n");
+  const r = waits(rp, s, ["--no-sync", "--vm", "true"]);
+  assert.equal(r.code, 0, r.err);
+  assert.equal(r.err, "boxd-pod: no room for another virtual machine (3 of 3 running); wait for one to end or stop one\n"
+    + "box: waiting for room, asking every 0.001 seconds:\n  tower: no room (the server refused the call)\n");
+  assert.equal(r.calls.filter((c) => c === runLine(rp, "tower", "--vm")).length, 2);
+  assert.ok(!r.calls.some((c) => c.includes("boxd-laptop")), "the other host is never asked");
+  assert.equal(rp.placed(), "tower\n");
+});
+
+test("--wait: the lost race with no host left (a placement this call made is dropped) waits and chooses again", () => {
+  const s = servers([{ name: "tower", status: FREE }, { name: "laptop", status: FULL }]), rp = newRepo();
+  hostFile(s, "tower", "run.refuse", "1\n");
+  const r = waits(rp, s, ["--no-sync", "--vm", "true"]);
+  assert.equal(r.code, 0, r.err);
+  assert.equal(r.calls.filter((c) => c === runLine(rp, "tower", "--vm")).length, 2);
+  assert.match(r.err, /box: waiting for room, asking every 0\.001 seconds:\n  tower: no room \(the server refused the call\)\n$/);
+  assert.deepEqual(choices(s).map((l) => [l[3], l[4]]), [["tower", "order"], ["tower", "order"]]);
+  assert.equal(rp.placed(), "tower\n");
+});
+
+test("--wait never waits for what time cannot fix: a missing image everywhere, or no host reachable, exits 75 at once as without it", () => {
+  const s = servers([{ name: "tower", status: FREE }, { name: "laptop", status: FREE }]), rp = newRepo();
+  const r = waits(rp, s, ["--image", "localhost/nothere", "true"]);
+  assert.equal(r.code, NO_ROOM);
+  assert.equal(r.err, "box: no build server has room for this call\n  tower: image nothere missing\n  laptop: image nothere missing\n");
+  assert.equal(probes(r.calls).length, 2);
+  const down = servers([{ name: "tower" }, { name: "laptop" }]);
+  const d = waits(newRepo(), down, ["true"]);
+  assert.equal(d.code, NO_ROOM);
+  assert.equal(d.err, "box: no build server has room for this call\n  tower: unreachable\n  laptop: unreachable\n");
+});
+
+test("without --wait nothing changes: no room is still exit 75 at once, and --wait is a box option like the others (warned when late)", () => {
+  const s = servers([{ name: "tower", status: FULL }, { name: "laptop", status: FULL }]);
+  const r = go(newRepo(), s, ["--vm", "true"], { BOXD_WAIT_MS: "1" });
+  assert.equal(r.code, NO_ROOM);
+  assert.equal(probes(r.calls).length, 2);
+  assert.match(runBox(["--no-sync", "true", "--wait"]).err, /^box: --wait after the command/);
+});
+
+// ---- 0.4.11: the server's reason for no room, box --version, box runs --follow ----------------------------------------------
+
+test("a refusal for room carries the server's own reason (vm_why), whatever it holds; a server without the field keeps the client's words", () => {
+  const why = "16468 MB of running machines + 3100 MB used by container boxes + 8192 MB asked > 24576 MB, 100% of the 24576 MB cap";
+  const withWhy = `${FULL}\tvm_why=${why}`;
+  assert.equal(parseStatus(withWhy).vm_why, why);
+  const c = choose([{ name: "tower", state: "awake", status: withWhy }], { vm: true });
+  assert.deepEqual(c.refusal, [`tower: ${why}`]);
+  assert.equal(c.wait, true);
+  assert.deepEqual(choose([{ name: "tower", state: "awake", status: `${FULL}\tvm_why=` }], { vm: true }).refusal, ["tower: 3 of 3 machines"], "empty: the old text");
+  assert.deepEqual(choose([{ name: "tower", state: "awake", status: FULL.replace(/\tvm_why=.*/, "") }], { vm: true }).refusal, ["tower: 3 of 3 machines"]);
+  const s = servers([{ name: "tower", status: withWhy }, { name: "laptop", status: FULL }]);   // two hosts: with one the client does not choose
+  assert.ok(go(newRepo(), s, ["hosts"]).out.includes(`\tvm_why=${why}\n`), "box hosts shows the field");
+  const no = go(newRepo(), s, ["--vm", "true"]);
+  assert.ok(no.err.includes(`  tower: ${why}\n`), JSON.stringify([no.code, no.err]));
+});
+
+test("box --version prints the client's version and exits 0; it is the version the package template carries", () => {
+  const r = runBox(["--version"]);
+  assert.deepEqual([r.code, r.out, r.err], [0, `box ${VERSION}\n`, ""]);
+  assert.match(runBox(["--help"]).out, /--version /);
+  const template = readFileSync(path.join(REPO, "srcpkgs/boxd/template"), "utf8").match(/^version=(.*)$/m)?.[1];
+  assert.equal(VERSION, template, "client VERSION and srcpkgs/boxd/template version must agree");
+});
+
+// box runs --follow: the fake hosts answer `pod report` by round (report.<n>, else report); report.fail.<n> makes round n fail.
+const RUN_A = "20261116-093000-aaaa", RUN_B = "20261116-094000-bbbb", RUN_C = "20261116-091500-cccc";
+const runLn = (box: string, id: string, state: string, exit: string) => `run\tbox=${box}\tid=${id}\tstate=${state}\texit=${exit}\tbytes=9\tchanged=1\n`;
+function followFixture() {
+  const s = servers([{ name: "tower", status: FREE }, { name: "laptop", status: FREE }]);
+  putEntry(s, "tower", "w-1", "/w1"); putEntry(s, "tower", "w-2", "/w2"); putEntry(s, "laptop", "w-3", "/w3");
+  return s;
+}
+const follow = (s: Servers) => go(newRepo(), s, ["runs", "--follow"], { BOXD_RUNS_POLL_MS: "1" });
+
+test("box runs --follow: one line per run as it ends (two different rounds), exit 1 when one failed, a run gone from the report is exit=-", () => {
+  const s = followFixture();
+  hostFile(s, "tower", "report", runLn("w-1", RUN_A, "running", "-") + runLn("w-2", RUN_B, "running", "-"));
+  hostFile(s, "tower", "report.2", runLn("w-1", RUN_A, "ended", "0") + runLn("w-2", RUN_B, "running", "-"));
+  hostFile(s, "tower", "report.3", runLn("w-1", RUN_A, "ended", "0") + runLn("w-2", RUN_B, "ended", "3") + runLn("w-1", "20261116-100000-late", "running", "-"));
+  hostFile(s, "laptop", "report", runLn("w-3", RUN_C, "running", "-"));
+  hostFile(s, "laptop", "report.3", "host\tversion=0.4.11\n");
+  const r = follow(s);
+  assert.equal(r.code, 1, r.err);
+  assert.equal(r.out, `tower\tw-1\t${RUN_A}\texit=0\ntower\tw-2\t${RUN_B}\texit=3\nlaptop\tw-3\t${RUN_C}\texit=-\n`);
+  assert.equal(r.err, "");
+  assert.equal(r.calls.filter((c) => c.endsWith("boxd-tower pod report")).length, 3, "asked again each round, and stopped when all had ended");
+  assert.ok(!r.calls.some((c) => c.includes(" pod log ")), "following reads no log");
+});
+
+test("box runs --follow: exit 0 when every run ended with 0; a run that ended without a known code prints exit=- and fails", () => {
+  const s = followFixture();
+  hostFile(s, "tower", "report", runLn("w-1", RUN_A, "running", "-"));
+  hostFile(s, "tower", "report.2", runLn("w-1", RUN_A, "ended", "0"));
+  const ok = follow(s);
+  assert.deepEqual([ok.code, ok.out], [0, `tower\tw-1\t${RUN_A}\texit=0\n`]);
+  const s2 = followFixture();
+  hostFile(s2, "tower", "report", runLn("w-1", RUN_A, "running", "-"));
+  hostFile(s2, "tower", "report.2", runLn("w-1", RUN_A, "ended", "-"));
+  const r = follow(s2);
+  assert.deepEqual([r.code, r.out], [1, `tower\tw-1\t${RUN_A}\texit=-\n`]);
+});
+
+test("box runs --follow with nothing running says so and exits 0 at once; a sleeping host is named and never contacted", async () => {
+  const s = servers([{ name: "tower" }, { name: "laptop", status: FREE }], { wake: { tower: `127.0.0.1:${await closedPort()}` } });
+  putEntry(s, "laptop", "w-3", "/w3");
+  hostFile(s, "laptop", "report", runLn("w-3", RUN_C, "ended", "0"));
+  const r = follow(s);
+  assert.deepEqual([r.code, r.out], [0, "no detached run is running\nbox runs: tower is asleep (not woken, not asked)\n"]);
+  assert.ok(!r.calls.some((c) => c.includes("boxd-tower")));
+  assert.equal(go(newRepo(), s, ["runs", "--now"]).code, 2);
+});
+
+test("box runs --follow: a host that fails rounds is skipped for them with one line on standard error, never read as ended", () => {
+  const s = followFixture();
+  hostFile(s, "laptop", "report", runLn("w-3", RUN_C, "running", "-"));
+  for (const n of [2, 3]) hostFile(s, "laptop", `report.fail.${n}`, "");
+  hostFile(s, "laptop", "report.4", runLn("w-3", RUN_C, "ended", "0"));
+  const r = follow(s);
+  assert.deepEqual([r.code, r.out], [0, `laptop\tw-3\t${RUN_C}\texit=0\n`]);
+  assert.equal(r.err, "box runs: laptop does not answer; still waiting for its runs\n", "said once for two failed rounds");
+});
+
+// ---- 0.4.12: room for the size asked, box runs --pod --------------------------------------------------------------------------
+// The server's vm_room judges the default size (8192 MB); vm_fit_mb (0.4.12) is the largest size it would admit now. Built by appending the word.
+const fits = (v: string) => `${FULL}\tvm_fit_mb=${v}`;
+const one = (status: string, req: Parameters<typeof choose>[1]) => choose([{ name: "tower", state: "awake", status }], req);
+
+test("room for the size asked: a smaller size is judged by vm_fit_mb, the default and a dash or a missing word by vm_room", () => {
+  assert.equal(one(fits("5000"), { vm: true, size: "medium" }).host, "tower", "medium fits 5000 MB although vm_room=no");
+  assert.equal(one(fits("2048"), { vm: true, size: "small" }).host, "tower", "small fits exactly 2048");
+  assert.equal(one(fits("4096"), { vm: true, size: "medium" }).host, "tower", "medium fits exactly 4096");
+  const no = one(fits("3000"), { vm: true, size: "medium" });
+  assert.deepEqual([no.refusal, no.wait], [["tower: 3000 MB fit, 4096 MB asked"], true], "the numbers, and time can change it");
+  assert.deepEqual(one(fits("0"), { vm: true, size: "small" }).refusal, ["tower: 0 MB fit, 2048 MB asked"], "count ceiling reached");
+  assert.deepEqual(one(fits("5000"), { vm: true }).refusal, one(FULL, { vm: true }).refusal, "default size: still vm_room, the same reason");
+  assert.ok(one(fits("5000"), { vm: true }).refusal, "default size refused");
+  for (const w of ["-", ""]) assert.ok(one(w === "" ? FULL : fits(w), { vm: true, size: "medium" }).refusal, `fit "${w}" falls back to vm_room=no`);
+  assert.equal(one(FREE, { vm: true, size: "medium" }).host, "tower", "vm_room=yes still places");
+  assert.equal(one(fits("0"), { vm: false, size: "medium" }).host, "tower", "a container is never judged by it");
+  assert.ok(one(fits("5000").replace(/engines=[^\t]*/, "engines=container"), { vm: true, size: "medium" }).refusal, "no engine stays refused");
+});
+
+test("room for the size asked, through the command: medium is placed on a vm_room=no host with 5000 MB fit; 3000 MB is exit 75 with the numbers; default stays refused", () => {
+  const rp = newRepo(), ok = go(rp, servers([{ name: "tower", status: fits("5000") }, { name: "laptop", status: FULL }]), ["--no-sync", "--vm", "--size", "medium", "true"]);
+  assert.equal(ok.code, 0, ok.err);
+  assert.ok(ok.calls.some((c) => c.includes("boxd-tower pod run") && c.includes("--size medium")), "the call ran on tower");
+  const no = go(newRepo(), servers([{ name: "tower", status: fits("3000") }, { name: "laptop", status: fits("1000") }]), ["--no-sync", "--vm", "--size", "medium", "true"]);
+  assert.equal(no.code, NO_ROOM);
+  assert.equal(no.err, "box: no build server has room for this call\n  tower: 3000 MB fit, 4096 MB asked\n  laptop: 1000 MB fit, 4096 MB asked\n");
+  const def = go(newRepo(), servers([{ name: "tower", status: fits("5000") }, { name: "laptop", status: fits("5000") }]), ["--no-sync", "--vm", "true"]);
+  assert.equal(def.code, NO_ROOM, "default size is judged by vm_room");
+});
+
+test("--wait keeps asking while the medium size does not fit, and goes on when it does", () => {
+  const s = servers([{ name: "tower", status: fits("3000") }, { name: "laptop", status: fits("3000") }]), rp = newRepo();
+  hostFile(s, "tower", "status.2", `${fits("4096")}\n`);
+  const r = waits(rp, s, ["--no-sync", "--vm", "--size", "medium", "true"]);
+  assert.equal(r.code, 0, r.err);
+  assert.equal(r.err, "box: waiting for room, asking every 0.001 seconds:\n  tower: 3000 MB fit, 4096 MB asked\n  laptop: 3000 MB fit, 4096 MB asked\n");
+  assert.equal(probes(r.calls).length, 4, "both hosts asked again");
+});
+
+// box runs --pod: the box column is the box name of the entry (the name given to --pod, else <folder>-<number>).
+function podFixture() {
+  const s = followFixture();
+  putEntry(s, "tower", "rf-1", "/r1"); putEntry(s, "tower", "my-pod", "/r2"); putEntry(s, "tower", "myxpod", "/r3");
+  return s;
+}
+const runsOf = (s: Servers, ...a: string[]) => go(newRepo(), s, ["runs", ...a], { BOXD_RUNS_POLL_MS: "1" });
+const RUN_D = "20261116-095000-dddd", RUN_E = "20261116-095500-eeee";
+
+test("box runs --pod: a glob over the whole box name keeps the matching runs in the listing; several patterns; ? is one character", () => {
+  const s = podFixture();
+  hostFile(s, "tower", "report", runLn("w-1", RUN_A, "running", "-") + runLn("rf-1", RUN_B, "running", "-") + runLn("w-2", RUN_C, "running", "-"));
+  for (const id of [RUN_A, RUN_B, RUN_C]) hostFile(s, "tower", `log.${id}`, head(9, 0, 9, "running"));
+  const boxes = (...a: string[]) => runsOf(s, ...a).out.trimEnd().split("\n").map((l) => l.split("\t")[1] ?? l);
+  assert.deepEqual(boxes("--pod", "rf-*"), ["rf-1"]);
+  assert.deepEqual(boxes("--pod", "rf-*", "--pod", "w-?"), ["w-1", "rf-1", "w-2"]);
+  assert.deepEqual(boxes("--pod", "w-?"), ["w-1", "w-2"]);
+  assert.deepEqual(boxes("--pod", "w"), ["no detached run is running"], "the whole name must match");
+  assert.equal(runsOf(s, "--pod", "w").code, 0);
+});
+
+test("box runs --pod: a character of regular expressions in the pattern is literal", () => {
+  const s = podFixture();
+  hostFile(s, "tower", "report", runLn("my-pod", RUN_A, "running", "-") + runLn("myxpod", RUN_B, "running", "-"));
+  for (const id of [RUN_A, RUN_B]) hostFile(s, "tower", `log.${id}`, head(9, 0, 9, "running"));
+  const boxes = (p: string) => runsOf(s, "--pod", p).out.trimEnd().split("\n").map((l) => l.split("\t")[1] ?? l);
+  assert.deepEqual(boxes("my-pod"), ["my-pod"]);
+  assert.deepEqual(boxes("my-pod+"), ["no detached run is running"], "'+' is not an operator");
+  assert.deepEqual(boxes("my.pod"), ["no detached run is running"], "'.' does not match any character");
+  assert.deepEqual(boxes("my?pod"), ["my-pod", "myxpod"], "'?' is one character");
+  assert.deepEqual(boxes("(my)*"), ["no detached run is running"]);
+});
+
+test("box runs --follow --pod: ends with the matching runs only, exit 0 when they ended with 0 although another failed or still runs", () => {
+  const s = podFixture();
+  hostFile(s, "tower", "report", runLn("rf-1", RUN_A, "running", "-") + runLn("w-1", RUN_B, "running", "-") + runLn("w-2", RUN_D, "running", "-"));
+  hostFile(s, "tower", "report.2", runLn("rf-1", RUN_A, "ended", "0") + runLn("w-1", RUN_B, "ended", "3") + runLn("w-2", RUN_D, "running", "-"));
+  const r = runsOf(s, "--follow", "--pod", "rf-*");
+  assert.deepEqual([r.code, r.out, r.err], [0, `tower\trf-1\t${RUN_A}\texit=0\n`, ""]);
+  assert.equal(r.calls.filter((c) => c.endsWith("boxd-tower pod report")).length, 2, "stopped when the matching run ended");
+  const s2 = podFixture();
+  hostFile(s2, "tower", "report", runLn("rf-1", RUN_A, "running", "-") + runLn("w-1", RUN_B, "running", "-"));
+  hostFile(s2, "tower", "report.2", runLn("rf-1", RUN_A, "ended", "2") + runLn("w-1", RUN_B, "ended", "0"));
+  const f = runsOf(s2, "--pod", "rf-*", "--follow");
+  assert.deepEqual([f.code, f.out], [1, `tower\trf-1\t${RUN_A}\texit=2\n`], "the options may come in either order; a matching failure fails");
+});
+
+test("box runs --follow --pod: two patterns follow both; no match at the first listing says so and exits 0 at once", () => {
+  const s = podFixture();
+  hostFile(s, "tower", "report", runLn("rf-1", RUN_A, "running", "-") + runLn("w-1", RUN_B, "running", "-") + runLn("w-2", RUN_E, "running", "-"));
+  hostFile(s, "tower", "report.2", runLn("rf-1", RUN_A, "ended", "0") + runLn("w-1", RUN_B, "ended", "0") + runLn("w-2", RUN_E, "running", "-"));
+  const r = runsOf(s, "--follow", "--pod", "rf-*", "--pod", "w-1");
+  assert.deepEqual([r.code, r.out], [0, `tower\trf-1\t${RUN_A}\texit=0\ntower\tw-1\t${RUN_B}\texit=0\n`]);
+  const none = runsOf(s, "--follow", "--pod", "zzz*");
+  assert.deepEqual([none.code, none.out], [0, "no detached run is running\n"]);
+});
+
+test("box runs --pod without a value is a usage error; so is any other argument", () => {
+  const s = podFixture();
+  const r = runsOf(s, "--pod");
+  assert.deepEqual([r.code, r.err.includes("--pod needs a pattern")], [2, true]);
+  assert.equal(runsOf(s, "--follow", "--pod").code, 2);
+  assert.equal(runsOf(s, "now").code, 2);
+  assert.equal(runsOf(s, "--follow", "--follow").code, 2);
+});
+
+// ---- box drop: this worktree's box removed at once, never waking a host, never under a running command -----------------------
+test("drop: removes the box and its folder, the record, logs it as asked, and says so", () => {
+  const s = servers([{ name: "test", status: FREE }]), rp = newRepo();
+  hostFile(s, "test", "list", LINE(rp.box, "stopped")); putEntry(s, "test", rp.box, rp.top);
+  const r = go(rp, s, ["drop"], { BOXD_HOST: "test" });
+  assert.equal(r.code, 0);
+  assert.equal(r.out, `box drop: removed test box ${rp.box} and its files\n`);
+  assert.deepEqual(r.calls.filter((c) => !c.endsWith(" pod status")).map((c) => c.replace(/^.* boxd-/, "boxd-")), ["boxd-test pod list", `boxd-test pod drop ${rp.box}`]);
+  assert.equal(getEntry(s, "test", rp.box), undefined);
+  assert.deepEqual(gcLog(s).map((l) => l.slice(1)), [["test", rp.box, rp.top, "asked"]]);
+});
+
+test("drop: the size the server measured is relayed; an answer without it, or with a malformed one, prints the old line", () => {
+  const old = (rp: { box: string }) => `box drop: removed test box ${rp.box} and its files\n`;
+  const answer = (out: string) => {
+    const s = servers([{ name: "test", status: FREE }]), rp = newRepo();
+    hostFile(s, "test", "list", LINE(rp.box, "stopped")); putEntry(s, "test", rp.box, rp.top); hostFile(s, "test", "drop.out", out);
+    return { r: go(rp, s, ["drop"], { BOXD_HOST: "test" }), rp };
+  };
+  const ok = answer("evicted x (worktree gone), 123 MB freed\n"); assert.equal(ok.r.out, `${old(ok.rp).trimEnd()}, 123 MB freed\n`);
+  const zero = answer("evicted x (worktree gone), 0 MB freed\n"); assert.equal(zero.r.out, `${old(zero.rp).trimEnd()}, 0 MB freed\n`);
+  for (const bad of ["", "evicted x (worktree gone)\n", "evicted x (worktree gone), 12a MB freed\n", "evicted x (worktree gone), 1234567890 MB freed\n", "evicted x (worktree gone), 5 MB freed and more\n", "evicted x (worktree gone), -5 MB freed\n", "x, 5 MB freed\n"]) {
+    const b = answer(bad); assert.equal(b.r.out, old(b.rp), JSON.stringify(bad));
+  }
+});
+
+test("drop: a box the host no longer has is still cleaned (pod drop answers 0 for it)", () => {
+  const s = servers([{ name: "test", status: FREE }]), rp = newRepo();
+  hostFile(s, "test", "list", ""); putEntry(s, "test", rp.box, rp.top);
+  assert.equal(go(rp, s, ["drop"], { BOXD_HOST: "test" }).code, 0);
+  assert.equal(getEntry(s, "test", rp.box), undefined);
+});
+
+test("drop: a command still running in the box refuses and removes nothing, record kept", () => {
+  const s = servers([{ name: "test", status: FREE }]), rp = newRepo();
+  hostFile(s, "test", "list", LINE(rp.box)); hostFile(s, "test", `ps.${rp.box}`, "7\t100\t0\t/job/src\tsleep 99\n"); putEntry(s, "test", rp.box, rp.top);
+  const r = go(rp, s, ["drop"], { BOXD_HOST: "test" });
+  assert.equal(r.code, 1);
+  assert.match(r.err, new RegExp(`box drop: box ${rp.box} on test still has a command running in it; nothing removed\n`));
+  assert.deepEqual(stops(r.calls), []);
+  assert.notEqual(getEntry(s, "test", rp.box), undefined);
+  assert.deepEqual(gcLog(s), []);
+});
+
+test("drop: a failed pod drop keeps the record and says the exit code", () => {
+  const s = servers([{ name: "test", status: FREE }]), rp = newRepo();
+  hostFile(s, "test", "list", LINE(rp.box, "stopped")); hostFile(s, "test", "drop.exit", "1"); putEntry(s, "test", rp.box, rp.top);
+  const r = go(rp, s, ["drop"], { BOXD_HOST: "test" });
+  assert.equal(r.code, 1);
+  assert.match(r.err, /box drop: test: removing .* failed \(exit 1\); record kept\n/);
+  assert.notEqual(getEntry(s, "test", rp.box), undefined);
+  assert.deepEqual(gcLog(s), []);
+});
+
+test("drop: a sleeping host is never contacted, one line, exit 1, record kept", async () => {
+  const s = servers([{ name: "sleepy" }], { wake: { sleepy: `127.0.0.1:${await closedPort()}` } }), rp = newRepo();
+  putEntry(s, "sleepy", rp.box, rp.top);
+  const r = go(rp, s, ["drop"], { BOXD_HOST: "sleepy" });
+  assert.equal(r.code, 1);
+  assert.equal(r.calls.filter((c) => c.includes("boxd-sleepy")).length, 0);
+  assert.match(r.err, /box drop: sleepy is asleep and is not woken; its box .* is removed by the collector when it wakes\n/);
+  assert.notEqual(getEntry(s, "sleepy", rp.box), undefined);
+});
+
+test("drop --pod: a box of another worktree that still exists, or one without a record, is refused and nothing is asked", () => {
+  const s = servers([{ name: "test", status: FREE }]), rp = newRepo(), other = newRepo();
+  putEntry(s, "test", other.box, other.top);
+  const r = go(rp, s, ["drop", "--pod", other.box], { BOXD_HOST: "test" });
+  assert.equal(r.code, 1);
+  assert.match(r.err, /belongs to the worktree .*; run box drop from there; nothing removed\n/);
+  const n = go(rp, s, ["drop", "--pod", "nobody-1"], { BOXD_HOST: "test" });
+  assert.match(n.err, /box nobody-1 on test has no record on this machine; nothing removed\n/);
+  assert.deepEqual([...r.calls, ...n.calls].filter((c) => c.includes(" pod drop ") || c.includes(" pod list")), []);
+  assert.notEqual(getEntry(s, "test", other.box), undefined);
+});
+
+test("drop: bad words are a usage error", () => assert.equal(runBox(["drop", "--now"]).code, 2));

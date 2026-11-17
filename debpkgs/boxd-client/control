@@ -1,0 +1,13 @@
+Package: boxd-client
+Section: devel
+Priority: optional
+Architecture: all
+Maintainer: boxd maintainers <gsalucci@users.noreply.github.com>
+Depends: nodejs (>= 20), rsync, openssh-client, git
+Suggests: podman | docker.io
+Homepage: https://github.com/gsalucci/boxd
+Description: build boxes for agents: the box command
+ The box command for the machine that sends work. Run in a git worktree it
+ syncs the worktree to a boxd build server and runs the command in that
+ worktree's own box. box setup <host> writes the ssh entry and installs the
+ Claude skill for the user.

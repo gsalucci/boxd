@@ -1,0 +1,155 @@
+#!/bin/sh
+# The build area part of boxd-setup (root; boxd-setup runs it). Safe to run again: it rebuilds @work-clean from
+# this script and creates the rest only when missing. Settings: /etc/boxd/boxd.conf.
+#   build account  BOXD_USER, home BOXD_WORK/home, no password, no sudo; ssh key kept in /etc (not writable by it)
+#   @work          BOXD_WORK: home/ jobs/ tmp/ (reset to @work-clean by boxd-reset)
+#   no btrfs       a host whose work area is not on btrfs (BOXD_WORK_FS, see boxd.conf) keeps BOXD_WORK as a plain folder with
+#                  a marker file; the pristine copy is the folder "BOXD_WORK-clean" and boxd-reset refreshes the area from it with rsync
+#   @cache         BOXD_WORK/cache: download caches, kept by a plain reset
+#   /var/tmp       memory-only, so the one world-writable folder on the system disk is gone
+#   podman         rootless for the build account: root inside a container, plain account outside; images
+#                  under BOXD_WORK/cache (XDG_DATA_HOME). Needs cgroups version 2 (CGROUP_MODE=unified, after a restart).
+# The account's ssh public key comes from BOXD_BUILD_KEY (the key itself) on the first run; later runs keep the
+# key file that exists.
+set -eu
+CONF=${BOXD_CONF:-/etc/boxd/boxd.conf}
+[ -r "$CONF" ] && . "$CONF"
+U=${BOXD_USER:-boxd}
+WORK=${BOXD_WORK:-/var/lib/boxd/work}
+ETC=${BOXD_ETC:-/etc/boxd}
+FS=${BOXD_WORK_FS:-auto}
+MANAGER=${BOXD_MANAGER:-$([ -d /run/systemd/system ] && echo systemd || echo runit)}
+OPT=noatime,compress=zstd:1,ssd,space_cache=v2,discard=async
+KEYFILE=/etc/ssh/authorized_keys/$U
+
+id "$U" >/dev/null 2>&1 || useradd -M -d "$WORK/home" -s /bin/bash -U "$U"
+# No usable password ("*"), not a locked one: the build sshd (no PAM) refuses locked accounts outright.
+usermod -p "*" "$U"
+
+install -d -m755 /etc/ssh/authorized_keys
+if [ -n "${BOXD_BUILD_KEY:-}" ]; then
+    printf '%s\n' "$BOXD_BUILD_KEY" > "$KEYFILE"
+elif [ ! -s "$KEYFILE" ]; then
+    echo "work-setup: no ssh key for $U: set BOXD_BUILD_KEY (boxd-setup --key <public key file>)" >&2
+    exit 1
+fi
+chmod 644 "$KEYFILE"
+
+# Sourced by the account's ~/.bashrc, which ssh commands read too: caches and temporary files go under the work area.
+cat > /etc/profile.d/boxd-env.sh <<ENV
+# Written by boxd work-setup. Build account only: every cache and temporary file goes under the work area
+# (caches in $WORK/cache survive a plain boxd-reset).
+if [ "\$(id -un)" = $U ]; then
+    export TMPDIR=$WORK/tmp
+    export XDG_CACHE_HOME=$WORK/cache/xdg-cache XDG_DATA_HOME=$WORK/cache/xdg-data
+    export CARGO_HOME=$WORK/cache/cargo GOPATH=$WORK/cache/go GOCACHE=$WORK/cache/go-build
+    export npm_config_cache=$WORK/cache/npm
+    export PATH="\$CARGO_HOME/bin:\$PATH"
+fi
+ENV
+chmod 644 /etc/profile.d/boxd-env.sh
+
+# populate DIR: the pristine work area every reset restores (not the cache: it is a mount in btrfs mode and kept as is in directory mode)
+populate() {
+    install -d -m755 "$1"
+    install -d -m700 -o "$U" -g "$U" "$1/home" "$1/tmp"
+    install -d -m755 -o "$U" -g "$U" "$1/jobs" "$1/jobs/runs"
+    printf '. /etc/profile.d/boxd-env.sh\n' > "$1/home/.bashrc"
+    printf '. ~/.bashrc\n' > "$1/home/.profile"
+    chown "$U:$U" "$1/home/.bashrc" "$1/home/.profile"
+}
+
+# Which kind of work area: one that exists already keeps its kind; else BOXD_WORK_FS; auto means btrfs when the file
+# system under the work area is btrfs (the nearest existing parent folder is asked: the work area may not exist yet).
+if mountpoint -q "$WORK" && [ "$(findmnt -n -o FSTYPE --target "$WORK")" = btrfs ]; then FS=btrfs
+elif [ -e "$WORK/.boxd-dir-mode" ]; then FS=dir
+elif [ "$FS" = auto ]; then
+    p=$WORK; while [ ! -e "$p" ]; do p=$(dirname "$p"); done
+    [ "$(findmnt -n -o FSTYPE --target "$p")" = btrfs ] && FS=btrfs || FS=dir
+fi
+case $FS in btrfs|dir) ;; *) echo "work-setup: BOXD_WORK_FS must be auto, btrfs or dir, not $FS" >&2; exit 1 ;; esac
+
+if [ "$FS" = dir ]; then
+    # No subvolumes to swap: the pristine copy is a folder next to the work area and boxd-reset syncs from it.
+    CLEAN=${WORK%/}-clean
+    rm -rf "$CLEAN"
+    populate "$CLEAN"
+    : > "$CLEAN/.boxd-dir-mode"
+    install -d -m755 "$WORK"
+    # A first run adopts the pristine copy; a later run leaves the live area alone (boxd-reset refreshes it).
+    [ -e "$WORK/.boxd-dir-mode" ] || rsync -a --exclude=/cache "$CLEAN/" "$WORK/"
+    install -d -m755 -o "$U" -g "$U" "$WORK/cache"
+    echo "work area: plain folder $WORK (not btrfs), reset by boxd-reset with rsync"
+else
+    dev=$(findmnt -n -o SOURCE --target / | sed 's/\[.*//')
+    uuid=$(blkid -s UUID -o value "$dev")
+    TOP=/run/boxd-btrfs-top
+    mkdir -p "$TOP"; mount -o subvolid=5 "$dev" "$TOP"
+    trap 'umount "$TOP" 2>/dev/null; rmdir "$TOP" 2>/dev/null' EXIT
+
+    # @work-clean, built fresh every time from this script.
+    if [ -d "$TOP/@work-clean" ]; then
+        btrfs property set -ts "$TOP/@work-clean" ro false
+        btrfs subvolume delete "$TOP/@work-clean" >/dev/null
+    fi
+    btrfs subvolume create "$TOP/@work-clean" >/dev/null
+    C="$TOP/@work-clean"
+    populate "$C"
+    install -d -m755 "$C/cache"                       # mount point for @cache
+    btrfs property set -ts "$C" ro true
+
+    [ -d "$TOP/@work" ] || btrfs subvolume snapshot "$C" "$TOP/@work" >/dev/null
+    [ -d "$TOP/@cache" ] || { btrfs subvolume create "$TOP/@cache" >/dev/null; chown "$U:$U" "$TOP/@cache"; }
+
+    # Each mount line is added once; the work area is matched by its mount point, so a changed BOXD_WORK adds a line
+    # and leaves the old one for the owner to remove.
+    fstab_line() { grep -q "[[:space:]]$1[[:space:]]" /etc/fstab || echo "$2" >> /etc/fstab; }
+    fstab_line "$WORK" "UUID=$uuid $WORK btrfs $OPT,subvol=@work,rprivate 0 2"
+    fstab_line "$WORK/cache" "UUID=$uuid $WORK/cache btrfs $OPT,subvol=@cache,rprivate 0 2"
+    mkdir -p "$WORK"
+    mountpoint -q "$WORK" || mount "$WORK"
+    mountpoint -q "$WORK/cache" || mount "$WORK/cache"
+fi
+
+# Void only: hardening and boot settings of the first host. A systemd host (Debian) already has cgroups version 2
+# and shared mounts, keeps its own /var/tmp and mail folder, and has no rc.conf or rc.local.
+if [ "$MANAGER" = runit ]; then
+    fstab_line() { grep -q "[[:space:]]$1[[:space:]]" /etc/fstab || echo "$2" >> /etc/fstab; }
+    fstab_line /var/tmp "tmpfs /var/tmp tmpfs defaults,nosuid,nodev,mode=1777,size=2G 0 0"
+    mountpoint -q /var/tmp || mount /var/tmp
+fi
+grep -q "^$U:" /etc/subuid || usermod --add-subuids 200000-265535 --add-subgids 200000-265535 "$U"
+install -d /etc/containers/containers.conf.d
+ln -sfn "$ETC/containers.conf" /etc/containers/containers.conf.d/boxd.conf
+if [ "$MANAGER" = runit ]; then
+    ln -sfn "$ETC/storage.conf" /etc/containers/storage.conf
+else
+    # /etc/containers/storage.conf belongs to the containers-common package there: a drop-in leaves it alone.
+    install -d /etc/containers/storage.conf.d
+    ln -sfn "$ETC/storage.conf" /etc/containers/storage.conf.d/boxd.conf
+    # Podman keeps its run state in /run/user/<uid>. Debian has no such folder for an account without a login session, and logind
+    # removes it whenever the last session of the account ends (every `runuser -l`): lingering keeps the folder, owned by the
+    # build account, for as long as the host runs. Without it podman fails with "permission denied" in /run/user.
+    install -d /var/lib/systemd/linger
+    : > "/var/lib/systemd/linger/$U"
+    [ ! -d /run/systemd/system ] || loginctl enable-linger "$U"
+fi
+[ "$(stat -f -c %T /sys/fs/cgroup)" = cgroup2fs ] || [ "$MANAGER" != systemd ] || echo "work-setup: this host does not use cgroups version 2 (needed for podman): boot with systemd.unified_cgroup_hierarchy=1" >&2
+if [ "$MANAGER" = runit ]; then
+    grep -q "^CGROUP_MODE=unified" /etc/rc.conf || echo "CGROUP_MODE=unified" >> /etc/rc.conf
+    [ "$(stat -f -c %T /sys/fs/cgroup)" = cgroup2fs ] || echo "RESTART NEEDED: cgroups version 2 (for podman) starts after a restart"
+    # The mail spool is world-writable on the system disk; nothing here uses local mail.
+    [ ! -d /var/spool/mail ] || chmod 775 /var/spool/mail
+    # Rootless podman wants / as a shared mount (else a warning on every run); rc.local repeats it at boot.
+    mount --make-rshared /
+    grep -q 'make-rshared /' /etc/rc.local 2>/dev/null || echo 'mount --make-rshared /' >> /etc/rc.local
+fi
+# The work area stays private (btrfs mode): a mount namespace created while it is shared (any rootless podman, any user)
+# gets peer copies, and then the kernel refuses to unmount its cache folder for boxd-reset ("target is busy").
+# After the rshared line, because that one is recursive. A systemd host has the option in the fstab lines; the
+# command covers the mounts made before it was there.
+if [ "$FS" = btrfs ]; then
+    mount --make-rprivate "$WORK"
+    [ "$MANAGER" != runit ] || grep -q "make-rprivate $WORK" /etc/rc.local 2>/dev/null || echo "mount --make-rprivate $WORK" >> /etc/rc.local
+fi
+echo "build area ready"

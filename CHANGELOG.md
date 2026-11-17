@@ -1,0 +1,482 @@
+# Changelog
+
+## 0.4.19
+
+- **A removal says how much disk it freed.** The server measures a box's folder before it removes it and answers
+  `evicted <box> (<reason>), <n> MB freed`; `box drop` and the collector (`box gc`) print `..., <n> MB freed` after `and its
+  files`. Measured in the build account's user namespace, where files made by other users inside a box are readable. Limits:
+  the image built from a box's own Containerfile, removed in the same step, is not counted; a box without a folder, a failed
+  measurement or a server older than this release leave the line as before. `evictions.log` keeps its three fields. Asked for
+  by a user who wants cleanup reports to quote a measured number.
+- **`box log <run> --state` says when an ended run ended and how long it ran.** The line gains `ended=<time>` (the last write
+  of the run's log, in UTC as `2026-11-16T17:48:47Z`) and `seconds=<n>` (from the creation of the log at the run's start to that
+  last write). The server sends both as new words at the end of the `pod log` header of an ended run; readers that take the
+  words by key are not disturbed. `seconds` is absent on a file system that reports no creation time; a running run and an
+  older server print the line as before. Asked for by a user who computed wall minutes from the log.
+
+## 0.4.18
+
+- **`box drop` removes this worktree's box at once.** Run from inside a worktree you are about to delete, it removes the box and
+  its files on the build server and the record on this machine, without the collector's two passes 15 minutes apart. It refuses
+  while a command still runs in the box (no force), never wakes a sleeping server (the collector removes the box when it wakes),
+  and with `--pod` removes only a box this machine recorded for this worktree or for a worktree that is gone. A box the server
+  already removed for idleness is cleaned too (its folder and record). Each removal is a line in `gc.log` ending in `asked`.
+  Client only, the server is unchanged. Asked for by a user whose rule is to clean up before reporting done.
+
+## 0.4.17
+
+- **`box log <run> --state` says in one line whether a detached run still runs.** It prints `<run>`, `state=running|ended` and
+  `exit=<code>` (a dash while running, or when the run ended without a code because its box or host went down), tab separated,
+  and no log text; it exits 0. One `pod log` call, the box is not started. Asked for by a user who read the log tail for `EXIT`.
+  Limit: it does not say when the run ended.
+- The host watcher (`tools/host-watch`) no longer reports the record of a box on a sleeping host as left behind: the collector
+  wakes no host, the record waits for it.
+
+## 0.4.16
+
+- **A machine's process limit is raised from 4096 to 32768.** The guest kernel microsandbox boots (6.12.117) is built small and
+  logs `pid_max: default: 4096 minimum: 301`: all processes and threads of a machine share 4096 numbers, whatever `threads-max`
+  says. Measured on the build host on 2026-11-16: a loop of 4300 background processes died with `sh: 0: Cannot fork`, and a
+  user's detached runs (three browsers and docker containers inside 4 GB machines) lost containers three times in one night with
+  `OCI runtime exec failed: ... error executing setns process`, with memory to spare and no kernel kill line, which is what a failed
+  fork looks like. Creating a machine, and every later start of a stopped one (the setting does not survive a stop), now writes
+  32768 to `/proc/sys/kernel/pid_max` in the guest call that already prepares it, before the user's command; a call into a running
+  machine and container boxes are not touched, and a guest that refuses the write keeps its limit without any message. Limit:
+  32768 is this guest kernel's ceiling (4194304 is refused); the real fix is a guest kernel not built small, which is microsandbox's.
+
+## 0.4.15
+
+- **A removed idle machine is said in one line.** The first removal on a real host (laptop: a machine idle for 315 seconds
+  gave its slot to a new one, as designed) put the engine's own `✓ Removed pod-...` into the caller's output. The caller now
+  reads `boxd-pod: the idle machine of box <box> was removed to make room for this one` on standard error.
+- `tools/bump-version <new>` moves every place that carries the release version and compiles the client.
+
+## 0.4.14
+
+- **`box log <run> --tail <n>` prints only the last lines.** `box log <run> --follow` started near or after the end of a run
+  printed the whole log (megabytes) when the reader wanted the last lines and the exit code, and piping through `tail` hid
+  the exit code. `--tail <n>` (a whole number from 0 to 100000) holds the output back until the first catch-up, keeps only the
+  last `<n>` lines, prints them, and with `--follow` goes on with everything that comes after; `--tail 0 --follow` prints
+  only what comes after. The exit code rules are unchanged.
+- **`box gc --dry-run` says when a box will go.** For a box whose worktree is gone and was seen before, the message now says
+  how long ago the worktree was first seen missing and in how many minutes a pass removes the box (`is missing since 6 minutes;
+  a pass in 9 minutes or later removes it`), from the collector's own clock. Only the words changed; a dry run still records nothing.
+
+## 0.4.13
+
+- **The guest kernel's kill lines also come from a guest without `dmesg`.** The first run on a real host after 0.4.12 (a
+  small machine from the plain Void image on the tower) showed the lines never came: that image has no `dmesg`, and the run
+  was then left unwrapped. The kernel's own device `/dev/kmsg` is now read in that case, without blocking; seen working in
+  that machine. A guest where neither can be read still runs as before and adds nothing.
+
+## 0.4.12
+
+- **`pod status` says the largest machine that fits.** `vm_room` and `vm_why` are judged for the default size (8192 MB), so a
+  user asking for `--size medium` (4096 MB) was told "no room" on a host that would have admitted it. A new last word,
+  `vm_fit_mb`, is the largest size `pod run` admits now (the smaller of the cap minus the measured use and the commit share
+  minus the running machines minus the container boxes' use; `0` at the count ceiling; a dash when memory cannot be measured
+  or on a host without machines). One computation now feeds `pod run`'s refusal, `vm_room`, `vm_why` and `vm_fit_mb`; the
+  refusal text and exit code are unchanged.
+- **What the guest's kernel killed is written into the detached run's log.** On 2026-11-15 and 2026-11-16 a docker container
+  inside a 4 GB machine died under a detached run, the host killed nothing, and the guest's kernel log went with the machine.
+  The log of a detached run in a machine now gets the guest's `Killed process` lines that appeared during the run, each as
+  `[boxd] guest kernel: ...`, before the `EXIT` line. Nothing is added when there are none; the exit code is unchanged.
+- **Idle machines give their room back.** An idle machine held its whole size until the reaper's 30 minutes, also on a full
+  host with callers waiting. When a new machine has no room,
+  `pod run` now removes idle machines first, the longest unused first and no more than needed: unused for
+  `BOXD_VM_IDLE_MIN` seconds (300), with no run or call in them. A machine with a run in flight is never touched; none is
+  removed when that would not make the room. `pod status` counts the room idle machines would give, and each removal is an
+  `evicted` line in `pod report`.
+- **Room is judged for the size asked.** The client refused a `--size small` or `--size medium` request by the server's
+  answer for the default size; it now reads `vm_fit_mb` and says the numbers when it refuses (`3000 MB fit, 4096 MB asked`).
+- **`box runs --pod <pattern>`**, with and without `--follow`: only the runs of boxes whose name matches (`*` and `?`,
+  repeatable); the exit code of `--follow` then reflects only them.
+
+## 0.4.11
+
+From the second round of feedback of the tool's users.
+
+- **`pod status` says why no machine fits.** `vm_room=no` gave no reason: a user with four machines on a group at 16.5 of
+  24.6 GB could not tell when a slot would open. A last word `vm_why` is appended: empty when a machine fits, otherwise the
+  sentence `pod run` refuses with (sizes of the running machines, memory used by container boxes, the size asked, the cap).
+  `box hosts` shows it, and the client's "no room" lines and `--wait` use it in place of their own shorter words.
+- **`box --version`** prints the client's version; `tools/release` refuses a release whose client is not at that version.
+- **`box runs --follow`.** Waits for the detached runs that are running now, on every awake host, prints one line for each as
+  it ends (host, box, run id, exit code) and exits 0 when all ended with 0, otherwise 1. It replaces polling `box log` per run.
+
+## 0.4.10
+
+From feedback of the tool's users.
+
+- **`pod status` and `pod report` print the release version.** `VERSION` in `server/boxd-pod` was a hard-coded `0.4.0`, so a
+  0.4.9 install answered `version=0.4.0` and a user took a fix for not installed. It is now `0.4.10`, equal to `version=` of
+  `srcpkgs/boxd/template`. `tests/contract-pod-test.sh` fails when the two differ, and `tools/release` refuses a release whose
+  `server/boxd-pod` is not at the version being released.
+- **`pod status` shows the host's memory.** `mem_free_mb` is boxd's accounting (the group cap minus what boxes use, never below 0)
+  and read 0 while the host had 9.5 GB available. It stays as it is. Three words are appended after `images`, so readers by
+  position and by key keep working: `mem_avail_mb`, `group_mem_used_mb`, `group_mem_max_mb`, with the meaning and the code of the
+  `host` line of `pod report`. The contract now says plainly what `mem_free_mb` is and is not.
+- **`pod help`.** `ssh <host> pod help` lists the commands the server accepts, one line each; read only, also for keys that may
+  only read. The `unknown command` error is unchanged: the client and the dashboard match its text to detect old servers.
+- **`box` ends quietly when its output pipe is closed** (exit 0, no output), as in `box hosts | head -1`; it used to crash with
+  `EPIPE`.
+- **A warning for a box option after the command.** `--pull`, `--include`, `--env`, `--detach`, `--host`, `--pod`, `--no-sync` or
+  `--wait` written after the command without `--` is handed to the command; `box` now says so once and goes on.
+- **`--pull` of a path that is not in the box** prints `box: nothing at <path> in the box, nothing pulled` in place of rsync's words.
+- **`box runs`.** The detached runs still running on the awake hosts, for this machine's boxes: host, box, run id, age, worktree
+  and last output line. It never wakes a sleeping host.
+- **`--wait`.** When no host has room the call asks again every 30 seconds in place of exit 75 at once. It holds nothing and gives
+  no order among waiting callers; a refusal that waiting cannot fix still exits at once; a wait whose starter is gone ends (129).
+- **`--detach` tells where results live.** `--pull` does nothing with it (now a warning); results must be under `/job/src`, files
+  outside `/job` go with the idle box, and the printed command fetches them later (`box --no-sync --pull <path> true`).
+- **Skill text:** the clock in a box is coordinated universal time, a synced tree has no git data without `--snapshot`, how to see
+  out-of-memory kills in a machine box, `box runs`, `--wait`, `box log` keeps the full output.
+- **`tools/host-watch`** (for the owner of the hosts): a read-only watcher of both hosts that reports machines over the cap, kernel
+  kills, cleanup that did not happen and placements past a host with room.
+
+## 0.4.9
+
+From the machine box killed on the tower on 2026-11-15 (see 0.4.8): the rule of 0.4.7 and 0.4.8 counted only machines, so
+machines could reserve 100 % of the cap while a container box (12 GB limit by default) grew on top, and the build running at
+the kill was in a container box. When the cap was hit the kernel picked its victim by size, a machine (one large process),
+not the container process that grew. The design: machines hold reservations, container boxes are best effort.
+
+- **Container memory counts in the commitment.** A machine is admitted when the sizes of the running machines + the memory the
+  running container boxes use now + the asked size fit `BOXD_VM_COMMIT` percent of the cap. The container figure is measured
+  as the cap check measures (anonymous, shared and swapped memory, no file cache) in the cgroup of each box's init process. The
+  refusal names the three numbers: `... (4096 MB of running machines + 4096 MB used by container boxes + 2048 MB asked >
+  8192 MB, 100% of the 8192 MB cap) ...` (the container term is left out when it is 0). A running container whose memory
+  cannot be read counts as its `--memory` limit; with no limit to assume, the call is refused (`the running container boxes
+  cannot be measured now`). `pod status` (`vm_room`) follows, as the one rule is `vm_refusal`.
+- **The grower dies, not a machine.** New container boxes are made with `--oom-score-adj 1000`: the kernel adds that share
+  (a thousandth) of the cgroup's limit to the badness of every process, so when the build cgroup is full a container process
+  ends before any machine. Boxes made before 0.4.9 keep their old score until recreated (marked `shortcut:` in `server/boxd-pod`).
+- **A killed container run says so.** A command in a container box that ends with 137 while the cgroup's `oom_kill` count rose
+  gets `boxd: the command in box <box> was killed (exit 137): the host's out-of-memory killer ended a process of the boxes
+  meanwhile (kernel log: dmesg)` on stderr, or in the run log before `EXIT 137` (the same mechanism as 0.4.8's machine line).
+- Judged and not built: refusing container boxes by load or memory (rejected in 0.4.8: a container has no size to check and
+  refusing would stop the work the box is for), and a score for boxes made earlier (needs a write into processes owned by the
+  container's user namespace on every call; not small).
+
+## 0.4.8
+
+0.4.7 was committed but never published; this release carries it too. From a machine box killed on the tower on 2026-11-15
+at 13:38 (reported from use): the kernel's out-of-memory killer, host-wide, ended the largest
+machine (8 GB) with three detached runs in it. Eight machines were running (36 GB of sizes on the 28 GB cap) plus a CUDA
+build, and the cap did not protect the host: its swap is zram, kept in RAM.
+
+- **Swapped-out memory counts as in use.** Admission and `mem_free_mb` (and the dashboard's `group_mem_used_mb`) read the
+  build cgroup's `anon` plus `shmem`, which leave RAM when swapped: the tower's group read 23713 MB with 7.7 GB more in swap
+  and kept admitting machines. They now add `memory.swap.current`. `mem_free_mb` is never below 0.
+- **`BOXD_VM_COMMIT` defaults to 100** (was 150 in 0.4.7): the sizes of the running machines never exceed the cap. At 150 the
+  eight machines of the incident (36864 MB on 28672) would still have been admitted.
+- **The memory cap leaves room for swap kept in RAM.** When swap is on zram, half of what the group may swap there (up to
+  the zram size) is taken off the default `BOXD_MEM_MAX`; a set cap that, with that share, is over 90 % of the host's memory
+  logs a warning in the `boxd-sshd` log. Takes effect when `boxd-sshd` restarts.
+- **A machine that ends under a command says so.** The run log, before its `EXIT` line (stderr for a foreground call):
+  `boxd: the virtual machine of box <box> ended under this run`, with `: the host's out-of-memory killer ended a process of
+  the boxes meanwhile (kernel log: dmesg)` when the build cgroup's `oom_kill` count rose during the run. Before, the log said
+  only `exec session ended without exit event`.
+- `pod ps` (`box ps`) on a stopped machine box: `virtual machine box <box> is stopped; the next command in it starts it again,
+  when the host has room` (was `box <box> is not running`, read as the container box).
+- **A new worktree goes to the build server with the most free memory** (`mem_free_mb`; ties keep `box hosts` order; a
+  sleeping server counts as empty). It went to the first server in order with room, which filled the tower while laptop
+  stayed idle unless a session named it. `choices.log` names such a choice `spread`. Worktrees already placed stay.
+- Judged and not built: a limit by load (load lagged and was a symptom: processes waiting for memory; memory is what kills
+  boxes), and refusing to end a box with live runs (boxd did not end it, the kernel did).
+
+## 0.4.7
+
+- **Machines are also admitted by their sizes, not only by measured memory.** Reported from use: twelve 4 GB machines were
+  admitted on the tower's 28 GB cap, because a young machine has not claimed its memory yet, and free memory fell to 2 GB once the builds
+  grew. The sizes of the running machines plus the new one must now fit `BOXD_VM_COMMIT` percent of the cap (default 150: ten 4 GB
+  machines on 28 GB; 100 means the sizes never exceed the cap). Refusal: `no room for another virtual machine (<sizes> MB of running
+  machines + <asked> MB asked > <limit> MB, 150% of the <cap> MB cap)`. Machines already running are never stopped by the rule.
+- **The build account's sshd accepts more connections that have not logged in yet** (`MaxStartups=100:30:200`, was sshd's default of 10).
+  Four sessions following their runs at once were dropped (`drop connection #10 ... MaxStartups` in the log, "Connection reset by peer"
+  on the client). Takes effect when the `boxd-sshd` service restarts.
+
+## 0.4.6
+
+- **`BOXD_MAVEN_MIRROR`: a host setting that points every box's Maven at a caching repository on the local network.** Asked by a user
+  after Maven Central refused the network's address: a repository manager on the homeserver now serves Java packages. The server
+  writes the settings file into the shared cache and adds `-s /cache/maven-settings.xml` to `MAVEN_ARGS`. Unset by default; a machine box
+  also needs the address in `BOXD_VM_NET_ALLOW`. With the repository's server off, Java builds that need a new file fail with a clear
+  network error; files already in `/cache/m2` still serve.
+
+## 0.4.5
+
+- **The shared package cache covers Maven and Gradle.** Every box already had `/cache` (one folder per host for cargo, go, npm, pnpm and
+  everything under `XDG_CACHE_HOME`); new boxes now also get `MAVEN_ARGS=-Dmaven.repo.local=/cache/m2` and `GRADLE_USER_HOME=/cache/gradle`.
+  Reported from use: dozens of Java builds in fresh machines, each downloading its whole dependency set, and Maven Central
+  answered the network's one public address with 429 for a day. A box made before this release gets the settings when it is made
+  again (the reaper removes idle boxes after 30 minutes). Builds in nested containers must mount `/cache` themselves (skill).
+- Under disk pressure, files of the shared package caches not written for `BOXD_KEEP_DAYS` are removed.
+- Judged and not built: a caching proxy per package source on each host (a service per source to run and keep; the shared folder gives
+  most of it) and a report of which sources refuse the address (not boxd's to probe).
+
+## 0.4.4
+
+- **A foreground call keeps the host awake by itself.** Until now only its ssh connection did, and a connection from an address of
+  `BOXD_IDLE_IGNORE` does not count: a quiet foreground call from such an address (the package pipeline's runner shares the dashboard's
+  address) could have had the host sleep under it. The call now holds the keep-awake lock for as long as it runs, like a detached run
+  and a forward. Consequence: `boxd-reset` refuses while a foreground call runs, as it does for a detached run.
+
+## 0.4.3
+
+- **`boxd-setup --add-key <file> [--from <addresses>]` and `--remove-key <file>`: further keys with full run rights**, for another client
+  machine (asked for a package pipeline whose runner calls `box` from the homeserver). Listed in `/etc/boxd/run_keys`, kept across reruns and
+  across a new `--key`, each removable on its own; `--from` limits a key to source addresses (sshd's `from="..."`). The first key is
+  never removed this way. Server command set unchanged (`version=0.4.0`).
+
+## 0.4.2
+
+- Defect of 0.4.0 and 0.4.1: `pod report` and `pod log` wrote a "No such file or directory" line to standard error for every ended run
+  (seen in `box log` and in the dashboard's polls; the answers themselves were right). The contract test now reads standard error too.
+- Acceptance on two hosts: the second host's own build account and work area (`BOXD_TEST_USER2`, `BOXD_TEST_WORK2`), a machine ceiling the
+  scenarios set and take back themselves, and the sleep scenarios are skipped with the reason while someone is logged in on the host.
+
+## 0.4.1
+
+The server's command set is unchanged except for the new `evicted` lines of `pod report`, so `pod status` keeps reporting `version=0.4.0`.
+
+- **Retention covers images.** The image built from a box's Containerfile goes with the box's folder. When disk pressure starts, the images
+  no box uses go before the first folder does (both engines), with the dangling layers. They come back by themselves, except an image
+  sent with `box image push`, which must be pushed again. Not by age: images were 6 GB of 953 on the tower.
+- **The dashboard shows what retention removed**: `pod report` lists the removals of the last day and the dashboard raises one alert per host
+  with what went and why (nothing to do; so that a missing folder is no surprise).
+- Acceptance 44 counts the relay itself (it read 3 for one relay on a real host).
+- The dashboard is reachable at `https://boxd.example.com` behind your reverse proxy, limited to your own network.
+
+## 0.4.0
+
+The server's command set changes (`pod drop`, `pod forward`, `--delete-excluded` in the sync), so `pod status` and `box hosts` report `version=0.4.0`.
+The client works against a 0.3.x server except for `box forward`, `--clean` and the removal of box folders.
+
+- **Retention: boxd keeps the build host clean by itself** (owner decision 2026-11-14: nobody cleans by hand). Measured on the tower that day:
+  143 box folders in 36 hours, 136 GB, and nothing removed a folder short of the wipe of the whole work area at 85 percent. Now the reaper
+  removes whole box folders: unused for 14 days (`BOXD_KEEP_DAYS`), or least recently used first, one per minute, while the work area is
+  70 percent full until it is under 60 (`BOXD_EVICT_AT`, `BOXD_EVICT_TO`); the client's collector removes the folder of a worktree that
+  is gone with the new verb `pod drop <box>` (before: it only stopped the box, and forgot a box the reaper had already removed).
+  Never a folder in use (a run, a sync, a pull, a box being made), never single files inside a box. Every removal is a line in
+  `cache/evictions.log`, and the next call of that box says once that its folder was removed and why.
+  **Behaviour change for callers: `/job` is not an archive. Pull what must last.**
+- A sync or pull now holds its box folder busy and renews its stamp.
+- From a user's feedback after a day of use (about 40 model-driven runs):
+  - `--include <path>` sends a named file or folder although git ignores it. Their run journal was a `*.log` file, never synced, so a run
+    continued in a fresh box started from nothing.
+  - `--clean` makes the box's source folder exactly the worktree: ignored files of earlier runs are deleted first (the history of
+    `--snapshot` is kept). Results of an earlier run had sat in the folder of the next measurement. Needs server 0.4.0 (an older one
+    refuses the sync: nothing starts).
+  - **Defect: `box log --follow` waited for ever on a run whose host lost power or whose box was killed**: the run's record stayed, so it
+    read as running. The server now checks that the recorded process group is alive; the client says the run ended without an exit
+    code and exits 129 (before: 1 for a run without an `EXIT` line).
+  - Help: `--pull` transfers only changed files; a `--pod` box belongs to the worktree that called it last.
+  - Judged and not built: a volume that outlives the box (`/job` already does; see retention), copying results out when a detached run
+    ends and redacting credentials in pulled files (the caller's job), `--wait-room` (exit 75 is the contract), a user for machine boxes
+    (deferred: larger), `pod top` (`pod report` has the memory per box), the workstation as a build host (it is never loaded).
+- **`box forward` and `box vnc`: reach a port inside a running container box.** A box can run a VM desktop (QEMU in a `--kvm` box,
+  x11vnc on 127.0.0.1:5900, noVNC on 6080) that only listens inside the box. New server verb `pod forward <box> <port>` relays the ssh
+  channel to `127.0.0.1:<port>` in the box's network namespace with the host's socat (`podman unshare nsenter --net=/proc/<pid>/ns/net socat`,
+  so no image needs socat); the build sshd still has `AllowTcpForwarding no`. Port checked 1 to 65535 on the server; never creates or starts a
+  box (missing or stopped: 125; a vm box: 125 `forward is for container boxes`). Each channel holds the box busy like a foreground call (shared
+  lock on `.running`, `boxd-keepawake`) and ends with the channel; one call-log line per channel, command `forward <port>`.
+  The forwarder ends when the process that started it is gone (exit 129), like a foreground call: nothing of boxd stays running on the workstation by itself.
+  Client: `box forward [--host] [--pod] <local-port> <box-port>` listens on 127.0.0.1 only, one ssh per connection; `box vnc` forwards 5900 and
+  runs `xdg-open vnc://127.0.0.1:<port>`. `socat` is a new dependency of `boxd-server` (void and deb). Command set 0.4.0; the client says so against an older server.
+
+- **The sync no longer prints a line that reads like a failure when it succeeded.** Defect report from a user who lost money:
+  `cannot delete non-empty directory: <folder>` is rsync's remark (exit 0) for a folder deleted in the worktree that still holds
+  ignored files on the server (build output, caches; they stay on purpose). The run started, an agent read the line as "not
+  started" and relaunched it four times into the same box. The client now writes
+  `box: sync complete; 1 folder deleted here stays on the server because it holds files git ignores: <folder>`.
+  A sync that really fails says `box: sync failed (rsync exit <code>); nothing was started` and exits with that code.
+  The rule for callers: exit 0 and a `run <id>` line mean started; anything else means not started.
+
+## 0.3.1
+
+The server's command set is unchanged, so `pod status` and `box hosts` keep reporting `version=0.3.0`; the package version says which build runs.
+
+- **Behaviour change: a foreground call now ends with the process that started it. Work that must outlive its starter needs `--detach`.**
+  Stranded boxes, reproduced on a real host: `box -- sh -c 'sleep 100000'` without a terminal, then the client and its ssh killed: the sleep kept
+  running, `podman exec -i` stayed on the host holding the box's `.running` lock, and the reaper never took the box. Server: without a terminal the dispatcher runs the engine in the
+  background with a marker (`BOXD_CALL=<marker>`) in the call's environment and watches its parent (sshd's session process); when that is gone,
+  or on a hangup, termination, interrupt or broken pipe, a second exec in the box (the same account, both engines) sends TERM then KILL to every process
+  carrying the marker, the host-side engine process ends, the lock is released (exit 129, call log reason `session gone`). Detached runs and calls on a terminal are
+  untouched. Client: a non-terminal foreground call notices that its parent process id changed, prints
+  `box: the process that started this call is gone; ending the call (use --detach for work that must outlive its starter)`, ends its ssh and exits 129;
+  `BOXD_KEEP_ORPHAN=1` turns that off. Limits: a command that clears its environment (`env -i`) is not found. Tests: contract cases in
+  `tests/contract-pod-test.sh` (fake engines, fifos), `tests/box-client.test.mts`, acceptance scenario 43.
+- The collector, inside the client (no service, timer or daemon): `box gc [--dry-run]` and a quiet pass after an ordinary call at most every 15 minutes
+  (`BOXD_GC=0` turns it off). Every call records its box, host and worktree under `~/.local/state/boxd/boxes/`; a box whose worktree is gone (or is no longer a
+  git worktree top folder) is stopped, also with a run going, once two passes at least 15 minutes apart found it missing (`~/.local/state/boxd/gc.log`); a sleeping
+  host is never woken, a host that is down is skipped; boxes no record names are listed as "unknown owner" and never touched; commands running over 6 hours are reported, never ended.
+- `box log <run> [--pod <name>] [--host <name>] [--follow]` reads a detached run's log with `pod log`: a stopped box is no longer recreated empty by a late
+  `box -- cat /job/runs/<run>.log`. `box --detach` now prints this command.
+- Fixed: `pod status` and `pod report` counted active file cache as used (an idle host right after a big file copy reported `mem_free_mb=133`). Free memory is now the
+  cgroup's limit minus `anon` plus `shmem` (the figure the admission already used); `group_mem_used_mb` follows. Cases changed: the free-memory case of `pod status` and the
+  `group_mem_used_mb` figure of the `pod report` case.
+- Fixed: `pod list` (and `pod status`, `pod report`) hid a failed engine listing: `box_rows` ran in a pipeline, so a failing `podman ps` or `msb ls` gave the other engine's boxes alone
+  (a running machine missing from the list) with exit 0. A failed listing is now exit 125 with one reason line. Four contract cases.
+
+## 0.3.0
+
+- `box --kvm`: a container box made with it gets the host's `/dev/kvm` (`--device /dev/kvm --label boxd.kvm=1`), for QEMU on KVM
+  inside a box; opt-in per box and sticky like `--user`, refused with `--vm`, when the build account may not open the device, and when the device has no access rule for it.
+  `boxd-setup` installs acl-progs (Void) or acl (Debian) and gives the build account an access rule on `/dev/kvm` (`setfacl`, kept by
+  `/etc/udev/rules.d/70-boxd-kvm.rules`): rootless `runc` drops the `kvm` group inside a box, the user id stays; the device stays 0660.
+  Tests: ten `pod` cases and one `client` case in `contract/cases.json`, acceptance scenario 42.
+- The dashboard as a docker stack for the homeserver (`dashboard/stack/`), in place of the system package that was planned: `Containerfile` (node 26.13.1 on alpine,
+  the ssh client, user 10001, a health check, the service as the only process), `compose.yaml` (network `proxy` only, no published port, read-only root file system,
+  all capabilities dropped, memory and process limits), `dashboard.json.example`, `make-bundle` (a reproducible tar.gz of exactly the files the stack needs) and
+  `INSTALL.md` (every step, host side included). New dashboard setting `listenAnywhere`: without it a non-loopback `listen` address stays refused. Tests:
+  `tests/dashboard-stack-test.sh` (builds and runs the stack, needs docker) and `tests/dashboard-bundle.test.mts`.
+- Debian packages proven on a real systemd (`tests/deb-systemd-test.sh`, run inside a boxd virtual machine box; see `docs/packaging-debian.md`,
+  "Proven on systemd"). Three defects found and fixed, none changes the Void behaviour: `sshd-run` looked for sshd only in `/usr/bin` (Debian has
+  it in `/usr/sbin`, so `boxd-sshd.service` could never start); `boxd-sshd.service` could not start again after a plain stop while boxes were still running
+  (`Device or resource busy`): it now has `DelegateSubgroup=sshd`, and `sshd-run` accepts the child cgroup as its own; every podman call of the build
+  account failed on Debian with `permission denied` in `/run/user/<uid>`: `work-setup` now enables lingering for the account on systemd hosts
+  (`postrm` removes it on purge). `sshd-run` also no longer prints a raw shell error on a kernel without swap support (the swap cap is skipped, said plainly).
+- The dashboard page (`dashboard/web/`: `index.html`, `boxd.css`, fonts, and plain JavaScript modules the browser loads directly): the designed interface
+  fed by `/api/fleet.json` (asked again every 15 seconds, drawn again only when it changed, focus, scroll, sorting and filters kept). Read only: no
+  button changes a host, and where the prototype had one the page shows the command to run as copyable text. The box page reads `/api/ps` and `/api/log`.
+  The service now also serves these files (GET and HEAD, a fixed list made at start, anything else 404) under a content security policy that
+  allows only the page's own origin. `tests/dashboard-web.test.mts` renders every view from the fixture in node.
+- The dashboard service (`dashboard/boxd-dashboard.mjs`, source `.mts`, node built-in modules only): polls each build host over ssh every
+  minute (`pod report`, `pod calls`; a server on 0.2.0 is read with `pod status` and `pod list`), keeps seven days of calls, load samples
+  and events in plain files under its state folder, and serves `GET /api/fleet.json`, `GET /api/ps` and `GET /api/log` on a loopback
+  address; every other path is 404 and every other method 405. It never sends anything to a host that does not answer on its port, so it
+  cannot wake one. The web page and the packages follow (`docs/designs/dashboard.md`, workstreams 3 and 4).
+- Server 0.3.0: the read-only verbs the dashboard (`docs/designs/dashboard.md`) reads, all with no lock, no stamp and no call log line:
+  `pod report` (the facts of the host, its boxes, their detached runs and its image archives, with `busy` and `mem_mb` of each box),
+  `pod calls [<offset>]` (the call log in windows of at most 1 MB, whole lines, from a byte offset) and `pod log <box> <run> [<offset>]`
+  (a detached run's log without starting the box). `pod status` reports version 0.3.0 and is otherwise unchanged. Needs nothing from
+  the client. Formats and exit codes: `docs/pod-contract.md`, "The reading verbs".
+- The call log `$BOXD_WORK/cache/calls.log` gains two columns after the refusal reason: the run id of a detached run and the first 200
+  characters of the command (control characters and tabs become spaces; values passed with `--env` are never on a command line, so
+  never in it). Owner decision 2026-11-13. Seven-column readers such as the usage monitor keep working (the reason is still column 7);
+  readers must split on tabs and ignore extra fields. A credential written in a command's text is now kept in that log: use `box --env`.
+- Keys that may only read: `/etc/boxd/view_keys` lists keys that can run only `pod status|list|ps|report|calls|log` (everything else, the
+  rsync passthrough included, exits 125 `this key may only read`). The build sshd's `sshd_config` gains `ExposeAuthInfo yes` so `boxd-pod`
+  knows which key logged in; with view keys listed and no such line every command is refused, loudly (the file is kept on upgrade:
+  `boxd-setup --view-key <public key file>` adds the line, lists the key and allows it, then `boxctl reload`). Owner decision 2026-11-13.
+- New power module setting `BOXD_IDLE_IGNORE` (addresses): connections on the build port from them are not work, so the dashboard's polls
+  never keep a host awake; port 22 always counts. Owner decision 2026-11-13.
+
+- Debian packages (`boxd`, `boxd-server`, `boxd-client`, `microsandbox-bin`) for Debian-based distributions, first target Debian 13
+  (LMDE 7). `tools/build-deb` builds them with `dpkg-deb` (no root, from a checkout or a tag archive); `tools/publish-deb`
+  uploads them to a Gitea Debian registry; the file list is the new Debian table of `docs/designs/layout.md`;
+  `tests/deb-package-test.sh` builds and checks them inside a Debian container box. How to build, publish and install:
+  `docs/packaging-debian.md`. The power module is not packaged for Debian yet (the first Debian host never sleeps).
+- systemd support next to runit, one program for both: `boxctl` detects the service manager (`BOXD_MANAGER=runit|systemd` forces
+  one) and calls `systemctl`/`journalctl` instead of `sv`/the log file. The units `boxd.service` and `boxd-sshd.service`
+  (`server/systemd/`) run the same `run` and `finish` files as the runit services (installed as `/usr/libexec/boxd/boxd-run`,
+  `boxd-finish`, `sshd-run`), which now call `systemctl` when `BOXD_MANAGER=systemd`. The build sshd runs in the cgroup of its own
+  unit (`Delegate=yes`, `KillMode=process` so a plain stop never kills running builds) instead of one it makes at the
+  cgroup root; it refuses to start when that cgroup is not the one `BOXD_CGROUP` names.
+- New setting `BOXD_CGROUP`: the folder of the build cgroup that `boxd-pod` measures for virtual machine admission and that holds
+  the caps. Default `/sys/fs/cgroup/boxd` (unchanged on Void); the Debian package enables
+  `/sys/fs/cgroup/boxd.slice/boxd-sshd.service` in `/etc/boxd/boxd.conf`. `BOXD_CGROOT` stays the test hook.
+- The work area works without btrfs: `work-setup` picks directory mode when the file system is not btrfs (setting
+  `BOXD_WORK_FS=auto|btrfs|dir`), keeping the work area as a plain folder with a marker and a pristine copy next to it
+  (`<work>-clean`); `boxd-reset` then refreshes it with `rsync` (takes as long as deleting the files; btrfs hosts keep the instant swap).
+  `work-setup` skips the Void-only hardening (`/var/tmp` in memory, mail folder, `rc.conf`, `rc.local`) on systemd hosts and links
+  the podman storage settings as a drop-in instead of replacing `/etc/containers/storage.conf`. `boxd-setup` installs
+  `microsandbox-bin` with `apt-get` where `xbps-install` is absent, enables `boxd.service` for boot without starting it
+  (the owner may need to set `BOXD_PORT` first), and tunes `zram-tools` where `zramen` is not used.
+
+## 0.2.0
+
+- `box --vm --size small|medium|large` (server `pod run --size`): the size of a virtual machine box. `small` is 2
+  processors and 2 GB, `medium` 4 and 4 GB, `large` is `BOXD_VM_LIMITS` (4 and 8 GB by default, the machine every box
+  had before; no `--size` means `large`). Sticky like engine and image: the size is recorded when the box is made
+  (`jobs/<box>/.vm-size`), a later call without `--size` keeps it, naming another size is refused with exit 125
+  (`box <box> is <have>, asked for <want>; add --recreate`) and `--recreate --size <size>` replaces the box at the new
+  size. `--size` with a container box is refused (125); the client refuses an unknown size word (2). Owner decision
+  2026-11-13. Needs a server of this version.
+- Virtual machines are admitted by measured memory instead of a count: a new machine (creation or start) is admitted
+  when the memory the build cgroup really uses (`anon` plus `shmem` of its `memory.stat`) plus the memory of its size
+  fits the cgroup's `memory.max` (the host's memory when that reads `max`). The refusal still starts with `no room for
+  another virtual machine` and now gives megabytes. `BOXD_VM_MAX` is now an optional hard ceiling (unset: none; was 3).
+  When the cgroup files cannot be read the count rule with 3 applies. Known limit: overcommit; machines admitted
+  while light can later fill their size together, and the cgroup's cap then ends a process in the group, usually a
+  whole machine (the host stays safe).
+- Several build servers: with two or more hosts set up (`box setup` for each), the first call of a worktree picks the first
+  host, in the order of `~/.config/boxd/hosts.order`, that has room for the call, and the worktree stays on it (recorded in
+  `boxd-host` inside the worktree's own git folder). A host that sleeps counts as having room and is never woken just to ask;
+  a host that is down is skipped. A placed worktree whose host is full is refused with the exact `box --host <name> ...`
+  command that moves it, never moved by itself. `--host` names a host and records it; `BOXD_HOST` is for one call.
+  Every placement decision is one line in `~/.local/state/boxd/choices.log`. New: `box hosts` (state of every host) and,
+  on the server, `pod status` (one line of facts: engines, load, machines used and `vm_room`, boxes, disk, memory, local
+  images). The client decides virtual machine room only from the server's own `vm_room`, not from the counts. Needs a server
+  of this version for the choice; a host with an older server is used only when no other host has room.
+- Changed: a refusal for lack of virtual machine room now exits **75** (was 125), still with `boxd-pod: no room for another
+  virtual machine (...)` on stderr, so a client can tell "nothing ran, try another host" from other refusals. The client also
+  exits 75 when no host has room. Anything that tested for 125 after a full machine limit must test for 75. Owner decision
+  2026-11-13. A new `~/.config/boxd/hosts.order` file is written by `box setup`; older clients ignore it.
+- `box image push [--host <name>] [--vm|--container] <ref>` (server `pod image has` and `pod image load`): sends an image from the caller's
+  machine to the host's store for one engine, for images of private registries. The build host never holds registry credentials: the client
+  pulls `<ref>` with the caller's own login (podman, else docker), asks the host whether it already has the same image id (then nothing is
+  sent), and otherwise streams `save` over ssh into `load`, with no archive file on the client. The host writes the stream to a fresh file under
+  `cache/images`, loads it, checks the reference is in the store and removes the file. The reference goes through the allowed-registries list like
+  `--image`. A box created with `--image <ref>` afterwards uses the pushed copy: `podman run` now says `--pull=missing` explicitly. Needs a server of
+  this version. Owner decision 2026-11-13.
+
+## 0.1.7
+
+- `box --env <NAME>` (server `pod run --env`, repeatable): hands a credential from the caller's environment to the
+  command, in both engines, foreground and detached. The value travels in ssh's own environment passing
+  (`BOXD_SECRET_<NAME>`, `AcceptEnv BOXD_SECRET_*` in the build sshd's configuration), never on a command line, in a
+  synced file or in the call log. Only names ending in `_TOKEN`, `_KEY`, `_SECRET` or `_PASSWORD`. Needs a server
+  of this version (its `sshd_config` included). Owner decision 2026-11-13.
+
+- `box --image-file <path>` (server `pod run --image-file`): the box's image is built from a Containerfile in the worktree
+  (`podman build`, output on stderr, image `localhost/built-<box>`). The box is replaced by itself when the built image
+  changes (files under `/job` stay) and reused when it does not; a failed build exits 125 and keeps the old box. Virtual
+  machine boxes get the new image through an archive in `cache/images`. `BOXD_REGISTRIES` does not limit `FROM` lines
+  or downloads inside the build. Needs a server of this version; private registry credentials are not supported.
+
+## 0.1.6
+
+- `BOXD_VM_NET_ALLOW` (host setting): home-network services virtual machine boxes may reach, for example model
+  servers, while the rest of the local network stays blocked. Lets work that needs podman or docker inside AND a
+  service on the local network run in a vm box. Admin-set only; empty by default (no change).
+
+## 0.1.5
+
+- A foreground `box` call that prints nothing for 15 minutes gets the `box ps` table on stderr, every line prefixed
+  `[box ps] `, repeated while the silence lasts (owner decision, from the sessions' answers). `--ps-after <minutes>` or
+  `BOXD_PS_AFTER` shortens it; `0` turns it off for callers that parse stderr strictly. Not on a terminal, not for
+  `--detach`. Client only; servers from 0.1.4 on answer `pod ps`.
+
+## 0.1.4
+
+- `box ps` (server `pod ps <box>`): the processes running in a box, oldest first, with age, processor time, working
+  folder and command, for both engines. Read only. Asked for by an agent whose test run hung for two hours unseen.
+
+## 0.1.3
+
+- `box --pull <folder>` copies the folder itself; before, a pulled folder landed inside itself (`out/out`).
+  A trailing slash is accepted. Missing parent folders are created.
+
+## 0.1.2
+
+- Virtual machine boxes get `/tmp` on its own sparse disk (`BOXD_VM_TMP_DISK`, default 64G, mode 1777, gone with
+  the box): the guest root has about 4G free, too little for tools that need tens of GiB. Boxes made earlier keep
+  the small `/tmp` until `--recreate`.
+- The toolbox image has the official TypeScript compiler (`tsc` 7.0.2) next to `tsc-rs`.
+
+## 0.1.1 (tagged, never built or published; its changes ship in 0.1.2)
+
+- The sync skips links that point outside the worktree (`--safe-links`): a `node_modules` linked to the main
+  checkout no longer dangles in the box. A dangling link synced by an older client stays until removed once.
+- The sync carries exactly the files git counts as part of the worktree: tracked files under an ignore rule
+  (`git add -f`), negated ignore patterns, `.git/info/exclude` and the global excludes are honoured.
+- `boxd-pod` logs every `pod run` in `$BOXD_WORK/cache/calls.log` (one tab separated line: start, box, engine,
+  lock wait, exit code, duration, refusal reason), for a usage monitor.
+- `box --user`: a container box runs every command as an unprivileged user that owns the synced files
+  (`podman --userns=keep-id`, `HOME=/job/home`, label `boxd.user=1`). Sticky; refused for virtual machine boxes.
+- The toolbox image has GNU `patch`.
+- `boxd-pod` passes only the client's own rsync lines: short options, `--server`, `--sender`, `--delete`, `--mkpath`,
+  `--safe-links`, `.` and paths `jobs/<box>/src[/...]`. A destination outside a box or an option such as
+  `--log-file=` exits 125. The race free creation of the sync folder stays.

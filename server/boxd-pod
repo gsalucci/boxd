@@ -1,0 +1,1235 @@
+#!/bin/bash
+# boxd-pod: sshd ForceCommand of the build account (BOXD_USER), and the reaper the boxd service runs. One long-lived
+# rootless podman container or microsandbox virtual machine ("box") per agent worktree. Contract: docs/pod-contract.md.
+# The client's words are split on spaces only and never reach a shell: every word is a fixed keyword or
+# matches a strict pattern, and the agent's command is one base64 word decoded into an argument list.
+set -u
+set -f   # no globbing of client words
+CONF=${BOXD_CONF:-/etc/boxd/boxd.conf}
+[ -r "$CONF" ] && . "$CONF"
+WORK=${BOXD_WORK:-/var/lib/boxd/work}
+LIMITS=${BOXD_LIMITS:---memory 12g --memory-swap 16g --pids-limit 4096 --cpu-shares 1024}
+VM_LIMITS=${BOXD_VM_LIMITS:--c 4 -m 8G}
+# Optional ceiling on running machines (unset: none). Admission is by measured memory of the build cgroup (see vm_mem).
+# BOXD_CGROUP is that cgroup's folder (a setting: the packaged boxd.conf of systemd hosts names the boxd-sshd unit's own
+# cgroup, Void keeps /sys/fs/cgroup/boxd). BOXD_CGROOT (also read by the boxd-sshd service script) is a test hook: a folder
+# holding a fake boxd cgroup. Without readable files the count rule applies with a limit of 3.
+VM_MAX=${BOXD_VM_MAX:-}
+CGROOT=${BOXD_CGROOT:-/sys/fs/cgroup}
+CGROUP=${BOXD_CGROUP:-$CGROOT/boxd}
+PROC=${BOXD_PROC:-/proc}   # test hook, like BOXD_MEMINFO: where `pod report` finds a box's process and its cgroup
+KVM=${BOXD_KVM:-/dev/kvm}   # test hook: the device a --kvm box gets
+VERSION=0.4.19
+# Keys that may only read, one "<type> <key> [comment]" per line (view_only below); and the largest answer of pod calls and pod log.
+VIEW_KEYS=${BOXD_VIEW_KEYS:-/etc/boxd/view_keys}
+READ_MAX=${BOXD_READ_MAX:-1048576}
+# Docker and podman inside a vm need their own disks: the guest root is an overlay, and neither engine can stack
+# its overlay on one (docker fell back to the slow vfs driver, podman refused: "overlay is not supported over
+# overlayfs"). Owned disks are sparse ext4 images in MSB_HOME (under the work area) and go away with the box.
+VM_ENGINE_DISK=${BOXD_VM_ENGINE_DISK:-32G}
+# The guest root has about 4G free; /tmp gets its own sparse disk so tools that check free space (or write large
+# temporary files) find room without settings. Unused space costs nothing on the host.
+VM_TMP_DISK=${BOXD_VM_TMP_DISK:-64G}
+# Home-network services a vm box may reach besides the public internet (microsandbox blocks the home network by
+# default). Admin setting only, never from the client: words <address or address/bits>:<tcp|udp>:<port or a-b>.
+VM_NET_ALLOW=${BOXD_VM_NET_ALLOW:-}
+CLEAN=${BOXD_POD_CLEAN:-/run/boxd-pod.clean}   # exists once this boot's sandboxes were cleared
+TTL=${BOXD_TTL:-1800}
+DEFAULT_IMAGE=${BOXD_IMAGE:-docker.io/library/debian:stable-slim}
+REGISTRIES=${BOXD_REGISTRIES:-docker.io ghcr.io}   # registries a box image may come from (words, no patterns)
+IMAGES=${BOXD_IMAGES_DIR:-/var/lib/boxd/images}   # archives of local images (localhost/<name>), made by images-build.sh
+BOX_RE='^[a-z0-9][a-z0-9_.-]{0,62}$'
+# --env names: credentials only. The value is set in this process's environment just before the command runs (the
+# engines read a bare -e NAME from there), so a name must never be one that changes how podman, msb or the loader
+# behave on the host (PATH, LD_PRELOAD, ...): no such variable ends in these words.
+SECRET_RE='^[A-Z][A-Z0-9_]{0,62}_(TOKEN|KEY|SECRET|PASSWORD)$'
+RUN_RE='^[A-Za-z0-9_.-]{1,64}$'
+B64_RE='^[A-Za-z0-9+/]+={0,2}$'
+LINE_RE='^[A-Za-z0-9_.:/=+,@~ -]+$'
+
+# One line per pod run in $WORK/cache/calls.log (tab separated): start (microseconds since 1970; digits only, the
+# decimal separator of EPOCHREALTIME follows the locale, a comma in Italian), box, engine,
+# lock wait ms, exit code or "detached", duration ms, refusal message (exit 125, or 75 for no room), run id of a detached run,
+# command (the decoded words joined by spaces, control characters and tabs as spaces, the first 200 characters; empty before
+# the command is decoded). Read by the usage monitor (the first seven columns, the reason last: readers split on tabs and
+# ignore extra fields) and by `pod calls`.
+CALL_T0="" CALL_BOX="" CALL_ENGINE="" CALL_WAIT=0 CALL_RUN="" CALL_CMD=""
+logcall() {
+    [ -n "$CALL_T0" ] && [ -d "$WORK/cache" ] || return 0   # no cache folder yet: nothing to log into
+    local now=${EPOCHREALTIME//[!0-9]/}
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$CALL_T0" "$CALL_BOX" "$CALL_ENGINE" "$CALL_WAIT" "$1" \
+        "$(( (now - CALL_T0) / 1000 ))" "${2:-}" "$CALL_RUN" "$CALL_CMD" >>"$WORK/cache/calls.log" 2>/dev/null || true
+}
+die() { echo "boxd-pod: $*" >&2; logcall 125 "$*"; exit 125; }
+# No room is its own exit code, so a client can tell "nothing ran, try another host" from a refusal (125) and from the
+# command's own code (it also checks the message). 75 is EX_TEMPFAIL of sysexits.h: temporary failure, try again.
+noroom() { echo "boxd-pod: $*" >&2; logcall 75 "$*"; exit 75; }
+
+# msb needs HOME and its state folder, short because it holds sockets; @cache keeps images over a plain reset.
+export HOME=${HOME:-$(getent passwd "$(id -un)" | cut -d: -f6)} MSB_HOME=$WORK/cache/msb
+# Every msb call: microsandbox refuses a state folder created under umask 002.
+vmx() ( umask 022; [ -d "$MSB_HOME" ] || mkdir -p "$MSB_HOME"; exec msb "$@" )
+# vm_mem: sets used_mb (anonymous and shared memory of the build cgroup: guest memory is anonymous memory of the msb
+# process, file cache is reclaimable and does not count; plus its swapped-out memory, still in use, which anon no longer
+# shows: on 2026-11-15 the tower's group read 23713 MB with 7.7 GB more in swap and kept admitting machines) and cap_mb
+# (its memory.max, MemTotal when that is "max"). Fails when the cgroup files cannot be read.
+vm_mem() {
+    local k v anon="" shm=0 swp=0 cap
+    [ -r "$CGROUP/memory.stat" ] && read -r cap <"$CGROUP/memory.max" 2>/dev/null || return 1
+    while read -r k v; do case $k in anon) anon=$v ;; shmem) shm=$v ;; esac; done <"$CGROUP/memory.stat"
+    [ -r "$CGROUP/memory.swap.current" ] && read -r swp <"$CGROUP/memory.swap.current"   # absent: a kernel without swap accounting
+    [[ $anon =~ ^[0-9]+$ && $shm =~ ^[0-9]+$ && $swp =~ ^[0-9]+$ ]] || return 1
+    if [ "$cap" = max ]; then
+        while read -r k v _; do [ "$k" = MemTotal: ] && cap=$((v * 1024)); done </proc/meminfo
+    fi
+    [[ $cap =~ ^[0-9]+$ ]] || return 1
+    used_mb=$(((anon + shm + swp) / 1048576)) cap_mb=$((cap / 1048576))
+}
+# Sandbox names are pod-<box> as for containers. "msb ls" can list a box whose machine died, and the next
+# exec restarts it silently, so running means listed as running AND a machine process exists.
+vm_alive() { pgrep -f "(^|/)msb machine --name $1( |\$)" >/dev/null; }
+# Kills by the kernel's out-of-memory killer of processes in the build cgroup so far (memory.events counts the whole subtree,
+# also the host-wide kills); 0 when unreadable.
+oom_kills() { local a b n=0; { while read -r a b; do [ "$a" = oom_kill ] && n=$b; done <"$CGROUP/memory.events"; } 2>/dev/null; echo "$n"; }
+# vm_end_note <sandbox> <box> <oom kills before the command>: one line when the machine is gone after a command in it ended,
+# naming the killer when it struck meanwhile (2026-11-15: the tower's kernel killed a machine under three detached runs,
+# whose logs said only "exec session ended without exit event"). Nothing while the machine lives.
+vm_end_note() {
+    vm_alive "$1" && return 0
+    if [ "$(oom_kills)" -gt "$3" ]; then
+        echo "boxd: the virtual machine of box $2 ended under this run: the host's out-of-memory killer ended a process of the boxes meanwhile (kernel log: dmesg)"
+    else
+        echo "boxd: the virtual machine of box $2 ended under this run"
+    fi
+}
+# ctr_end_note <box> <oom kills before the command> <exit code>: one line when a command in a container box ended with 137
+# (SIGKILL) while the kill counter rose: the kernel's out-of-memory killer took it (the same words as vm_end_note).
+ctr_end_note() {
+    [ "$3" = 137 ] && [ "$(oom_kills)" -gt "$2" ] || return 0
+    echo "boxd: the command in box $1 was killed (exit 137): the host's out-of-memory killer ended a process of the boxes meanwhile (kernel log: dmesg)"
+}
+# "<sandbox> <image> <running|stopped>" per line, tab separated.
+vm_rows() {
+    local out n img st
+    out=$(vmx ls </dev/null 2>/dev/null) || die "msb ls failed"   # its remark on an empty host ("No sandboxes found.") is not ours to pass on
+    while read -r n img st _; do
+        [[ $n == pod-* ]] || continue
+        [ "$st" = running ] && vm_alive "$n" || st=stopped
+        printf '%s\t%s\t%s\n' "$n" "$img" "$st"
+    done <<<"$out"
+}
+# "<image> <state>" of one sandbox, failure when it does not exist.
+vm_inspect() {
+    local out img st
+    out=$(vmx inspect "$1" </dev/null 2>/dev/null) || return 1
+    img=$(awk 'tolower($1) == "image:" { sub(/^[^:]*: */, ""); print; exit }' <<<"$out")
+    st=$(awk 'tolower($1) == "status:" { sub(/^[^:]*: */, ""); print; exit }' <<<"$out")
+    [ "$st" = running ] && vm_alive "$1" || st=stopped
+    echo "$img $st"
+}
+
+# Run before every command in a vm box. Output and exit code are ignored.
+# 1. Drop the guest's cached file-name lookups: rsync replaces files by renaming a new copy over the old one, and
+#    the guest kept resolving the old, deleted file through the shared folder (cat: No such file or directory).
+#    File contents stay cached. 2. A box with dockerd always has a daemon running.
+DOCKER_START='echo 2 > /proc/sys/vm/drop_caches 2>/dev/null
+chmod 1777 /tmp 2>/dev/null
+command -v dockerd >/dev/null 2>&1 || exit 0
+p=$(cat /var/run/docker.pid 2>/dev/null) && kill -0 "$p" 2>/dev/null && exit 0
+rm -f /var/run/docker.pid /var/run/docker.sock
+setsid dockerd >>/job/runs/dockerd.log 2>&1 </dev/null &
+p=$!
+while kill -0 "$p" 2>/dev/null && [ ! -S /var/run/docker.sock ]; do sleep 0.1; done'
+
+# Run once when a machine is created or started (its limit does not survive a stop), before DOCKER_START. The guest kernel
+# microsandbox boots is built small (6.12.117 logs "pid_max: default: 4096 minimum: 301"): 4096 numbers for all processes and
+# threads, and a failed fork looks like a container lost with memory to spare (measured 2026-11-16: 4300 background processes
+# died with "Cannot fork"). 32768 is accepted as root and ran 6000 processes; 4194304 is refused, so it is this kernel's ceiling.
+# A guest that refuses or lacks the file keeps its limit, silently.
+GUEST_PID_MAX='{ echo 32768 > /proc/sys/kernel/pid_max; } 2>/dev/null'
+
+# Runs the command of a detached run inside a machine ("$@") and then prints, prefixed, the guest kernel's kill lines that
+# came after it started (2026-11-15 and 2026-11-16: a docker container of a run died in a 4 GB machine, the host killed
+# nothing and the guest's kernel log went with the machine). "After it started" is a count, not a clock: the matching lines
+# of the kernel log before, then only the lines past that count. The exit code is the command's. A guest without dmesg (the
+# plain Void image, seen on the tower on 2026-11-16: the lines never came) reads the kernel's own device, each record without
+# its "level,sequence,time;" head; a guest where neither can be read counts and prints nothing.
+# shortcut: a kernel log buffer that wrapped during the run shifts the count and may repeat an old line, when that shows: read /dev/kmsg sequence numbers.
+GUEST_KILLS='k() { if command -v dmesg >/dev/null 2>&1; then dmesg; else dd if="${BOXD_KMSG:-/dev/kmsg}" iflag=nonblock bs=8192 | sed "s/^[^;]*;//"; fi 2>/dev/null; }
+n=$(k | grep -c "Killed process")
+"$@"; rc=$?
+k | grep "Killed process" | tail -n +$((${n:-0} + 1)) | sed "s/^\[[^]]*\] *//; s/^/[boxd] guest kernel: /"
+exit $rc'
+
+# pod ps: run inside the box (container or vm), plain sh and /proc only, so any image works. One line per process,
+# oldest first: pid, elapsed seconds, processor seconds, working folder ("?" when unreadable), command. Leaves out
+# pid 1, the box's own keep-alive (sleep infinity, catatonit) and this script with its helpers (ppid = $$).
+# /proc times are in clock ticks of 1/100 s on Linux.
+PS_SCRIPT='read -r up _ </proc/uptime; up=${up%.*}; o=
+for d in /proc/[0-9]*; do
+  p=${d#/proc/}
+  [ "$p" = 1 ] || [ "$p" = $$ ] && continue
+  read -r s 2>/dev/null <"$d/stat" || continue   # a process can end mid-scan; 2> first or dash prints the open error
+  c=$(tr "\000\n\t" "   " 2>/dev/null <"$d/cmdline"); c=${c% }   # newlines and tabs would break the table
+  [ -n "$c" ] || continue
+  case $c in "sleep infinity"|"catatonit -P"|catatonit) continue ;; esac
+  set -- ${s##*) }
+  [ "$2" = $$ ] && continue
+  shift 11; cpu=$(( ($1 + $2) / 100 )); shift 8
+  o="$o
+$p	$((up - $1 / 100))	$cpu	$(readlink "$d/cwd" 2>/dev/null || echo "?")	$c"
+done
+[ -z "$o" ] || printf "%s\n" "${o#?}" | sort -t "	" -k2,2nr'
+
+# The cleanup of a foreground call whose session is gone, run inside the box (container or machine) with the call's marker
+# as $1. Every process of the call carries BOXD_CALL=<marker> in its environment (pod run sets it): the script finds them
+# through the environ file of each process (NUL turned into commas, one line, so the marker is matched as a whole variable),
+# sends TERM, waits up to 5 s, then KILL for what remains. Skips pid 1 and itself (its marker is an argument, not in its
+# environment). The first word is the fixed tag the contract test's fake engine recognizes.
+CALL_KILL=': boxd-call-cleanup; id=$1; scan() { f=0; for d in /proc/[0-9]*; do p=${d#/proc/}; [ "$p" = 1 ] || [ "$p" = $$ ] && continue; case ",$(tr "\000" "," 2>/dev/null <"$d/environ")" in *",BOXD_CALL=$id,"*) f=1; [ -z "$1" ] || kill -"$1" "$p" 2>/dev/null ;; esac; done; }; scan TERM; i=0; while [ "$f" = 1 ] && [ $i -lt 5 ]; do sleep 1; scan; i=$((i + 1)); done; [ "$f" = 0 ] || scan KILL'
+
+# Full image reference, or failure when the registry is not allowed.
+norm_image() {
+    local r=$1
+    [[ $r =~ ^[A-Za-z0-9][A-Za-z0-9_.:/@-]{0,199}$ ]] || return 1
+    case $r in
+        localhost/*)   # a local image: a name and an optional tag, nothing else
+            [[ $r =~ ^localhost/[a-z0-9][a-z0-9_.-]{0,62}(:[A-Za-z0-9_.-]{1,64})?$ ]] || return 1
+            case $r in *:*) printf %s "$r" ;; *) printf %s:latest "$r" ;; esac
+            return ;;
+        */*) ;;
+        *) printf 'docker.io/library/%s' "$r"; return ;;
+    esac
+    local reg
+    for reg in $REGISTRIES; do
+        [ "${r%%/*}" = "$reg" ] && { printf %s "$r"; return; }
+    done
+    case ${r%%/*} in
+        *.*|*:*) return 1 ;;
+        *) printf 'docker.io/%s' "$r" ;;
+    esac
+}
+
+# A localhost/ image missing from the asked engine's own store (boxd-reset all empties both) is loaded from its archive:
+# $IMAGES/<name>.tar (made by images-build) or, for images built from an agent's Containerfile, $WORK/cache/images/<name>.tar.
+# A third word "force" loads even when the store has the tag: a rebuilt image keeps its tag, the store's copy is stale.
+ensure_image() {
+    local ref=$2 name ar d
+    case $ref in localhost/*) ;; *) return 0 ;; esac
+    if [ "${3:-}" != force ] && image_have "$1" "$ref"; then return 0; fi
+    name=${ref#localhost/}; name=${name%%:*}
+    ar=$IMAGES/$name.tar
+    for d in "$IMAGES" "$WORK/cache/images"; do [ -r "$d/$name.tar" ] && { ar=$d/$name.tar; break; }; done
+    [ -r "$ar" ] || die "image $ref is not in storage and $IMAGES/$name.tar is missing; run boxd-setup --images"
+    image_load "$1" "$ar"
+    image_have "$1" "$ref" || die "loading $ar did not give $ref"
+}
+# The asked engine's own store: has the image, and loads an archive (output and exit code of a failed load are
+# ignored: the caller checks that the image is there).
+image_have() { if [ "$1" = vm ]; then vmx image inspect "$2" </dev/null >/dev/null 2>&1; else podman image exists "$2"; fi; }
+image_load() { if [ "$1" = vm ]; then vmx load <"$2" >/dev/null 2>&1; else podman load -i "$2" </dev/null >/dev/null 2>&1; fi; return 0; }
+
+# pod image has <engine> <ref> <id>: exit 0 when the engine's store has <ref> with image id <id>, 1 otherwise, no output.
+# pod image load <engine> <ref> <id>: the archive on standard input (box image push) goes into the engine's store; <ref>
+# must be there afterwards. The archive is held in a fresh file under the work area and removed again.
+# microsandbox does not report an image's id (its inspect prints only its own digest of the converted image), so for the
+# vm store the id of the last pushed archive is recorded in the cache folder and `has` compares with that record.
+pod_image() {
+    local verb=${1:-} eng=${2:-} ref tmp rc rec
+    CALL_T0=${EPOCHREALTIME//[!0-9]/} CALL_BOX=image CALL_ENGINE=$eng
+    { { [ "$verb" = has ] || [ "$verb" = load ]; } && [ $# -eq 4 ]; } || die "unknown command"
+    [ "$eng" = container ] || [ "$eng" = vm ] || die "bad engine $eng"
+    ref=$(norm_image "${3:-}") || die "image not allowed"
+    [ "$eng" != vm ] || have_msb || die "virtual machines are not installed on this host"
+    [[ $4 =~ ^[a-f0-9]{12,64}$ ]] || die "bad image id"
+    rec=$WORK/cache/pushed-vm-$(printf %s "$ref" | cksum | cut -d' ' -f1)
+    if [ "$verb" = has ]; then
+        if [ "$eng" = vm ]; then image_have vm "$ref" && [ "$(cat "$rec" 2>/dev/null)" = "$4" ]
+        else [ "$(podman image inspect --format '{{.Id}}' "$ref" </dev/null 2>/dev/null)" = "$4" ]; fi
+        rc=$?; logcall "$rc"; exit "$rc"
+    fi
+    mkdir -p "$WORK/cache/images" && tmp=$(mktemp "$WORK/cache/images/push.XXXXXX") || die "cannot make a file for the archive"
+    trap 'rm -f "$tmp"' EXIT
+    cat >"$tmp" || die "cannot store the archive"
+    image_load "$eng" "$tmp"
+    image_have "$eng" "$ref" || die "loading the archive did not give $ref"
+    [ "$eng" != vm ] || printf %s "$4" >"$rec"
+    logcall 0; exit 0
+}
+
+stamp_of() { stat -c %Y "$WORK/jobs/$1/.last-used" 2>/dev/null || echo 0; }
+
+# Boxes are containers labelled boxd.box and, with an argument, sandboxes named pod-*: "<box> <image> <state> <engine>"
+# per line, tab separated. Box name from the container name (pod-<box>): podman 6.1 cannot index .Labels in a ps format.
+box_rows() {
+    local rows
+    rows=$(podman ps -a --filter label=boxd.box --format '{{.Names}}\t{{.Image}}\t{{.State}}') || die "podman ps failed"
+    [ -z "$rows" ] || sed 's/^pod-//; s/$/\tcontainer/' <<<"$rows"
+    [ -n "${1:-}" ] || return 0
+    rows=$(vm_rows) || return 1
+    [ -z "$rows" ] || sed 's/^pod-//; s/$/\tvm/' <<<"$rows"
+}
+have_msb() { command -v msb >/dev/null; }
+# Running virtual machines, the box named in $1 (when given) not counted: it is the one asking.
+vm_used() {
+    local n=0 b st rows
+    # The listing is taken first: one that fails must not read as "no machine runs" (the ceiling would admit on it).
+    rows=$(vm_rows 2>/dev/null) || return 1
+    while IFS=$'\t' read -r b _ st; do [ -z "$b" ] || [ "$b" = "${1:-}" ] || [ "$st" != running ] || { [ -n "${SKIP_IDLE:-}" ] && vm_idle "$b"; } || n=$((n + 1)); done <<<"$rows"
+    echo "$n"
+}
+# The msb create options of a machine size.
+size_lim() { case $1 in small) echo "-c 2 -m 2G" ;; medium) echo "-c 4 -m 4G" ;; *) echo "$VM_LIMITS" ;; esac; }
+# lim_mb <msb create options>: the memory of a machine made with them, in megabytes; nothing when they name none.
+lim_mb() { [[ $1 =~ -m\ ([0-9]+)([MG]) ]] || return 0; [ "${BASH_REMATCH[2]}" = M ] && echo "${BASH_REMATCH[1]}" || echo $((BASH_REMATCH[1] * 1024)); }
+# vm_refusal <own sandbox name> <megabytes asked>: why one more machine of that size cannot start now; prints nothing
+# when it can. The only place that knows the rule: `pod run` refuses with it and `pod status` reports it (vm_room),
+# the client never recomputes it. Measured memory of the build cgroup plus the asked size must fit the cap (vm_mem);
+# BOXD_VM_MAX is a ceiling on the count on top, and the only rule (default 3) when the memory cannot be measured.
+# The measure alone admits too many: a young machine has not claimed its memory yet (2026-11-15: twelve 4 GB machines
+# admitted on a 28 GB cap). So the sizes of the running machines plus the asked size must also fit BOXD_VM_COMMIT
+# percent of the cap (100, the default since 0.4.8: no machine can ever push another into the cap; at 150 the tower took
+# 36 GB of machines on its 28 GB cap and the kernel killed one, with its runs, on 2026-11-15).
+VM_COMMIT=${BOXD_VM_COMMIT:-100}
+[[ $VM_COMMIT =~ ^[0-9]+$ ]] || die "BOXD_VM_COMMIT must be a number"
+# vm_commit <own sandbox name>: megabytes of the sizes of the running machines, the asking one not counted.
+vm_commit() {
+    local m=0 b st rows s
+    rows=$(vm_rows 2>/dev/null) || return 1
+    while IFS=$'\t' read -r b _ st; do
+        [ -n "$b" ] && [ "$b" != "${1:-}" ] && [ "$st" = running ] || continue
+        [ -z "${SKIP_IDLE:-}" ] || ! vm_idle "$b" || continue
+        s=$(cat "$WORK/jobs/${b#pod-}/.vm-size" 2>/dev/null); s=$(lim_mb "$(size_lim "${s:-large}")")
+        m=$((m + ${s:-0}))
+    done <<<"$rows"
+    echo "$m"
+}
+# ctr_commit: megabytes the running container boxes use now (as vm_mem measures: anonymous, shared and swapped memory, no
+# file cache). Container boxes have no size to reserve, but they grow inside the cap beside the machines (2026-11-15: the
+# build running at the kill was in a container box). One that cannot be read counts as its whole limit (BOXD_LIMITS --memory);
+# with no limit it fails: never admit on an unreadable measure.
+ctr_commit() {
+    local m=0 b st rows pid v
+    rows=$(box_rows 2>/dev/null) || return 1
+    while IFS=$'\t' read -r b _ st _; do
+        [ -n "$b" ] && [ "$st" = running ] || continue
+        pid=$(podman container inspect --format '{{.State.Pid}} {{.Config.Labels}}' "pod-$b" 2>/dev/null) || return 1; pid=${pid%% *}
+        v=$(ctr_mb "$pid" used)
+        [[ $v =~ ^[0-9]+$ ]] || v=$(ctr_limit_mb)   # unreadable: assume it may use all its limit
+        [[ $v =~ ^[0-9]+$ ]] || return 1             # and with no limit either, nothing can be assumed
+        m=$((m + v))
+    done <<<"$rows"
+    echo "$m"
+}
+# Idle machines give their room back when another machine asks for it (owner, 2026-11-16: "we really need a way to auto-cleanup
+# the idle vms"; an idle 8 GB machine held a slot on a full host until the reaper's 30 minutes). vm_idle <sandbox>: unused for
+# BOXD_VM_IDLE_MIN seconds (300), not being made and with no run or call in it: the reaper's own two locks, so a run in flight
+# is never touched. With SKIP_IDLE set, vm_used and vm_commit leave such machines out: `pod status` answers with the room they
+# would give. shortcut: the measured memory still holds what idle machines use, so `pod status` can say no where `pod run`
+# would make room; upgrade by measuring each machine when that is seen.
+VM_IDLE_MIN=${BOXD_VM_IDLE_MIN:-300}
+[[ $VM_IDLE_MIN =~ ^[0-9]+$ ]] || die "BOXD_VM_IDLE_MIN must be a number"
+vm_idle() {
+    local J=$WORK/jobs/${1#pod-}
+    [ -d "$J" ] && [ $(($(date +%s) - $(stamp_of "${1#pod-}"))) -gt "$VM_IDLE_MIN" ] || return 1
+    ( exec 9>"$J/.lock"; flock -n 9 || exit 1; [ ! -e "$J/.running" ] || flock -n -x "$J/.running" true )
+}
+# vm_evict_idle <own sandbox name>: removes the idle machine unused the longest (its folder stays, as after the reaper; its next
+# call makes it again) and logs it where `pod report` reads removals. Fails when there is none.
+vm_evict_idle() {
+    local b st rows best="" bt=0 t
+    rows=$(vm_rows 2>/dev/null) || return 1
+    while IFS=$'\t' read -r b _ st; do
+        [ -n "$b" ] && [ "$b" != "${1:-}" ] && [ "$st" = running ] && vm_idle "$b" || continue
+        t=$(stamp_of "${b#pod-}"); [ -n "$best" ] && [ "$t" -ge "$bt" ] || { best=$b bt=$t; }
+    done <<<"$rows"
+    [ -n "$best" ] || return 1
+    (   # the locks again, held over the removal: it may have been called since the look
+        J=$WORK/jobs/${best#pod-}; exec 9>"$J/.lock"; flock -n 9 || exit 1
+        [ ! -e "$J/.running" ] || flock -n -x "$J/.running" true || exit 1
+        vmx rm -f "$best" </dev/null >/dev/null 2>&1   # the engine's own "Removed" line went into the caller's output (seen on laptop, 2026-11-16)
+    ) || return 1
+    echo "boxd-pod: the idle machine of box ${best#pod-} was removed to make room for this one" >&2
+    printf '%s\t%s\t%s\n' "$(date +%s)" "${best#pod-}" "idle machine removed, ${1#pod-} asked for room" >>"$WORK/cache/evictions.log" 2>/dev/null || true
+}
+# vm_fit <own sandbox name> <megabytes asked> [all]: the one computation behind that rule. Sets fit_mb (the largest machine
+# `pod run` admits now, in megabytes: the smaller of the cap minus the measured use and the commit share minus the running
+# machines minus the container boxes' use, never below 0; 0 at the count ceiling; a dash when the memory cannot be measured or
+# counted, then only the count rule exists) and fit_why (why the asked size is refused, empty when it fits). Without `all` it
+# stops at the first refusal, as `pod run` always did (no listings it does not need under the room lock); `pod status` passes
+# `all` for both words in one pass (2026-11-16: a --size medium user was told "no room" from the answer for the default size).
+vm_fit() {
+    local n max=$VM_MAX used_mb cap_mb com ctr cm="" a=${2:-} f c
+    fit_mb=- fit_why=
+    if [ -n "$a" ] && vm_mem; then
+        f=$((cap_mb - used_mb))
+        [ $((used_mb + a)) -le "$cap_mb" ] || { fit_why="$used_mb MB in use + $a MB asked > $cap_mb MB cap"; [ -n "${3:-}" ] || return 0; }
+        if com=$(vm_commit "${1:-}"); then
+            if ctr=$(ctr_commit); then
+                c=$((cap_mb * VM_COMMIT / 100 - com - ctr)); [ "$c" -ge "$f" ] || f=$c
+                fit_mb=$((f > 0 ? f : 0))
+                [ "$ctr" = 0 ] || cm="$ctr MB used by container boxes + "
+                # The container term shows only when there is one, so the message of a host without container memory stays as it was.
+                [ -n "$fit_why" ] || [ $((com + ctr + a)) -le $((cap_mb * VM_COMMIT / 100)) ] ||
+                    fit_why="$com MB of running machines + $cm$a MB asked > $((cap_mb * VM_COMMIT / 100)) MB, $VM_COMMIT% of the $cap_mb MB cap"
+            else [ -n "$fit_why" ] || fit_why="the running container boxes cannot be measured now"; fi
+        else [ -n "$fit_why" ] || fit_why="the running machines cannot be counted now"; fi
+        [ -z "$fit_why" ] || [ -n "${3:-}" ] || return 0
+    else max=${max:-3}; fi
+    [ -n "$max" ] || return 0
+    n=$(vm_used "${1:-}") || { [ -n "$fit_why" ] || fit_why="the running machines cannot be counted now"; return 0; }
+    [ "$n" -lt "$max" ] || { fit_mb=0; [ -n "$fit_why" ] || fit_why="$n of $max running"; }
+}
+vm_refusal() { local fit_mb fit_why; vm_fit "$@"; [ -z "$fit_why" ] || echo "$fit_why"; }
+# Room for one more machine of the default (large) size.
+vm_room() { [ -z "$(vm_refusal "${1:-}" "$(lim_mb "$VM_LIMITS")")" ]; }
+
+# Retention: the host is kept clean by boxd itself, nobody cleans by hand (owner decision 2026-11-14). Only whole box
+# folders go, never single files of a box: unused for BOXD_KEEP_DAYS, or the least recently used one per reaper pass
+# while the work area is full (from BOXD_EVICT_AT percent until it is under BOXD_EVICT_TO), or the folder of a worktree
+# that is gone (`pod drop`, sent by the client's collector). Every removal is one line in cache/evictions.log
+# (epoch, box, reason; tab separated) and the next call of that box says it once.
+KEEP_DAYS=${BOXD_KEEP_DAYS:-14} EVICT_AT=${BOXD_EVICT_AT:-70} EVICT_TO=${BOXD_EVICT_TO:-60}
+for v in "$KEEP_DAYS" "$EVICT_AT" "$EVICT_TO"; do [[ $v =~ ^[0-9]+$ ]] || die "BOXD_KEEP_DAYS, BOXD_EVICT_AT and BOXD_EVICT_TO must be numbers"; done
+# Last use of a box folder: its stamp, or its own date when no call stamped it yet (a first sync is under way).
+used_of() { stat -c %Y "$WORK/jobs/$1/.last-used" 2>/dev/null || stat -c %Y "$WORK/jobs/$1" 2>/dev/null || echo 0; }
+# drop_box <box> <reason> <epoch> [force]: removes the box and its folder. Never while the box is being made (.lock);
+# never while a run or a sync holds it (.running), unless forced. Fails (1) when it removed nothing.
+drop_box() {
+    local box=$1 J=$WORK/jobs/$1 log=$WORK/cache/evictions.log mb
+    [[ $box =~ $BOX_RE ]] && [ -d "$J" ] || return 1
+    (
+        exec 9>"$J/.lock"; flock -n 9 || exit 1
+        [ -n "${4:-}" ] || [ ! -e "$J/.running" ] || flock -n -x "$J/.running" true || exit 1
+        pod_stop "$box" || exit 1
+        # In the account's user namespace: files made by other users inside a box belong to its subordinate ids (only there are they readable, so the size is measured there too).
+        # shortcut: the size is the folder's alone, the built image removed below is not counted; when a report needs the image too: read its size before `podman rmi`.
+        mb=$(podman unshare du -smx -- "$J" </dev/null 2>/dev/null 9>&- | cut -f1) || mb=
+        [[ $mb =~ ^[0-9]+$ ]] || mb=
+        podman unshare rm -rf -- "$J" </dev/null 9>&- || exit 1
+        # The image built from the box's Containerfile has no other user (an image that is not there is no error).
+        podman rmi "localhost/built-$box:latest" </dev/null >/dev/null 2>&1 9>&-
+        ! have_msb || vmx image rm "localhost/built-$box:latest" </dev/null >/dev/null 2>&1 9>&-
+        mkdir -p "$WORK/cache" && printf '%s\t%s\t%s\n' "$3" "$box" "$2" >> "$log"
+        [ "$(wc -l < "$log")" -le 2000 ] || { tail -n 1000 "$log" > "$log.new" && mv "$log.new" "$log"; }
+        echo "evicted $box ($2)${mb:+, $mb MB freed}"
+    )
+}
+# Images under disk pressure: every named image goes unless a box uses it (the engines refuse those themselves) or it is the
+# built image of a box whose folder is still here; then the dangling layers. All of them come back by themselves: pulled
+# again, loaded again from BOXD_IMAGES_DIR, built again from the Containerfile. An image sent with `box image push` must be
+# pushed again (`pod image has` then answers no).
+# shortcut: images go only under disk pressure, not by age (6 GB of 953 on the tower, 2026-11-14); when they fill a disk that folders do not: a last-use stamp per image.
+evict_images() {
+    local ref b
+    while IFS= read -r ref; do
+        [[ $ref == *"<none>"* || -z $ref ]] && continue
+        [[ $ref =~ ^localhost/built-(.+):latest$ ]] && [ -d "$WORK/jobs/${BASH_REMATCH[1]}" ] && continue
+        podman rmi "$ref" </dev/null >/dev/null 2>&1
+    done < <(podman images --format '{{.Repository}}:{{.Tag}}' </dev/null 2>/dev/null)
+    podman image prune -f </dev/null >/dev/null 2>&1
+    have_msb || return 0
+    while read -r ref _; do
+        [ -n "$ref" ] && [ "$ref" != REFERENCE ] || continue
+        [[ $ref =~ ^localhost/built-(.+):latest$ ]] && [ -d "$WORK/jobs/${BASH_REMATCH[1]}" ] && continue
+        vmx image rm "$ref" </dev/null >/dev/null 2>&1
+    done < <(vmx image ls </dev/null 2>/dev/null)
+    find "$WORK/cache" -maxdepth 1 -name 'pushed-vm-*' -type f -delete
+}
+# The shared package caches under disk pressure: files not written for the retention time go (a tool downloads them again).
+evict_caches() { [ ! -d "$WORK/cache/pod" ] || podman unshare find "$WORK/cache/pod" -type f -mtime "+$KEEP_DAYS" -delete </dev/null 2>/dev/null; }
+evict() {
+    local now=$1 keep=$((KEEP_DAYS * 86400)) list s box pct flag=$WORK/cache/.evicting
+    # Not before this boot's clear: removing a box asks microsandbox, which trusts process ids from before the reboot.
+    if have_msb && [ ! -e "$CLEAN" ]; then return 0; fi
+    [ -d "$WORK/jobs" ] && mkdir -p "$WORK/cache" || return 0
+    list=$(find "$WORK/jobs" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | while IFS= read -r box; do
+        [[ $box =~ $BOX_RE ]] && printf '%s %s\n' "$(used_of "$box")" "$box"; done | sort -n)
+    while read -r s box; do
+        [ -n "$box" ] && [ $((now - s)) -gt "$keep" ] || continue
+        drop_box "$box" "unused $KEEP_DAYS days" "$now" || true
+    done <<<"$list"
+    pct=$(df --output=pcent "$WORK" 2>/dev/null | tr -dc '0-9\n' | sed -n '$p')
+    [[ $pct =~ ^[0-9]+$ ]] || return 0
+    if [ "$pct" -ge "$EVICT_AT" ]; then
+        if [ ! -e "$flag" ]; then   # once per episode of pressure
+            evict_images; evict_caches
+            printf '%s\timages\tdisk %s percent full\n' "$now" "$pct" >> "$WORK/cache/evictions.log"; echo "evicted images (disk $pct percent full)"
+        fi
+        : > "$flag"
+    elif [ "$pct" -lt "$EVICT_TO" ]; then rm -f "$flag"; fi
+    [ -e "$flag" ] || return 0
+    # One folder per pass: freed space shows up late on btrfs, so the next pass measures again before taking more.
+    # A folder used within the box lifetime (BOXD_TTL) is never taken.
+    while read -r s box; do
+        [ -n "$box" ] && [ -d "$WORK/jobs/$box" ] && [ $((now - s)) -gt "$TTL" ] || continue
+        if drop_box "$box" "disk $pct percent full" "$now"; then break; fi
+    done <<<"$list"
+}
+pod_drop() {
+    [[ ${1:-} =~ $BOX_RE ]] || die "bad box name"
+    if [ ! -d "$WORK/jobs/$1" ]; then pod_stop "$1"; return; fi
+    drop_box "$1" "worktree gone" "$(date +%s)" force || die "box $1 is being made right now; not removed"
+}
+
+# The shared package caches of every box (cache/pod, /cache inside): one download serves all boxes of the host, which also
+# keeps the host's one public address under the request limits of the package sources.
+# BOXD_MAVEN_MIRROR: the address of a caching repository (a repository manager on the home network) that every box's Maven uses
+# in place of the public central source; the settings file that says so lives in the shared cache and is this script's to write.
+MAVEN_MIRROR=${BOXD_MAVEN_MIRROR:-}
+[[ -z $MAVEN_MIRROR || $MAVEN_MIRROR =~ ^https?://[A-Za-z0-9._:/-]+$ ]] || die "bad BOXD_MAVEN_MIRROR"
+CACHE_ENV=(-e CARGO_HOME=/cache/cargo -e GOMODCACHE=/cache/go/mod -e GOCACHE=/cache/go/build
+    -e npm_config_cache=/cache/npm -e npm_config_store_dir=/cache/pnpm-store -e XDG_CACHE_HOME=/cache/xdg
+    -e "MAVEN_ARGS=-Dmaven.repo.local=/cache/m2${MAVEN_MIRROR:+ -s /cache/maven-settings.xml}" -e GRADLE_USER_HOME=/cache/gradle)
+
+reap() {
+    local now box J rows engine vmrows=
+    now=$(date +%s)
+    if [ "${1:-}" = --now ]; then
+        [[ ${2:-} =~ ^[0-9]+$ ]] || die "--now needs an epoch"
+        now=$2
+    fi
+    # Sandboxes only after this boot's clear: microsandbox trusts a process id recorded before the reboot.
+    if have_msb && [ -e "$CLEAN" ]; then vmrows=1; fi
+    rows=$(box_rows $vmrows) || die "listing boxes failed"
+    while IFS=$'\t' read -r box _ _ engine; do
+        [[ $box =~ $BOX_RE ]] || continue
+        [ $((now - $(stamp_of "$box"))) -gt "$TTL" ] || continue
+        J=$WORK/jobs/$box
+        # Skip a box being created or used right now: .lock is held while it is made, .running by every run.
+        (
+            if [ -d "$J" ]; then exec 9>"$J/.lock"; flock -n 9 || exit 0; fi
+            [ ! -e "$J/.running" ] || flock -n -x "$J/.running" true || exit 0
+            if [ "$engine" = vm ]; then vmx rm -f "pod-$box" </dev/null >/dev/null; else podman rm -f "pod-$box" </dev/null >/dev/null; fi && echo "reaped $box"
+        )
+    done <<<"$rows"
+    evict "$now"
+}
+
+# The listing is made before anything is printed: a pipeline would hide a failed engine call (podman ps, msb ls) and answer the
+# other engine's boxes alone, a machine that runs missing from the list. A failure ends the call with exit 125 and its reason
+# (box_rows says which engine failed).
+pod_list() {
+    local box image state engine vmrows= rows
+    have_msb && vmrows=1
+    rows=$(box_rows $vmrows) || exit 125
+    [ -z "$rows" ] || sort <<<"$rows" | while IFS=$'\t' read -r box image state engine; do
+        [ "$state" = running ] || state=stopped
+        printf '%s\t%s\t%s\t%s\t%s\n' "$box" "$image" "$state" "$(stamp_of "$box")" "$engine"
+    done
+}
+
+# Processes of a running box, for spotting a hung command (read only: no lock, no last-used stamp, starts nothing).
+pod_ps() {
+    [[ ${1:-} =~ $BOX_RE ]] || die "bad box name"
+    local name=pod-$1 out st
+    # The same format as pod run reads: "<image> <state> map[...]".
+    if out=$(podman container inspect --format '{{.Config.Image}} {{.State.Status}} {{.Config.Labels}}' "$name" 2>/dev/null); then
+        st=${out#* }; st=${st%% *}
+        [ "$st" = running ] || { echo "boxd-pod: box $1 is not running" >&2; return 0; }
+        podman exec "$name" sh -c "$PS_SCRIPT" </dev/null
+    elif have_msb && out=$(vm_inspect "$name"); then
+        [ "${out##* }" = running ] ||
+            { echo "boxd-pod: virtual machine box $1 is stopped; the next command in it starts it again, when the host has room" >&2; return 0; }
+        vmx exec -w / "$name" -- sh -c "$PS_SCRIPT" </dev/null
+    else
+        die "no box $1"
+    fi
+}
+
+# One line of facts, tab separated key=value words, for a client choosing among hosts (docs/pod-contract.md). Read only:
+# no lock, nothing started, so it is advice; `pod run` under the room lock stays the authority. Memory: the build
+# cgroup's limit minus the memory that cannot be given back (anonymous and shared, vm_mem: the figure the admission uses; the
+# file cache, active or not, is reclaimable and is not used), in megabytes.
+# Host memory facts for `pod status` and `pod report` (one source, so the two agree): meminfo_mb prints "total available swap_total
+# swap_used" in megabytes; group_mem sets gmax (the cgroup's limit, a dash for `max` or unreadable) and gcur (what vm_mem counts as
+# used, a dash when unreadable) in the caller, which declares used_mb and cap_mb for vm_mem.
+meminfo_mb() {
+    awk '$1 == "MemTotal:" { t = $2 } $1 == "MemAvailable:" { a = $2 } $1 == "SwapTotal:" { s = $2 } $1 == "SwapFree:" { f = $2 }
+        END { printf "%d %d %d %d\n", t / 1024, a / 1024, s / 1024, (s - f) / 1024 }' "${BOXD_MEMINFO:-/proc/meminfo}" 2>/dev/null
+}
+group_mem() {
+    local v
+    gmax="-" gcur="-"
+    { v=$(<"$CGROUP/memory.max"); } 2>/dev/null && [[ $v =~ ^[0-9]+$ ]] && gmax=$((v / 1048576))
+    ! vm_mem || gcur=$used_mb   # the same figure as mem_free_mb: the limit minus this is the free memory
+}
+pod_status() {
+    local eng=container used=0 room=no vmrows="" img="" mem=unknown l1 f vmax=$VM_MAX used_mb cap_mb rows ma gmax gcur why="" fit_mb=- fit_why
+    have_msb && vmrows=1
+    rows=$(box_rows $vmrows) || exit 125   # first: a failed listing ends the call before anything else lists
+    vm_mem || vmax=${vmax:-3}   # the count rule and its default apply when the memory cannot be measured
+    if have_msb; then
+        eng=container,vm used=$(vm_used)
+        SKIP_IDLE=1 vm_fit "" "$(lim_mb "$VM_LIMITS")" all; why=$fit_why; [ -n "$why" ] || room=yes   # one pass for the words vm_room, vm_why and vm_fit_mb: the same rule as `pod run`
+    fi
+    read -r l1 _ </proc/loadavg
+    ! vm_mem || mem=$((cap_mb > used_mb ? cap_mb - used_mb : 0))
+    while IFS= read -r f; do img=${img:+$img,}${f%.tar}; done < <(find "$IMAGES" -maxdepth 1 -name '*.tar' -printf '%f\n' 2>/dev/null | sort)
+    read -r _ ma _ < <(meminfo_mb)
+    group_mem
+    printf 'version=%s\tengines=%s\tcpus=%s\tload1=%s\tvm_used=%s\tvm_max=%s\tvm_room=%s\tboxes=%s\tdisk_pct=%s\tmem_free_mb=%s\timages=%s' \
+        "$VERSION" "$eng" "$(nproc)" "$l1" "$used" "${vmax:-none}" "$room" "$(grep -c . <<<"$rows")" \
+        "$(df --output=pcent "$WORK" | tail -1 | tr -dc 0-9)" "$mem" "$img"
+    printf '\tmem_avail_mb=%s\tgroup_mem_used_mb=%s\tgroup_mem_max_mb=%s\tvm_why=%s\tvm_fit_mb=%s\n' "${ma:--}" "$gcur" "$gmax" "$why" "$fit_mb"
+}
+
+# ---- The reading verbs for the dashboard: pod report, pod calls, pod log (docs/pod-contract.md). Read only like pod status:
+# no lock, no .last-used stamp, no call log line, nothing started or stopped.
+
+# Whole lines of a file, in one answer at most READ_MAX bytes: window <file> <offset, or empty> sets size, from and next.
+# No offset: the last READ_MAX bytes from a line start; an offset past the end: from 0. A line still being written (no newline
+# yet) waits for the next call; one longer than the limit is cut at the limit, so a reader always advances. win_out prints it.
+window() {
+    local f=$1 lim
+    size=$(stat -c %s "$f" 2>/dev/null) || size=0
+    from=${2:-$((size - READ_MAX))}
+    [ "$from" -ge 0 ] && [ "$from" -le "$size" ] || from=0
+    # The byte before $from is a newline when it starts a line; else go on to the next line start.
+    [ -n "${2:-}" ] || [ "$from" -eq 0 ] || from=$((from - 1 + $(tail -c +"$from" "$f" | head -n 1 | wc -c)))
+    lim=$((size - from)); [ "$lim" -le "$READ_MAX" ] || lim=$READ_MAX
+    # The sentinel line makes a last line without newline the one sed leaves out: the bytes counted are the whole lines.
+    WIN=$({ tail -c +$((from + 1)) "$f" 2>/dev/null | head -c "$lim"; echo x; } | sed -n '$!p' | wc -c)
+    [ "$WIN" -gt 0 ] || [ "$lim" -lt "$READ_MAX" ] || WIN=$lim
+    next=$((from + WIN))
+}
+win_out() { [ "$WIN" -eq 0 ] || tail -c +$((from + 1)) "$1" | head -c "$WIN"; }
+# The offset word of pod calls and pod log: nothing, or at most 18 digits (no octal surprises: base 10).
+read_offset() { [ -z "$1" ] || { [[ $1 =~ ^[0-9]{1,18}$ ]] || die "bad offset"; echo $((10#$1)); }; }
+
+pod_calls() {
+    local f=$WORK/cache/calls.log size from next WIN off
+    off=$(read_offset "${1:-}") || exit 125
+    window "$f" "$off"
+    printf 'calls\tsize=%s\tfrom=%s\tnext=%s\n' "$size" "$from" "$next"
+    win_out "$f"
+}
+
+# The code of the last line "EXIT <code>" of a run's log, a dash when there is none.
+run_exit() { local l; l=$(tail -n 1 "$1" 2>/dev/null); [[ $l =~ ^EXIT\ ([0-9]+)$ ]] && echo "${BASH_REMATCH[1]}" || echo -; }
+
+# run_alive <record>: the process group a detached run recorded still exists. A record outlives its run when the host lost
+# power or the run was killed outright; such a run has ended (without an EXIT line).
+# shortcut: after a reboot another process group of this account could carry the same number; then the run reads as running until that group ends.
+run_alive() { local pg; [ -e "$1" ] && { read -r pg < "$1"; } 2>/dev/null && [[ $pg =~ ^[0-9]+$ ]] && kill -0 -- "-$pg" 2>/dev/null; }
+
+pod_log() {
+    local box=${1:-} id=${2:-} f st=ended ex=- size from next WIN off end= born extra=
+    [[ $box =~ $BOX_RE ]] || die "bad box name"
+    [[ $id =~ $RUN_RE ]] || die "bad run id"
+    off=$(read_offset "${3:-}") || exit 125
+    f=$WORK/jobs/$box/runs/$id.log
+    [ -f "$f" ] && [ ! -L "$f" ] || die "no run $id in box $box"   # a box writes this folder: a link to another file is no run
+    if run_alive "${f%.log}.pid"; then st=running; else ex=$(run_exit "$f"); fi
+    # An ended run's wall time: the log is created empty when the run starts and last written when it ends. Words appended after `exit`, so a reader that takes the words by key is not disturbed.
+    # shortcut: the creation time is the file system's birth time, absent (no `seconds`) where it reports none; when a report needs it there, the run's start would be written into its log.
+    if [ "$st" = ended ] && end=$(stat -c %Y "$f" 2>/dev/null) && [[ $end =~ ^[0-9]+$ ]]; then
+        extra=$'\tended='$end
+        born=$(stat -c %W "$f" 2>/dev/null) || born=
+        [[ $born =~ ^[1-9][0-9]*$ ]] && [ "$end" -ge "$born" ] && extra+=$'\tseconds='$((end - born))
+    fi
+    window "$f" "$off"
+    printf 'log\tsize=%s\tfrom=%s\tnext=%s\tstate=%s\texit=%s%s\n' "$size" "$from" "$next" "$st" "$ex" "$extra"
+    win_out "$f"
+}
+
+# Megabytes a running box uses, a dash when unreadable. Container: memory.current of the cgroup of its init process ($1 is
+# its pid); with "used" as $2 the figure of vm_mem instead (anonymous, shared and swapped, no file cache), which admission
+# counts. Machine: resident memory of its machine process.
+ctr_mb() {
+    local c v k n anon="" shm="" swp=0
+    [[ ${1:-} =~ ^[1-9][0-9]*$ ]] && c=$(sed -n 's/^0:://p' "$PROC/$1/cgroup" 2>/dev/null) && [ -n "$c" ] || { echo -; return; }
+    if [ "${2:-}" = used ]; then
+        { while read -r k n; do case $k in anon) anon=$n ;; shmem) shm=$n ;; esac; done <"$CGROOT$c/memory.stat"; } 2>/dev/null
+        [ -r "$CGROOT$c/memory.swap.current" ] && read -r swp <"$CGROOT$c/memory.swap.current"
+        [[ $anon =~ ^[0-9]+$ && $shm =~ ^[0-9]+$ && $swp =~ ^[0-9]+$ ]] && echo $(((anon + shm + swp) / 1048576)) || echo -
+    else
+        { v=$(<"$CGROOT$c/memory.current"); } 2>/dev/null && [[ $v =~ ^[0-9]+$ ]] && echo $((v / 1048576)) || echo -
+    fi
+}
+vm_mb() {
+    local p v
+    p=$(pgrep -f "(^|/)msb machine --name pod-$1( |\$)" | head -n 1)
+    v=$(awk '$1 == "VmRSS:" { print int($2 / 1024) }' "$PROC/${p:-x}/status" 2>/dev/null)
+    echo "${v:--}"
+}
+# The --memory of BOXD_LIMITS in megabytes, a dash when it has none.
+ctr_limit_mb() {
+    [[ $LIMITS =~ --memory[\ =]([0-9]+)([bkmgBKMG]?)( |$) ]] || { echo -; return; }
+    case ${BASH_REMATCH[2],,} in g) echo $((BASH_REMATCH[1] * 1024)) ;; m) echo "${BASH_REMATCH[1]}" ;; k) echo $((BASH_REMATCH[1] / 1024)) ;; *) echo $((BASH_REMATCH[1] / 1048576)) ;; esac
+}
+# The detached runs of a box as report lines: every running run and the three ended runs with the greatest ids, by id.
+# runs/ also holds dockerd.log, which is not a run.
+run_lines() {
+    local d=$WORK/jobs/$1/runs f id st ex ended=0 out=""
+    while IFS= read -r f; do
+        id=${f%.log}; [[ $id =~ $RUN_RE ]] && [ "$id" != dockerd ] || continue
+        if run_alive "$d/$id.pid"; then st=running ex=-
+        else [ $((++ended)) -le 3 ] || continue; st=ended ex=$(run_exit "$d/$f"); fi
+        out=$(printf 'run\tbox=%s\tid=%s\tstate=%s\texit=%s\tbytes=%s\tchanged=%s\n%s' "$1" "$id" "$st" "$ex" "$(stat -c %s "$d/$f")" "$(stat -c %Y "$d/$f")" "$out")
+    done < <(find "$d" -maxdepth 1 -name '*.log' -type f -printf '%f\n' 2>/dev/null | sort -r)
+    [ -z "$out" ] || printf '%s\n' "$out"
+}
+
+# The facts of the host, its boxes, their detached runs and the local images, in one answer (docs/pod-contract.md): tab
+# separated words, the first says what the line is, the others are key=value. What cannot be read is a dash. The words
+# `pod status` also has come from it, so the two always agree.
+pod_report() {
+    local st k v box image state engine bl mem user size lim j rl busy l5 l15 boot mt ma sw su gmax gcur oom dt du f
+    local power=${BOXD_POWER:-off} ic="-" cnt="-" last="-" rat="-" ka=none lock=${BOXD_KEEPAWAKE_LOCK:-/run/boxd-keepawake.lock}
+    local ist=${BOXD_IDLE_STATE:-/run/boxd-idle} vmrows="" runs="" rows used_mb cap_mb
+    local -a pr
+    local -A S
+    st=$(pod_status) || exit 125
+    while IFS== read -r k v; do S[$k]=$v; done <<<"${st//$'\t'/$'\n'}"
+    read -r _ l5 l15 _ </proc/loadavg
+    boot=$(awk '$1 == "btime" { print $2 }' /proc/stat)
+    read -r mt ma sw su < <(meminfo_mb)
+    group_mem
+    # memory.pressure: "some avg10=.. avg60=.." then "full ..." -> some10 some60 full10 full60
+    read -r -a pr < <(awk '$1 == "some" || $1 == "full" { for (i = 2; i <= NF; i++) { split($i, a, "="); if (a[1] == "avg10") x = a[2]; if (a[1] == "avg60") y = a[2] } printf "%s %s ", x, y } END { print "" }' "$CGROUP/memory.pressure" 2>/dev/null)
+    oom=$(awk '$1 == "oom_kill" { print $2 }' "$CGROUP/memory.events" 2>/dev/null)
+    read -r dt du < <(df --output=size,used "$WORK" 2>/dev/null | tail -n 1)
+    [[ ${dt:-} =~ ^[0-9]+$ && ${du:-} =~ ^[0-9]+$ ]] && { dt=$((dt / 1024)); du=$((du / 1024)); } || { dt="-"; du="-"; }
+    [ "$power" = on ] || power=off
+    if [ "$power" = on ]; then
+        ic=${BOXD_IDLE_CHECKS:-20} rat=${BOXD_RESET_AT:-85}
+        cnt=$(cat "$ist/count" 2>/dev/null) || cnt="-"; last=$(cat "$ist/last" 2>/dev/null) || last="-"
+    fi
+    if [ -e "$lock" ]; then flock -n -x "$lock" true 2>/dev/null && ka=free || ka=held; fi
+    printf 'host\tversion=%s\tengines=%s\tcpus=%s\tload1=%s\tload5=%s\tload15=%s\tboot=%s\tmem_total_mb=%s\tmem_avail_mb=%s\tswap_total_mb=%s\tswap_used_mb=%s' \
+        "${S[version]}" "${S[engines]}" "${S[cpus]}" "${S[load1]}" "$l5" "$l15" "${boot:--}" "${mt:--}" "${ma:--}" "${sw:--}" "${su:--}"
+    printf '\tgroup_mem_max_mb=%s\tgroup_mem_used_mb=%s\tpressure_some10=%s\tpressure_some60=%s\tpressure_full10=%s\tpressure_full60=%s\toom_kills=%s' \
+        "$gmax" "$gcur" "${pr[0]:--}" "${pr[1]:--}" "${pr[2]:--}" "${pr[3]:--}" "${oom:--}"
+    printf '\tvm_used=%s\tvm_max=%s\tvm_room=%s\tvm_mem_mb=%s\tbox_mem_mb=%s\tdisk_pct=%s\tdisk_total_mb=%s\tdisk_used_mb=%s\tttl=%s' \
+        "${S[vm_used]}" "${S[vm_max]}" "${S[vm_room]}" "$(lim_mb "$VM_LIMITS")" "$(ctr_limit_mb)" "${S[disk_pct]}" "$dt" "$du" "$TTL"
+    printf '\tpower=%s\tidle_checks=%s\tidle_count=%s\tidle_last=%s\treset_at=%s\tkeepawake=%s\n' "$power" "$ic" "${cnt:--}" "${last:--}" "$rat" "$ka"
+    have_msb && vmrows=1
+    rows=$(box_rows $vmrows) || exit 125   # a failed engine listing is no list (see pod_list)
+    while IFS=$'\t' read -r box image state engine; do
+        [[ $box =~ $BOX_RE ]] || continue
+        j=$WORK/jobs/$box; [ "$state" = running ] || state=stopped
+        user="-" size="-" mem="-"
+        if [ "$engine" = vm ]; then
+            size=$(cat "$j/.vm-size" 2>/dev/null); size=${size:-large}   # large when there is no record, as pod run reads it
+            lim=$(lim_mb "$(size_lim "$size")")
+            [ "$state" != running ] || mem=$(vm_mb "$box")
+        else
+            lim=$(ctr_limit_mb)
+            bl=$(podman container inspect --format '{{.State.Pid}} {{.Config.Labels}}' "pod-$box" 2>/dev/null)
+            user=no; [[ $bl == *boxd.user:1* ]] && user=yes
+            [ "$state" != running ] || mem=$(ctr_mb "${bl%% *}")
+        fi
+        # Busy while a run holds the box's .running lock (shared), tested without waiting, as reap does.
+        busy=no; [ ! -e "$j/.running" ] || flock -n -x "$j/.running" true 2>/dev/null || busy=yes
+        rl=$(run_lines "$box"); runs="$runs$rl"$'\n'
+        printf 'box\tbox=%s\tengine=%s\timage=%s\tstate=%s\tlast_used=%s\tuser=%s\tsize=%s\tmem_limit_mb=%s\tmem_mb=%s\tbusy=%s\truns=%s\n' \
+            "$box" "$engine" "$image" "$state" "$(stamp_of "$box")" "$user" "$size" "${lim:--}" "$mem" "$busy" "$(grep -c "$(printf '\tstate=running\t')" <<<"$rl")"
+    done < <(sort <<<"$rows")
+    printf %s "$runs" | grep .
+    while IFS= read -r f; do
+        printf 'image\tname=%s\tbytes=%s\tbuilt=%s\n' "${f%.tar}" "$(stat -c %s "$IMAGES/$f")" "$(stat -c %Y "$IMAGES/$f")"
+    done < <(find "$IMAGES" -maxdepth 1 -name '*.tar' -printf '%f\n' 2>/dev/null | sort)
+    # What retention removed in the last day (cache/evictions.log), oldest first, 50 lines at most.
+    awk -F'\t' -v t="$(($(date +%s) - 86400))" 'NF == 3 && $1 ~ /^[0-9]+$/ && $1 >= t { printf "evicted\tat=%s\tbox=%s\treason=%s\n", $1, $2, $3 }' "$WORK/cache/evictions.log" 2>/dev/null | tail -n 50
+    return 0
+}
+
+# Keys that may only read (the dashboard's): $VIEW_KEYS lists "<type> <key> [comment]" lines. The build sshd (ExposeAuthInfo yes)
+# gives the login's key in the file named by SSH_USER_AUTH, a line "publickey <type> <key>". Status 0: this login may only
+# read. A list with entries and no way to tell which key logged in refuses everything, so an old settings file of the sshd
+# fails closed and loudly, never open.
+view_only() {
+    local a t k seen=""
+    [ -e "$VIEW_KEYS" ] || return 1
+    [ -r "$VIEW_KEYS" ] || die "view keys cannot be read"
+    awk '$1 !~ /^#/ && NF >= 2 { f = 1 } END { exit !f }' "$VIEW_KEYS" || return 1   # no entries: no key is limited
+    while read -r a t k _; do
+        [ "$a" = publickey ] || continue
+        seen=1
+        awk -v t="$t" -v k="$k" '$1 == t && $2 == k { f = 1 } END { exit !f }' "$VIEW_KEYS" && return 0
+    done < <(cat "${SSH_USER_AUTH:-/dev/null}" 2>/dev/null)
+    [ -n "$seen" ] || die "view keys are set but the login key is hidden; add ExposeAuthInfo yes to the build sshd"
+    return 1
+}
+
+pod_stop() {
+    [[ ${1:-} =~ $BOX_RE ]] || die "bad box name"
+    if podman container inspect "pod-$1" >/dev/null 2>&1; then podman rm -f "pod-$1" >/dev/null || return 1; fi
+    if have_msb && vmx inspect "pod-$1" </dev/null >/dev/null 2>&1; then vmx rm -f "pod-$1" </dev/null >/dev/null; fi
+}
+
+# Detached runs record their process group in runs/<id>.pid. Each group gets SIGTERM and is given a moment to end
+# (up to about 10 s) before its box is removed; stale records are dropped.
+term_runs() {
+    local f pg i
+    while IFS= read -r f; do   # find, because globbing is off in this script
+        read -r pg < "$f"
+        if [[ $pg =~ ^[0-9]+$ ]] && kill -TERM -- "-$pg" 2>/dev/null; then
+            for i in $(seq 100); do kill -0 -- "-$pg" 2>/dev/null || break; sleep 0.1; done
+        fi
+        rm -f "$f"
+    done < <(find "$WORK/jobs" -mindepth 3 -maxdepth 3 -path '*/runs/*.pid' -type f 2>/dev/null)
+}
+
+# Local only: detached runs get SIGTERM, then every box on both engines goes; files stay.
+pod_clear() {
+    local n
+    term_runs
+    podman rm -af </dev/null >/dev/null || die "podman rm -af failed"
+    if have_msb; then
+        while IFS=$'\t' read -r n _; do vmx rm -f "$n" </dev/null >/dev/null; done < <(vm_rows)
+    fi
+    echo cleared
+}
+
+pod_run() {
+    local box=${1:-} image="" imgfile="" vm="" container="" user="" cuser="" kvm="" ckvm="" ulabels="" recreate="" snapshot="" run="" b64="" tty="" name J out rc
+    local -a envs=()
+    local size="" have="" lim="" asked="" used_mb=0 cap_mb=0 max=""
+    local newid="" changed="" rebuilt="" full engine=container pc="" vc="" cimg="" cst="" vimg="" vst="" other mine cur st create="" start="" n
+    shift
+    CALL_T0=${EPOCHREALTIME//[!0-9]/} CALL_BOX=$box CALL_ENGINE=container
+    [[ $box =~ $BOX_RE ]] || die "bad box name"
+    while [ $# -gt 0 ]; do
+        case $1 in
+            --image) [ $# -ge 2 ] || die "--image needs a value"; image=$2; shift 2 ;;
+            --image-file) [ $# -ge 2 ] || die "--image-file needs a value"; imgfile=$2; shift 2 ;;
+            --vm) vm=1; shift ;;
+            --container) container=1; shift ;;
+            --user) user=1; shift ;;
+            --kvm) kvm=1; shift ;;
+            --size) [ $# -ge 2 ] || die "--size needs a value"
+                case $2 in small|medium|large) size=$2 ;; *) die "bad size $2" ;; esac; shift 2 ;;
+            --env) [ $# -ge 2 ] || die "--env needs a name"
+                [[ $2 =~ $SECRET_RE ]] || die "--env $2: only names ending in _TOKEN, _KEY, _SECRET or _PASSWORD"
+                envs+=("$2"); shift 2 ;;
+            --recreate) recreate=1; shift ;;
+            --snapshot) snapshot=1; shift ;;
+            --detach) [[ ${2:-} =~ $RUN_RE ]] || die "bad run id"; run=$2; shift 2 ;;
+            --) shift; [ $# -eq 1 ] || die "expected exactly one command word after --"; b64=$1; break ;;
+            *) die "bad option $1" ;;
+        esac
+    done
+    [ -n "$b64" ] || die "missing command"
+    local n v
+    for n in "${envs[@]}"; do
+        v=BOXD_SECRET_$n
+        [ -n "${!v+x}" ] || die "--env $n: the value did not arrive (the host's sshd must accept BOXD_SECRET_*)"
+    done
+    [ -z "$vm" ] || [ -z "$container" ] || die "--vm and --container cannot go together"
+    if [ -n "$image" ]; then image=$(norm_image "$image") || die "image not allowed"; fi
+    if [ -n "$imgfile" ]; then
+        [ -z "$image" ] || die "--image and --image-file cannot go together"
+        # Relative path inside the synced worktree: plain components only, none of them . or ..
+        [[ $imgfile =~ ^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$ && ${#imgfile} -le 200 && /$imgfile/ != */./* && /$imgfile/ != */../* ]] || die "bad image file path"
+    fi
+    [[ $b64 =~ $B64_RE ]] && printf %s "$b64" | base64 -d >/dev/null 2>&1 || die "bad command encoding"
+    local -a argv
+    mapfile -d '' -t argv < <(printf %s "$b64" | base64 -d)
+    [ -n "${argv[0]:-}" ] || die "empty command"
+    CALL_CMD="${argv[*]}"; CALL_CMD=${CALL_CMD//[[:cntrl:]]/ }; CALL_CMD=${CALL_CMD:0:200}   # the log's columns and lines stay whole
+    [ -z "$vm" ] || have_msb || die "virtual machines are not installed on this host"
+
+    name=pod-$box J=$WORK/jobs/$box
+    local tl=${EPOCHREALTIME//[!0-9]/}
+    # Again when the folder was removed (retention) while this call waited: the lock it then holds is of a file that is gone.
+    while :; do
+        mkdir -p "$J" || die "cannot create $J"
+        exec 9>"$J/.lock"
+        flock 9
+        [ "$J/.lock" -ef /dev/fd/9 ] && break
+    done
+    CALL_WAIT=$(( (${EPOCHREALTIME//[!0-9]/} - tl) / 1000 ))
+    mkdir -p "$J/src" "$J/runs" "$WORK/cache/pod"
+    if [ -n "$MAVEN_MIRROR" ]; then
+        out="<settings><mirrors><mirror><id>boxd-mirror</id><mirrorOf>central</mirrorOf><url>$MAVEN_MIRROR</url></mirror></mirrors></settings>"
+        [ "$(cat "$WORK/cache/pod/maven-settings.xml" 2>/dev/null)" = "$out" ] || printf '%s\n' "$out" > "$WORK/cache/pod/maven-settings.xml"
+    fi
+
+    # Build the agent's own image from its Containerfile (the sync made it part of src). All build output goes to
+    # stderr: stdout is the command's. A failed build leaves the old box alone. Dangling layers of older builds go.
+    if [ -n "$imgfile" ]; then
+        # realpath: a link inside the worktree must not point the build at a file outside it.
+        full=$(realpath -e "$J/src/$imgfile" 2>/dev/null) && [ -f "$full" ] && [[ $full == "$(realpath "$J/src")"/* ]] || die "image file $imgfile not found"
+        image=localhost/built-$box:latest
+        podman build -f "$full" -t "$image" "$(dirname "$full")" </dev/null 9>&- 1>&2 || die "image build failed"
+        podman image prune -f </dev/null 9>&- >/dev/null 2>&1 || true
+        newid=$(podman image inspect --format '{{.Id}}' "$image" </dev/null) && [ -n "$newid" ] || die "cannot read the id of the built image"
+        [ "$newid" = "$(cat "$J/.built-id" 2>/dev/null)" ] || changed=1
+    fi
+
+    # The box may exist on either engine; the engine is part of the box, like its image.
+    # "<image> <state> map[<label>:<value> ...]": the labels tell whether the box was made with --user.
+    if out=$(podman container inspect --format '{{.Config.Image}} {{.State.Status}} {{.Config.Labels}}' "$name" 2>/dev/null); then
+        pc=1 cimg=${out%% *} cst=${out#* } ulabels=${cst#* } cst=${cst%% *}
+        [[ $ulabels == *boxd.user:1* ]] && cuser=1
+        [[ $ulabels == *boxd.kvm:1* ]] && ckvm=1
+    fi
+    if have_msb && out=$(vm_inspect "$name"); then vc=1 vimg=${out% *} vst=${out##* }; fi
+    # Sticky boxes: an existing box keeps its engine and image unless the call names them; a new box gets the
+    # defaults (container, BOXD_IMAGE). Only a named engine or image that differs needs --recreate.
+    if [ -z "$vm" ] && [ -z "$container" ] && [ -n "$vc" ] && [ -z "$pc" ]; then vm=1; fi
+    [ -z "$vm" ] || engine=vm
+    CALL_ENGINE=$engine
+    # --user is sticky like the engine and the image: a box made with it keeps it, also through --recreate.
+    # Virtual machine boxes have no unprivileged user yet.
+    [ -z "$vm" ] || [ -z "$user" ] || die "--user is not supported for virtual machine boxes yet"
+    [ -n "$vm" ] || [ -z "$cuser" ] || user=1
+    # --kvm is sticky the same way, and for container boxes only (a virtual machine box has no nested virtualization:
+    # no /dev/kvm, no vmx or svm flag inside, checked on the tower 2026-11-14).
+    [ -z "$vm" ] || [ -z "$kvm" ] || die "--kvm is only for container boxes"
+    [ -n "$vm" ] || [ -z "$ckvm" ] || kvm=1
+    # The size of a virtual machine box is recorded at creation (large when there is no record: today's machine).
+    [ -n "$vm" ] || [ -z "$size" ] || die "--size is only for virtual machine boxes"
+    if [ -n "$vm" ]; then have=$(cat "$J/.vm-size" 2>/dev/null); have=${have:-large}; fi
+    if [ -n "$vm" ]; then mine=$vc other=$pc cur=$vimg st=$vst; else mine=$pc other=$vc cur=$cimg st=$cst; fi
+    # A box once built from a Containerfile comes back on that build after the reaper removed it (.built-id stays).
+    local dflt=$DEFAULT_IMAGE
+    [ ! -s "$J/.built-id" ] || dflt=localhost/built-$box:latest
+    [ -n "$image" ] || image=${cur:-${vimg:-${cimg:-$dflt}}}
+    if [ -z "$recreate" ]; then
+        # Found on both engines (only after a crash) counts as found on the other one.
+        if [ -n "$other" ]; then
+            [ -n "$vm" ] && die "box $box is a container, asked for a virtual machine; add --recreate"
+            die "box $box is a virtual machine, asked for a container; add --recreate"
+        fi
+        [ -z "$mine" ] || [ "$cur" = "$image" ] || [ -n "$imgfile" ] || die "box $box runs $cur, asked for $image; add --recreate"
+        [ -z "$mine" ] || [ -z "$user" ] || [ -n "$cuser" ] || die "box $box was made without --user, asked for --user; add --recreate"
+        [ -z "$mine" ] || [ -z "$kvm" ] || [ -n "$ckvm" ] || die "box $box was made without --kvm, asked for --kvm; add --recreate"
+        [ -z "$mine" ] || [ -z "$size" ] || [ "$size" = "$have" ] || die "box $box is $have, asked for $size; add --recreate"
+    fi
+    size=${size:-$have}
+    lim=$(size_lim "$size")
+    # A box made from an older build of the Containerfile is replaced without --recreate (files stay).
+    [ -z "$mine" ] || [ -z "$changed" ] || rebuilt=1
+    # --recreate always gives a fresh box, also with the same engine and image.
+    if [ -n "$mine" ] && [ -z "$recreate" ] && [ -z "$rebuilt" ]; then
+        [ "$st" = running ] || start=1
+    else
+        create=1 start=1
+    fi
+
+    # Every refusal comes before any removal, so a refused call keeps the old box.
+    if [ -n "$create" ] && [ -n "$kvm" ]; then
+        { [ -r "$KVM" ] && [ -w "$KVM" ]; } || die "--kvm: $KVM is missing or the build account may not open it"
+        # The kvm group passes the test above on the host but not inside a box: the account's own rule is what opens it there.
+        ! command -v getfacl >/dev/null 2>&1 || getfacl -cp "$KVM" 2>/dev/null | grep -q "^user:$(id -un):rw" \
+            || die "--kvm: $KVM has no access rule for $(id -un); run boxd-setup on this host"
+    fi
+    if [ -n "$create" ]; then
+        if [ -n "$imgfile" ] && [ -n "$vm" ] && { [ -n "$changed" ] || ! vmx image inspect "$image" </dev/null >/dev/null 2>&1; }; then
+            # The virtual machine engine has its own store: hand it the build (new, or never handed over, as when a container
+        # box built from the same file becomes a vm box) through an archive that outlives a plain reset.
+            # podman save refuses an existing archive ("docker-archive doesn't support modifying existing images"):
+            # a fresh file, renamed over the old one.
+            local ar=$WORK/cache/images/built-$box.tar
+            mkdir -p "$WORK/cache/images" && rm -f "$ar.new" \
+                && podman save -o "$ar.new" "$image" </dev/null 9>&- >&2 && mv -f "$ar.new" "$ar" || die "cannot save the built image"
+            ensure_image vm "$image" force
+        else
+            ensure_image "$engine" "$image"
+        fi
+    fi
+    # Each allowed service is a rule on top of the public profile; with no setting, microsandbox's default stays.
+    local -a net=()
+    if [ -n "$vm" ] && [ -n "$create" ] && [ -n "$VM_NET_ALLOW" ]; then
+        net=(--net public)
+        for a in $VM_NET_ALLOW; do
+            [[ $a =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}(/[0-9]{1,2})?:(tcp|udp):[0-9]{1,5}(-[0-9]{1,5})?$ ]] || die "bad BOXD_VM_NET_ALLOW entry: $a"
+            net+=(--net-rule "allow@$a")
+        done
+    fi
+    if [ -n "$vm" ] && [ -n "$start" ]; then
+        # One admission at a time: the lock is held until the sandbox exists, so two first calls cannot both take the last room.
+        exec 7>"$WORK/cache/vm-room.lock"
+        flock 7
+        out=$(vm_refusal "$name" "$(lim_mb "$lim")")
+        # No room: idle machines go, the longest unused first, until this one fits. None goes when the sizes of the busy
+        # machines alone refuse it (the answer with the idle ones left out names another rule than the measured memory).
+        if [ -n "$out" ]; then
+            hope=$(SKIP_IDLE=1 vm_refusal "$name" "$(lim_mb "$lim")")
+            if [ -z "$hope" ] || [[ $hope == *" MB in use + "* ]]; then
+                while [ -n "$out" ] && vm_evict_idle "$name"; do out=$(vm_refusal "$name" "$(lim_mb "$lim")"); done
+            fi
+        fi
+        [ -z "$out" ] || noroom "no room for another virtual machine ($out); wait for one to end or stop one"
+    fi
+    if [ -n "$recreate" ] || [ -n "$rebuilt" ]; then
+        [ -z "$pc" ] || podman rm -f "$name" >/dev/null
+        [ -z "$vc" ] || vmx rm -f "$name" </dev/null >/dev/null
+    fi
+    # 9>&- 7>&- : the long-lived box processes must not inherit the locks.
+    if [ -n "$vm" ]; then
+        if [ -n "$create" ]; then
+            vmx create --name "$name" \
+                --mount-dir "$J:/job:host-perms=mirror" --mount-dir "$WORK/cache/pod:/cache:host-perms=mirror" \
+                --mount-owned /var/lib/docker:kind=disk,size=$VM_ENGINE_DISK --mount-owned /var/lib/containers:kind=disk,size=$VM_ENGINE_DISK \
+                --mount-owned /tmp:kind=disk,size=$VM_TMP_DISK \
+                "${CACHE_ENV[@]}" \
+                "${net[@]}" $lim "$image" </dev/null 9>&- 7>&- >/dev/null || die "cannot create box $box"
+        elif [ -n "$start" ]; then
+            vmx start "$name" </dev/null 9>&- 7>&- >/dev/null || die "cannot start box $box"
+        fi
+        exec 7>&-
+        vmx exec -w / "$name" -- sh -c "${start:+$GUEST_PID_MAX; }$DOCKER_START" </dev/null 9>&- >/dev/null 2>&1 || true
+    elif [ -n "$create" ]; then
+        local -a uflags=()
+        if [ -n "$user" ]; then
+            # keep-id: the build account's uid inside equals its uid on the host, so files under /job stay its own.
+            mkdir -p "$J/home" || die "cannot create $J/home"
+            uflags=(--userns=keep-id --label boxd.user=1 -e HOME=/job/home)
+        fi
+        # --kvm: QEMU inside runs on KVM. The build account opens it through its own access rule on the device (boxd-setup):
+        # rootless runc drops the kvm group inside, the user id stays.
+        [ -z "$kvm" ] || uflags+=(--device "$KVM" --label boxd.kvm=1)
+        # --oom-score-adj 1000: the kernel's badness is a process's memory plus score/1000 of the cgroup's limit, so 1000 adds the
+        # whole cap and when the build cgroup is full the grower in a container dies before any machine (BOXD_LIMITS may override).
+        # shortcut: boxes made before 0.4.9 keep their old score until recreated (--recreate, or retention removing them), when that
+        # matters: write 1000 to the init process's /proc/<pid>/oom_score_adj on each call (children inherit it).
+        podman run -d --init --name "$name" --hostname "$box" --label "boxd.box=$box" "${uflags[@]}" \
+            -v "$J:/job" -v "$WORK/cache/pod:/cache" -w /job/src --pull=missing \
+            "${CACHE_ENV[@]}" \
+            --oom-score-adj 1000 $LIMITS "$image" sleep infinity 9>&- >/dev/null || die "cannot create box $box"
+    elif [ -n "$start" ]; then
+        podman start "$name" 9>&- >/dev/null || die "cannot start box $box"
+    fi
+    # First call into a new folder whose box name was evicted before: say so once, the caller's ignored files are gone.
+    if [ ! -e "$J/.last-used" ] && out=$(awk -F'\t' -v b="$box" '$2 == b {l = $0} END {print l}' "$WORK/cache/evictions.log" 2>/dev/null) && [ -n "$out" ]; then
+        echo "boxd-pod: the folder of this box was removed on $(date -d "@${out%%$'\t'*}" +%F) (${out##*$'\t'}); it starts empty" >&2
+    fi
+    touch "$J/.last-used"   # inside the lock, so reap never sees a box without a stamp
+    # Which build the box was made from; a box made from another image has no record, so the next build replaces it.
+    if [ -n "$create" ]; then
+        if [ -n "$vm" ]; then printf %s "$size" >"$J/.vm-size"; else rm -f "$J/.vm-size"; fi
+        if [ -n "$imgfile" ]; then printf %s "$newid" >"$J/.built-id"
+        elif [ "$image" != "localhost/built-$box:latest" ]; then rm -f "$J/.built-id"; fi
+    fi
+    exec 9>&-
+
+    if [ -n "$snapshot" ]; then
+        (
+            cd "$J/src" || exit 1
+            [ -e .git ] || git init -q
+            git add -A
+            git -c user.name=boxd -c user.email=boxd@localhost -c commit.gpgsign=false commit -q --allow-empty -m snapshot
+        ) </dev/null >/dev/null || die "snapshot failed"
+    fi
+
+    local -a eng
+    [ -z "${SSH_TTY:-}" ] || tty=-t
+    # --env values: into this process's environment only now (the engines take a bare -e NAME from it), carriers cleared.
+    local -a ev=()
+    for n in "${envs[@]}"; do v=BOXD_SECRET_$n; export "$n=${!v}"; ev+=(-e "$n"); done
+    for v in ${!BOXD_SECRET_*}; do unset "$v"; done
+    local -a eu=()
+    [ -z "$user" ] || eu=(--user "$(id -u):$(id -g)" -e HOME=/job/home)
+    if [ -n "$vm" ]; then eng=(msb exec "${ev[@]}" -w /job/src "$name" --); else eng=(podman exec "${eu[@]}" "${ev[@]}" -w /job/src "$name"); fi
+
+    if [ -n "$run" ]; then
+        : > "$J/runs/$run.log"
+        : >> "$J/.running"
+        [ -z "$vm" ] || eng+=(sh -c "$GUEST_KILLS" _)   # detached runs only: a foreground call has no log to hold the lines
+        # The wrapper's own words are fixed (with this script's functions for the note of a machine that ended); the client's
+        # words travel as arguments only. The shared lock on .running tells reap this box is busy.
+        setsid bash -c "$(declare -f vm_alive oom_kills vm_end_note ctr_end_note)"'
+            j=$1; log=$2; CGROUP=$3; sb=$4; bx=$5; shift 5
+            echo $$ > "${log%.log}.pid"
+            k0=$(oom_kills)
+            boxd-keepawake flock -s "$j/.running" "$@" >"$log" 2>&1
+            rc=$?
+            if [ -n "$sb" ]; then vm_end_note "$sb" "$bx" "$k0"; else ctr_end_note "$bx" "$k0" "$rc"; fi >>"$log"
+            touch "$j/.last-used"
+            rm -f "${log%.log}.pid"
+            echo "EXIT $rc" >>"$log"' _ "$J" "$J/runs/$run.log" "$CGROUP" "${vm:+$name}" "$box" "${eng[@]}" "${argv[@]}" \
+            </dev/null >/dev/null 2>&1 &
+        echo "$run"
+        CALL_RUN=$run
+        logcall detached
+        exit 0
+    fi
+
+    # Held for the whole foreground run so reap spares a run that outlasts the time limit.
+    exec 8>>"$J/.running"
+    flock -s 8
+    # And the host stays awake for it: the call's own ssh connection does not count for the sleep module when it comes from an
+    # address of BOXD_IDLE_IGNORE (a runner beside the dashboard), and a command that waits makes no load.
+    if [ -r "${BOXD_KEEPAWAKE_LOCK:-/run/boxd-keepawake.lock}" ]; then exec 6<"${BOXD_KEEPAWAKE_LOCK:-/run/boxd-keepawake.lock}"; flock -s 6; fi
+    local k0; k0=$(oom_kills)
+    if [ -n "$tty" ]; then   # on a terminal sshd hangs the session up and the engine follows it
+        if [ -n "$vm" ]; then
+            vmx exec $tty "${ev[@]}" -w /job/src "$name" -- "${argv[@]}"
+        else
+            podman exec -i $tty "${eu[@]}" "${ev[@]}" -w /job/src "$name" "${argv[@]}"
+        fi
+        rc=$?
+    else
+        # No terminal: a foreground command lives as long as the session that started it (sshd's session process is this
+        # script's parent). sshd does not hang a session without a terminal up, so a killed client used to leave the command
+        # running with the box's .running lock held. Now the engine runs in the background, a watcher notices the parent
+        # change and hangs this script up, and a hangup, termination or broken pipe here ends the call: the cleanup script
+        # ends every process carrying the call's marker inside the box, then the host-side engine process goes.
+        # shortcut: a command that clears its environment (env -i) is not found, and the parent is the nearest process only
+        # (a wrapper shell between sshd and this script that stays alive hides the session's end); the box's time limit
+        # still takes the box once the call's lock is gone.
+        local call=c$$-${EPOCHREALTIME//[!0-9]/}-$RANDOM ep wp gone="" pp=$PPID
+        trap 'gone=1' HUP TERM PIPE INT
+        if [ -n "$vm" ]; then
+            msb exec "${ev[@]}" -e "BOXD_CALL=$call" -w /job/src "$name" -- "${argv[@]}" <&0 &   # msb itself, not vmx: $! must be the engine process
+        else
+            podman exec -i "${eu[@]}" "${ev[@]}" -e "BOXD_CALL=$call" -w /job/src "$name" "${argv[@]}" <&0 &
+        fi
+        ep=$!
+        # The watcher holds no lock and no stream (an orphaned sleep must not keep the caller's pipes open).
+        (
+            me=$$
+            while sleep "${BOXD_WATCH_INTERVAL:-1}"; do
+                read -r _ _ _ cur _ <"/proc/$me/stat" 2>/dev/null && [ "$cur" = "$pp" ] || break
+            done
+            kill -HUP "$me" 2>/dev/null
+        ) 8>&- 6<&- </dev/null >/dev/null 2>&1 &
+        wp=$!
+        wait "$ep"; rc=$?   # a trapped signal ends the wait early with a status above 128 and sets gone
+        kill "$wp" 2>/dev/null
+        if [ -n "$gone" ]; then
+            trap '' HUP TERM PIPE INT
+            if [ -n "$vm" ]; then
+                timeout 30 msb exec -w / "$name" -- sh -c "$CALL_KILL" _ "$call"
+            else
+                timeout 30 podman exec "${eu[@]}" "$name" sh -c "$CALL_KILL" _ "$call"
+            fi </dev/null 8>&- 6<&- >/dev/null 2>&1
+            kill -TERM "$ep" 2>/dev/null   # a host-side engine that does not end within about 5 s is killed: it holds the box's lock
+            for n in $(seq 50); do kill -0 "$ep" 2>/dev/null || break; sleep 0.1; done
+            kill -KILL "$ep" 2>/dev/null; wait "$ep" 2>/dev/null
+            touch "$J/.last-used"
+            echo "boxd-pod: the session that started the call is gone; the call was ended" >&2
+            logcall 129 "session gone"
+            exit 129
+        fi
+    fi
+    if [ -n "$vm" ]; then vm_end_note "$name" "$box" "$k0"; else ctr_end_note "$box" "$k0" "$rc"; fi >&2
+    touch "$J/.last-used"
+    logcall "$rc"
+    exit "$rc"
+}
+
+# pod forward <box> <port>: relays this session's standard input and output to 127.0.0.1:<port> inside a running container
+# box (the client's `box forward` runs one per connection). The host's socat enters the box's network namespace (nsenter
+# in the build account's user namespace, which owns it), so any image works. Never creates or starts a box. Held like a
+# foreground call: shared lock on .running and boxd-keepawake, so the reaper and the sleep module leave a viewer alone.
+# shortcut: container boxes only (a vm box has no host-side namespace to enter), when a vm box needs a viewer: relay through msb exec.
+pod_forward() {
+    local box=${1:-} port=${2:-} name J st pid ep gone="" rc
+    CALL_T0=${EPOCHREALTIME//[!0-9]/} CALL_BOX=$box CALL_ENGINE=container CALL_CMD="forward ${port:0:6}"
+    [[ $box =~ $BOX_RE ]] || die "bad box name"
+    [[ $port =~ ^[1-9][0-9]{0,4}$ ]] && [ "$port" -le 65535 ] || die "bad port"
+    name=pod-$box J=$WORK/jobs/$box
+    if st=$(podman container inspect --format '{{.Config.Image}} {{.State.Status}} {{.Config.Labels}}' "$name" 2>/dev/null); then
+        st=${st#* }; st=${st%% *}
+        [ "$st" = running ] || die "box $box is not running"
+    elif have_msb && vm_inspect "$name" >/dev/null; then
+        die "forward is for container boxes"
+    else
+        die "no box $box"
+    fi
+    [ -d "$J" ] || die "no box $box"
+    pid=$(podman container inspect --format '{{.State.Pid}}' "$name" 2>/dev/null </dev/null); pid=${pid%% *}
+    [[ $pid =~ ^[1-9][0-9]*$ ]] || die "cannot read the process of box $box"
+    exec 8>>"$J/.running"
+    flock -s 8
+    touch "$J/.last-used"
+    trap 'gone=1' HUP TERM PIPE INT
+    boxd-keepawake podman unshare nsenter "--net=/proc/$pid/ns/net" socat - "TCP:127.0.0.1:$port" <&0 &
+    ep=$!
+    wait "$ep"; rc=$?
+    if [ -n "$gone" ]; then
+        trap '' HUP TERM PIPE INT
+        pkill -TERM -P "$ep" 2>/dev/null   # podman unshare leaves its child running when it is the one that is killed
+        kill -TERM "$ep" 2>/dev/null; wait "$ep" 2>/dev/null
+        rc=129
+    fi
+    touch "$J/.last-used"
+    logcall "$rc"
+    exit "$rc"
+}
+
+# One line per command the dispatcher below accepts over ssh. Read only: no lock, no stamp, no call log line.
+pod_help() {
+    cat <<'HELP'
+pod run <box> ...      run a command in a box (starts it when missing)
+pod stop <box>         stop a box, keep its folder
+pod drop <box>         remove a box and its folder
+pod list               boxes, one per line
+pod ps <box>           processes of a running box
+pod status             one line of host facts
+pod report             host, boxes, runs and images in one answer
+pod calls [offset]     the call log
+pod log <box> <run> [offset]         output of a detached run
+pod forward <box> <port>             connect to a port inside a box
+pod image ...          manage local images
+pod help               this list
+HELP
+}
+
+if [ -n "${SSH_ORIGINAL_COMMAND:-}" ]; then
+    cmd=$SSH_ORIGINAL_COMMAND
+    view_only && ro=1 || ro=
+    [[ $cmd =~ $LINE_RE ]] || die "unknown command"
+    read -ra W <<<"$cmd"
+    if [ -n "$ro" ]; then   # a key that may only read: the reading verbs, nothing else (not even the rsync passthrough)
+        case "${W[0]} ${W[1]:-}" in "pod status"|"pod list"|"pod ps"|"pod report"|"pod calls"|"pod log"|"pod help") ;; *) die "this key may only read" ;; esac
+    fi
+    if [ "${W[0]}" = rsync ] && [ "${W[1]:-}" = --server ]; then
+        # Relative paths in the sync land under the work area, so the client never needs to know where it is.
+        cd "$WORK" || die "work area missing"
+        # Only the client's own sync and pull may pass: rsync's short-option bundle, the long options the client
+        # sends, "." and paths inside a box's src folder (relative, as the client writes them). Anything else could
+        # write wherever the build account can (an option like --log-file=, or a destination outside a box); the
+        # filter rules travel in rsync's protocol. This check comes before the mkdir below.
+        for w in "${W[@]:1}"; do
+            case $w in
+                --server|--sender|--delete|--delete-excluded|--mkpath|--safe-links|.) continue ;;
+            esac
+            [[ $w =~ ^-[A-Za-z0-9.]+$ ]] && continue
+            [[ $w =~ ^jobs/([^/]+)/src(/.*)?$ && ${BASH_REMATCH[1]} =~ $BOX_RE && /$w/ != */../* ]] && continue
+            die "rsync refused: $w"
+        done
+        # Two first calls of one worktree sync at once: both rsync receivers would make the missing folder and one
+        # fails with "File exists" (exit 11). Making it here, race free, leaves rsync a folder that is already there.
+        if [[ ${W[*]} != *" --sender"* ]] && [[ ${W[-1]} =~ ^jobs/[A-Za-z0-9_.-]+/src/$ ]]; then
+            mkdir -p "${W[-1]}" || die "cannot create ${W[-1]}"
+        fi
+        # A sync or a pull is a use of the box folder: it renews an existing stamp and holds the folder busy (.running, as a
+        # run does), so retention never removes a folder under a transfer.
+        if [[ ${W[-1]} =~ ^jobs/([^/]+)/src ]] && [ -d "jobs/${BASH_REMATCH[1]}" ]; then
+            b=jobs/${BASH_REMATCH[1]}
+            [ ! -e "$b/.last-used" ] || touch "$b/.last-used"
+            exec flock -s "$b/.running" rsync "${W[@]:1}"
+        fi
+        exec rsync "${W[@]:1}"
+    fi
+    [ "${W[0]}" = pod ] || die "unknown command"
+    case ${W[1]:-} in
+        run) pod_run "${W[@]:2}" ;;
+        stop) [ ${#W[@]} -eq 3 ] || die "unknown command"; pod_stop "${W[2]}" ;;
+        drop) [ ${#W[@]} -eq 3 ] || die "unknown command"; pod_drop "${W[2]}" ;;
+        list) [ ${#W[@]} -eq 2 ] || die "unknown command"; pod_list ;;
+        ps) [ ${#W[@]} -eq 3 ] || die "unknown command"; pod_ps "${W[2]}" ;;
+        status) [ ${#W[@]} -eq 2 ] || die "unknown command"; pod_status ;;
+        report) [ ${#W[@]} -eq 2 ] || die "unknown command"; pod_report ;;
+        calls) [ ${#W[@]} -le 3 ] || die "unknown command"; pod_calls "${W[2]:-}" ;;
+        log) [ ${#W[@]} -ge 4 ] && [ ${#W[@]} -le 5 ] || die "unknown command"; pod_log "${W[@]:2}" ;;
+        forward) [ ${#W[@]} -eq 4 ] || die "unknown command"; pod_forward "${W[2]}" "${W[3]}" ;;
+        image) pod_image "${W[@]:2}" ;;
+        help) [ ${#W[@]} -eq 2 ] || die "unknown command"; pod_help ;;
+        *) die "unknown command" ;;
+    esac
+elif [ "${1:-}" = reap ] || [ "${1:-}" = clear ]; then
+    # Called by the boxd service and boxd-reset through runuser, which keeps root's environment.
+    HOME=$(getent passwd "$(id -un)" | cut -d: -f6)
+    cd "$HOME" || cd /   # podman refuses to run from a folder this account cannot enter
+    [ -r /etc/profile.d/boxd-env.sh ] && . /etc/profile.d/boxd-env.sh
+    if [ "$1" = clear ]; then pod_clear; else shift; reap "$@"; fi
+else
+    die "unknown command"
+fi

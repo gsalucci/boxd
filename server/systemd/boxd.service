@@ -1,0 +1,20 @@
+# The one service the owner controls (boxctl start|stop). It is what /etc/sv/boxd is on Void: it runs the same files
+# (server/sv/boxd/run and finish, installed as boxd-run and boxd-finish), which check the conditions, start
+# boxd-sshd, and then reap idle boxes every minute. Stopping it, or its run file ending, removes every box (finish).
+[Unit]
+Description=boxd build server: starts the build sshd and reaps idle boxes
+Documentation=file:///usr/share/doc/boxd/packaging-debian.md
+After=local-fs.target network.target
+
+[Service]
+Type=simple
+Environment=BOXD_MANAGER=systemd
+ExecStart=/bin/sh /usr/libexec/boxd/boxd-run
+# Not ExecStop: the finish file must also run when the run file ends by itself (a failed condition), as runit's ./finish does.
+ExecStopPost=/bin/sh /usr/libexec/boxd/boxd-finish
+TimeoutStopSec=300
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

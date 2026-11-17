@@ -1,0 +1,50 @@
+#!/bin/sh
+# Cut a release: tag main, build the packages in a virtual machine box on the default build host, pull them, sign and
+# publish (tools/sign-and-publish, which needs BOXD_SIGNING_KEY and GITEA_TOKEN). Run on the owner's workstation from
+# a clean main whose srcpkgs/boxd/template already carries the version. Upgrading the hosts stays a separate step:
+#   xbps-install -Syu boxd-server boxd-power     (each build host)
+# usage: tools/release <version>      e.g. tools/release 0.1.7
+set -eu
+v=${1:?usage: tools/release <version>}
+cd "$(dirname "$0")/.."
+: "${BOXD_SIGNING_KEY:?set BOXD_SIGNING_KEY to the private key path}" "${GITEA_TOKEN:?set GITEA_TOKEN}"
+[ "$(git branch --show-current)" = main ] || { echo "release: not on main" >&2; exit 1; }
+[ -z "$(git status --porcelain)" ] || { echo "release: uncommitted work" >&2; exit 1; }
+grep -qx "version=$v" srcpkgs/boxd/template || { echo "release: srcpkgs/boxd/template is not at version $v" >&2; exit 1; }
+[ "$(sed -n 's/^VERSION=\([0-9.]*\).*/\1/p' server/boxd-pod)" = "$v" ] || { echo "release: VERSION in server/boxd-pod is not $v" >&2; exit 1; }
+grep -qx "export const VERSION = \"$v\";" client/box.mts || { echo "release: VERSION in client/box.mts is not $v" >&2; exit 1; }
+grep -qx "## $v" CHANGELOG.md || { echo "release: CHANGELOG.md has no section for $v" >&2; exit 1; }
+
+# The tag is made once; a rerun after a failed build goes on from it.
+git rev-parse -q --verify "refs/tags/v$v" >/dev/null || { git tag -a "v$v" -m "boxd $v"; git push -q origin "v$v"; }
+
+# The build box syncs a git worktree: a throwaway one holding the tagged files and the tag's archive.
+# A fixed folder, so a rerun reaches the same box (and the slot it already holds); readable by others, because the
+# sync keeps the mode and the build inside the box runs as an unprivileged account.
+d=${TMPDIR:-/tmp}/boxd-release-$v
+rm -rf "$d" && mkdir -m 0755 "$d"
+git archive --prefix="boxd-$v/" -o "$d/boxd-$v.tar.gz" "v$v"
+tar xzf "$d/boxd-$v.tar.gz" -C "$d" --strip-components=1
+cat > "$d/run.sh" <<EOF
+#!/bin/sh
+xbps-install -Sy bash git curl shadow util-linux >/dev/null 2>&1
+set -e
+id builder >/dev/null 2>&1 || useradd -m builder
+mkdir -p /tmp/pkg && chown builder /tmp/pkg
+su builder -c 'cd /job/src && BOXD_PKG_WORK=/tmp/pkg BOXD_PACKAGES=boxd BOXD_SOURCE_ARCHIVE=/job/src/boxd-$v.tar.gz sh tools/build-packages'
+rm -rf /job/src/out && mkdir -p /job/src/out && cp /tmp/pkg/void-packages/hostdir/binpkgs/*.xbps /job/src/out/
+EOF
+git -C "$d" init -q && git -C "$d" add -A && git -C "$d" -c user.name=release -c user.email=release@localhost commit -qm "boxd $v"
+(cd "$d" && box --vm --image ghcr.io/void-linux/void-glibc:latest --ps-after 0 --pull out -- sh /job/src/run.sh)
+ls "$d"/out/boxd-server-"$v"_*.xbps >/dev/null
+
+BOXD_BUILD_HOST='' BOXD_BUILD_OUT="$d/out" sh tools/sign-and-publish
+# The build box is this tool's own and its work is done: the slot goes back at once (after 0.4.10 and 0.4.11 it sat idle
+# on a full host until removed by hand). The client's record names the host: boxes/<host>.<box>.
+for r in "${BOXD_STATE:-$HOME/.local/state/boxd}"/boxes/*.boxd-release-"$v"-*; do
+  [ -f "$r" ] || continue
+  n=${r##*/}
+  ssh -n "boxd-${n%%.*}" pod drop "${n#*.}" >/dev/null && rm -f "$r" || echo "release: the build box ${n#*.} on ${n%%.*} could not be removed; it holds a slot until reaped" >&2
+done
+rm -rf "$d"
+echo "release: boxd $v published"

@@ -1,0 +1,11 @@
+Package: microsandbox-bin
+Section: admin
+Priority: optional
+Architecture: amd64
+Maintainer: boxd maintainers <gsalucci@users.noreply.github.com>
+Depends: libc6
+Homepage: https://github.com/superradcompany/microsandbox
+Description: microsandbox: small virtual machines on kvm (prebuilt release)
+ Repack of the pinned official microsandbox release (msb and libkrunfw side by
+ side under /usr/lib/microsandbox/<version>/, link /usr/bin/msb). boxd-setup
+ installs it where /dev/kvm and processor virtualization exist.

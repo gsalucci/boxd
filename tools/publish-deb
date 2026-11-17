@@ -1,0 +1,58 @@
+#!/bin/sh
+# Upload the .deb files built by tools/build-deb to the owner's Gitea Debian package registry, then check the
+# repository index. Run it on any machine with curl; it does not need dpkg. The registry signs the repository itself
+# (its key is at <registry>/repository.key), so nothing here signs.
+#
+#   GITEA_TOKEN=<token with package write> tools/publish-deb [file.deb ...]      default: every .deb in deb-out
+#
+# Environment: GITEA_TOKEN (required), GITEA_URL (required, address of the Gitea server), GITEA_OWNER (required, account that owns the packages),
+# BOXD_DEB_DIST (distribution name in the registry, default trixie), BOXD_DEB_COMPONENT (default main),
+# BOXD_DEB_OUT (where build-deb wrote, default <checkout>/deb-out).
+# An existing package file answers 409, so it is deleted and uploaded again (same as tools/sign-and-publish for Void).
+# Proven against the registry for 0.4.8; what stays unproven is in "Still unproven" in docs/packaging-debian.md.
+set -eu
+
+here=$(cd "$(dirname "$0")" && pwd)
+repo=$(dirname "$here")
+: "${GITEA_TOKEN:?publish-deb: set GITEA_TOKEN (a token with write access to packages)}"
+[ -n "${GITEA_URL:-}" ] || { echo "publish-deb: set GITEA_URL (address of the Gitea server)" >&2; exit 2; }
+url=$GITEA_URL
+[ -n "${GITEA_OWNER:-}" ] || { echo "publish-deb: set GITEA_OWNER (account that owns the packages)" >&2; exit 2; }
+owner=$GITEA_OWNER
+dist=${BOXD_DEB_DIST:-trixie}
+comp=${BOXD_DEB_COMPONENT:-main}
+base=$url/api/packages/$owner/debian
+[ $# -gt 0 ] || set -- "${BOXD_DEB_OUT:-$repo/deb-out}"/*.deb
+[ -f "$1" ] || { echo "publish-deb: no .deb files (run tools/build-deb first)" >&2; exit 1; }
+
+# A status code from curl; the body is not needed.
+# curl's own failure (reset, timeout) must not end the script silently under set -e: -S prints its error, and the code read is then 000.
+code() { curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: token $GITEA_TOKEN" "$@" || true; }
+
+for f in "$@"; do
+	name=$(basename "$f" .deb)               # <package>_<version>_<architecture>
+	pkg=${name%%_*}; rest=${name#*_}; ver=${rest%%_*}; arch=${rest#*_}
+	put=$(code -X PUT --upload-file "$f" "$base/pool/$dist/$comp/upload")
+	if [ "$put" = 409 ]; then
+		del=$(code -X DELETE "$base/pool/$dist/$comp/$pkg/$ver/$arch")
+		[ "$del" = 204 ] || { echo "publish-deb: delete of $name answered $del" >&2; exit 1; }
+		put=$(code -X PUT --upload-file "$f" "$base/pool/$dist/$comp/upload")
+	fi
+	[ "$put" = 201 ] || { echo "publish-deb: upload of $name answered $put" >&2; exit 1; }
+	echo "publish-deb: uploaded $name"
+done
+
+# Anonymous read of the index (the packages are public, as for Void): every uploaded package and version must be listed.
+# The registry keeps one index per architecture, and "all" packages are only in binary-all (seen with 0.4.9).
+for f in "$@"; do
+	name=$(basename "$f" .deb); pkg=${name%%_*}; rest=${name#*_}; ver=${rest%%_*}; arch=${rest#*_}
+	curl -fsS -A "apt/2.0" "$base/dists/$dist/$comp/binary-$arch/Packages" |
+		awk -v p="$pkg" -v v="$ver" '$1 == "Package:" { cur = $2 } $1 == "Version:" && cur == p && $2 == v { found = 1 } END { exit !found }' ||
+		{ echo "publish-deb: $pkg $ver is not in the $dist/$comp binary-$arch index" >&2; exit 1; }
+done
+cat <<EOF
+publish-deb: published. On a Debian host (once):
+  sudo curl -fsSL $base/repository.key -o /etc/apt/keyrings/gitea-$owner.asc
+  echo "deb [signed-by=/etc/apt/keyrings/gitea-$owner.asc] $base $dist $comp" | sudo tee /etc/apt/sources.list.d/boxd.list
+  sudo apt update && sudo apt install boxd-server
+EOF

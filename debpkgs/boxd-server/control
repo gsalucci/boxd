@@ -1,0 +1,19 @@
+Package: boxd-server
+Section: admin
+Priority: optional
+Architecture: all
+Maintainer: boxd maintainers <gsalucci@users.noreply.github.com>
+Depends: podman (>= 5.0), openssh-server, rsync, git, uidmap, catatonit, procps, systemd, socat
+Recommends: btrfs-progs, microsandbox-bin, passt
+Suggests: zram-tools
+Homepage: https://github.com/gsalucci/boxd
+Description: build boxes for agents: the build host
+ boxd gives coding agents their own build boxes on hardware you own. This
+ package is the build host: boxd-pod (the forced command of the build sshd
+ that makes and runs one rootless podman container or microsandbox virtual
+ machine per agent worktree), boxd-reset, boxd-keepawake, boxctl, boxd-setup,
+ the systemd units boxd.service and boxd-sshd.service, and the toolbox image
+ sources.
+ .
+ Installing it changes nothing on the machine. Run boxd-setup as root next: it
+ makes the build account, its work area and its ssh key (packaging-debian).

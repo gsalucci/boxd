@@ -1,0 +1,13 @@
+1794480000000000	boxd-2889387319	vm	0	0	880			cargo fmt --check
+1794560000000000	boxd-2889387319	vm	0	101	73100	
+1794563400000000	webshop-608299631	container	0	detached	25		20261113-095000-ab12	pnpm dev --host
+1794565800000000	acme-wave19-4007723605	vm	0	75	11	no room for another virtual machine (24100 MB in use + 8192 MB asked > 27188 MB cap); wait for one to end or stop one		pnpm playwright install
+1794566400000000	acme-wave19-4007723605	vm	0	75	9	no room for another virtual machine (24100 MB in use + 8192 MB asked > 27188 MB cap); wait for one to end or stop one		pnpm playwright install
+1794568080000000	harbor-admin-3340981172	vm	0	detached	2210		20261113-110800-9f3c	cargo test --release -p oracle
+not a call log line
+1794569500000000	image	container	0	0	2100			
+1794570000000000	agent-accept-1	container	0	125	3	image not allowed		
+1794570180000000	toolsite-1923847561	container	0	detached	12		20261113-114300-77aa	pnpm test
+1794570680000000	boxd-2889387319	vm	30000	0	30004			cargo clippy --workspace
+1794571061000000	webshop-608299631	container	0	1	9450			pnpm test auth
+1794571186000000	boxd-2889387319	vm	0	0	4210			cargo check -p api

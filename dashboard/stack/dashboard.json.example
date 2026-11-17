@@ -1,0 +1,10 @@
+{
+  "listen": "0.0.0.0:8377",
+  "listenAnywhere": true,
+  "pollSeconds": 60,
+  "stateDir": "/state",
+  "hosts": [
+    { "name": "tower", "address": "192.0.2.72", "port": 2222, "account": "build", "keyFile": "/run/boxd/key", "sleeps": true },
+    { "name": "laptop", "address": "192.0.2.65", "port": 2222, "account": "boxd", "keyFile": "/run/boxd/key", "sleeps": false }
+  ]
+}

@@ -1,0 +1,33 @@
+# Template file for 'microsandbox-bin'
+# Repack of the pinned official release. To move the pin see docs/packaging.md.
+pkgname=microsandbox-bin
+version=0.7.15
+revision=1
+archs="x86_64"
+create_wrksrc=yes
+short_desc="Microsandbox: small virtual machines on kvm (prebuilt official release)"
+maintainer="boxd maintainers <gsalucci@users.noreply.github.com>"
+license="Apache-2.0"
+homepage="https://github.com/superradcompany/microsandbox"
+distfiles="${homepage}/releases/download/v${version}/microsandbox-linux-x86_64.tar.gz
+ ${homepage}/raw/v${version}/LICENSE>LICENSE-${version}"
+# first: microsandbox-linux-x86_64.tar.gz, from the release's checksums.sha256
+# second: LICENSE at tag v0.7.15, computed from the downloaded file
+checksum="37ffc7bf7b2b977ab004f620f47ae4466f021a9b880c94f46f697c56cf6932b7
+ a276ca3381fefb9cde42fccae847856085c76027557d62eee83f057eb6c53433"
+skip_extraction="LICENSE-${version}"
+# Prebuilt upstream binaries are kept byte for byte.
+nostrip=yes
+# libkrunfw is opened by msb at run time, other packages never link it.
+noshlibprovides=yes
+
+do_install() {
+	local d l
+	d=usr/lib/microsandbox/${version}
+	vinstall msb 755 ${d}
+	# vinstall does not expand globs, so loop over the library files
+	for l in libkrunfw.so.*; do vinstall $l 755 ${d}; done
+	vmkdir usr/bin
+	ln -s ../lib/microsandbox/${version}/msb ${DESTDIR}/usr/bin/msb
+	vlicense ${XBPS_SRCDISTDIR}/${pkgname}-${version}/LICENSE-${version} LICENSE
+}

@@ -1,0 +1,12 @@
+#!/bin/sh
+# boxd-keepawake <command> [args]: runs the command and holds a shared lock while it runs. The lock keeps
+# boxd-reset from replacing the build area under the command and, when the power module is on, keeps the host
+# from sleeping (boxd-idle checks it). For jobs that look idle (waiting on the network, a long sleep in a test)
+# and are not attached to an ssh connection.
+LOCK=${BOXD_KEEPAWAKE_LOCK:-/run/boxd-keepawake.lock}
+[ $# -gt 0 ] || { echo "usage: boxd-keepawake <command> [args]" >&2; exit 2; }
+if [ ! -r "$LOCK" ]; then
+    echo "boxd-keepawake: $LOCK missing (the boxd service is not running), running without it" >&2
+    exec "$@"
+fi
+exec flock -s "$LOCK" "$@"

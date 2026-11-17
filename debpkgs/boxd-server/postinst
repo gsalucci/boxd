@@ -1,0 +1,12 @@
+#!/bin/sh
+set -e
+case "$1" in
+configure)
+    [ ! -d /run/systemd/system ] || systemctl daemon-reload || true
+    if [ -z "${2:-}" ]; then
+        echo "boxd-server: installed. Set BOXD_PORT in /etc/boxd/boxd.conf if port 2222 is taken, then run:"
+        echo "  boxd-setup --key <public key file of the agents' machine>"
+        echo "  boxctl start"
+    fi ;;
+esac
+exit 0

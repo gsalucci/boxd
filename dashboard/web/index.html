@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>boxd · overview</title>
+<script src="boxd-theme.js"></script>
+<link rel="stylesheet" href="boxd.css">
+</head>
+<body>
+<div class="app" id="app">
+
+  <aside class="side" id="side">
+    <div class="side__brand">
+      <!-- lockup: open-corner box with prompt and cursor, then "boxd" with the d's bowl as the daemon block -->
+      <svg class="logo" viewBox="0 0 75 20" width="75" height="20" role="img" aria-label="boxd" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter">
+        <path d="M13 1.5H1.5v17h17V7"/>
+        <path d="M5.5 7L9 10l-3.5 3"/>
+        <rect class="logo__block" x="10.5" y="11.5" width="4.5" height="3" stroke="none"/>
+        <path d="M29 2v15h7V9h-7"/>
+        <path d="M41 9h7v8h-7z"/>
+        <path d="M53 9l7 8M60 9l-7 8"/>
+        <rect class="logo__block" x="64" y="8" width="8" height="10" stroke="none"/>
+        <path d="M73 2v15"/>
+      </svg>
+    </div>
+
+    <nav class="side__group" aria-label="Main">
+      <span class="overline side__label">fleet</span>
+      <button type="button" class="nav" data-act="go" data-arg="overview">
+        <span class="nav__mark" aria-hidden="true">&gt;</span>
+        <svg class="od-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><path d="M2.75 2.75h4.5v4.5h-4.5zM8.75 2.75h4.5v4.5h-4.5zM2.75 8.75h4.5v4.5h-4.5zM8.75 8.75h4.5v4.5h-4.5z"/></svg>
+        <span>Overview</span>
+      </button>
+      <button type="button" class="nav" data-act="go" data-arg="hosts">
+        <span class="nav__mark" aria-hidden="true">&gt;</span>
+        <svg class="od-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><path d="M2.75 3.75h10.5v8.5H2.75zM2.75 8h10.5M5 6h1.5M5 10.25h1.5"/></svg>
+        <span>Hosts</span>
+        <span class="nav__count" data-count="hosts"></span>
+      </button>
+      <button type="button" class="nav" data-act="go" data-arg="boxes">
+        <span class="nav__mark" aria-hidden="true">&gt;</span>
+        <svg class="od-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><path d="M2.75 2.75h10.5v10.5H2.75zM2.75 6h10.5M6.5 8.75h3"/></svg>
+        <span>Boxes</span>
+        <span class="nav__count" data-count="boxes"></span>
+      </button>
+      <button type="button" class="nav" data-act="go" data-arg="calls">
+        <span class="nav__mark" aria-hidden="true">&gt;</span>
+        <svg class="od-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><path d="M3 4.5L6.5 8 3 11.5M8 11.5h5"/></svg>
+        <span>Calls</span>
+        <span class="nav__count" data-count="calls"></span>
+      </button>
+      <button type="button" class="nav" data-act="go" data-arg="images">
+        <span class="nav__mark" aria-hidden="true">&gt;</span>
+        <svg class="od-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><path d="M2.75 3h10.5v3H2.75zM3.75 6v7.25h8.5V6M6.5 8.75h3"/></svg>
+        <span>Images</span>
+        <span class="nav__count" data-count="images"></span>
+      </button>
+      <button type="button" class="nav" data-act="go" data-arg="services">
+        <span class="nav__mark" aria-hidden="true">&gt;</span>
+        <svg class="od-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><path d="M5.75 5.75h4.5v4.5h-4.5zM8 2v3.75M8 10.25V14M2 8h3.75M10.25 8H14"/></svg>
+        <span>Services</span>
+      </button>
+      <button type="button" class="nav" data-act="go" data-arg="alerts">
+        <span class="nav__mark" aria-hidden="true">&gt;</span>
+        <svg class="od-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><path d="M8 2.5l6 10.75H2zM8 6.5v3M8 11v.5"/></svg>
+        <span>Alerts</span>
+        <span class="nav__count"><span data-count="alerts"></span> <span class="vh">open</span></span>
+      </button>
+    </nav>
+
+    <nav class="side__group side__group--end" aria-label="Reset information">
+      <span class="overline side__label">on the host</span>
+      <button type="button" class="nav" data-act="go" data-arg="reset">
+        <span class="nav__mark" aria-hidden="true">&gt;</span>
+        <svg class="od-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><path d="M3.25 8a4.75 4.75 0 1 0 1.6-3.55M3.25 2.5v3.25H6.5"/></svg>
+        <span>Reset</span>
+      </button>
+      <p class="caption side__foot">read only</p>
+    </nav>
+  </aside>
+
+  <header class="top">
+    <button type="button" class="bx-btn bx-btn--icon top__menu" id="menu-btn" data-act="menu" aria-label="Navigation" aria-expanded="false" aria-controls="side">
+      <svg class="od-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11"/></svg>
+    </button>
+    <p class="top__crumb od-truncate" id="crumb">boxd / <b>overview</b></p>
+    <span class="top__fleet" id="fleet"></span>
+    <button type="button" class="bx-btn bx-btn--quiet" id="theme-btn" data-act="theme" title="Switch theme: auto, light, dark">
+      <svg class="od-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><path d="M8 2.75a5.25 5.25 0 1 0 0 10.5a5.25 5.25 0 0 0 0-10.5zM8 2.75v10.5M8 5.5h4.4M8 8h5.2M8 10.5h4.4"/></svg>
+      <span id="theme-label">theme: auto</span>
+    </button>
+  </header>
+
+  <main class="main" id="main">
+    <div class="view" id="view">
+      <noscript><p>This dashboard draws its screens with JavaScript. Enable it to see the fleet.</p></noscript>
+    </div>
+  </main>
+
+  <footer class="statusline">
+    <span class="statusline__prompt" aria-hidden="true">&gt;</span>
+    <span class="statusline__msg" id="status-msg" role="status" aria-live="polite"></span>
+  </footer>
+
+  <button type="button" class="scrim" id="scrim" data-act="navclose" aria-label="Close navigation" tabindex="-1" hidden></button>
+</div>
+
+<script type="module" src="boxd.mjs"></script>
+</body>
+</html>

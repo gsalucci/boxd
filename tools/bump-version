@@ -1,0 +1,23 @@
+#!/bin/sh
+# Moves every place that carries the release version, from the one srcpkgs/boxd/template has to <new>, and compiles the
+# client (written after the same move was made by hand for the fifth time on 2026-11-16, once missing a line).
+# The CHANGELOG.md section is still written by hand; tools/release refuses a version without one.
+# usage: tools/bump-version <new>      e.g. tools/bump-version 0.4.15
+set -e
+new=${1:?usage: tools/bump-version <new>}
+echo "$new" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+' || { echo "bump-version: $new is not a version" >&2; exit 1; }
+cd "$(dirname "$0")/.."
+old=$(sed -n 's/^version=//p' srcpkgs/boxd/template)
+o=$(echo "$old" | sed 's/\./\\./g')        # as a pattern
+oq=$(echo "$old" | sed 's/\./\\\\\\./g')   # as it stands inside the regular expressions of the tests: 0\.4\.14
+nq=$(echo "$new" | sed 's/\./\\\\./g')
+sed -i "s/^version=$o\$/version=$new/" srcpkgs/boxd/template
+sed -i "s/^VERSION=$o\\b/VERSION=$new/" server/boxd-pod
+sed -i "s/^export const VERSION = \"$o\";/export const VERSION = \"$new\";/" client/box.mts
+sed -i "s/$o/$new/g" tests/fixtures/dashboard/tower.report tests/fixtures/dashboard/fleet.json tests/dashboard-service.test.mts
+sed -i "s/\"$o\"/\"$new\"/g; s/$oq/$nq/g" tests/dashboard-web.test.mts
+sed -i "s/version=0\\\\\\\\\\.[0-9]*\\\\\\\\\\.[0-9]*/version=$(echo "$new" | sed 's/\./\\\\\\\\./g')/g" contract/cases.json
+"${TSC_RS:-$HOME/.local/share/pnpm/bin/tsc-rs}" -p client
+left=$(grep -rn --exclude-dir=.git --exclude-dir=.claude --exclude-dir=.synapse --exclude-dir=node_modules --exclude=CHANGELOG.md -F "$old" . | grep -v 'since '"$old" || true)
+[ -z "$left" ] || { echo "bump-version: $old is still written here (history is fine, a version that tests compare is not):"; echo "$left" | cut -c1-160; }
+echo "bump-version: $old -> $new"

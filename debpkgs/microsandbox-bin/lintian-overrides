@@ -1,0 +1,3 @@
+# msb is the prebuilt upstream binary, kept byte for byte. It finds libkrunfw beside its real path ($ORIGIN) on purpose:
+# both live in /usr/lib/microsandbox/<version>/, and /usr/bin/msb is a link to it.
+microsandbox-bin: relative-library-search-path *

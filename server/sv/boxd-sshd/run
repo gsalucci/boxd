@@ -1,0 +1,57 @@
+#!/bin/sh
+# The build account's sshd inside a capped cgroup that the account itself manages below the cap (rootless podman
+# puts each box in its own child cgroup with the box's limits). No sudo involved: root sets the caps here, the
+# account can only lower them for its own children. Settings: /etc/boxd/boxd.conf.
+# The build cgroup is BOXD_CGROUP (default /sys/fs/cgroup/boxd, made here under runit). Under systemd the unit
+# boxd-sshd.service runs this same file as /usr/libexec/boxd/sshd-run with BOXD_MANAGER=systemd and Delegate=yes: the
+# cgroup is then the unit's own, systemd made it, and the packaged boxd.conf names it (BOXD_CGROUP).
+exec 2>&1
+CONF=${BOXD_CONF:-/etc/boxd/boxd.conf}
+[ -r "$CONF" ] && . "$CONF"
+U=${BOXD_USER:-boxd}
+ROOT=${BOXD_CGROOT:-/sys/fs/cgroup}
+CG=${BOXD_CGROUP:-$ROOT/boxd}
+total_kb=$(awk '/^MemTotal:/ { print $2 }' "${BOXD_MEMINFO:-/proc/meminfo}")
+SWAP=${BOXD_SWAP_MAX:-$((total_kb * 25 / 100))K}
+# kB of a cgroup size ("max", bytes, or a K/M/G suffix as memory.max takes them); empty for "max".
+kb() { case $1 in max) ;; *[Kk]) echo "${1%?}" ;; *[Mm]) echo $((${1%?} * 1024)) ;; *[Gg]) echo $((${1%?} * 1048576)) ;; *) echo $(($1 / 1024)) ;; esac; }
+# Swap on zram is kept in RAM: what the group may swap there costs memory outside its cap (2026-11-15, the tower: a 28 GiB
+# cap plus 8 GiB swapped to zram, and the host ran out before the cap, so the kernel killed a machine box). It counts at half
+# its size (build memory compressed about 2.5 to 1 there), up to the size of the zram devices.
+# shortcut: a fixed 2 to 1 ratio, when a host compresses worse: read the ratio from /sys/block/zram*/mm_stat.
+zram_kb=$(awk '$1 ~ /^\/dev\/zram/ { s += $3 } END { print s + 0 }' "${BOXD_SWAPS:-/proc/swaps}" 2>/dev/null)
+swap_kb=$(kb "$SWAP"); [ -n "$swap_kb" ] && [ "$swap_kb" -lt "${zram_kb:-0}" ] || swap_kb=${zram_kb:-0}
+zram_ram_kb=$((swap_kb / 2))
+MEM=${BOXD_MEM_MAX:-$((total_kb * 85 / 100 - zram_ram_kb))K}
+[ "$(($(kb "$MEM") + zram_ram_kb))" -le $((total_kb * 90 / 100)) ] ||
+    echo "boxd-sshd: BOXD_MEM_MAX ($(kb "$MEM") kB) plus the zram swap the boxes may fill (about $zram_ram_kb kB of RAM) is over 90% of the host's $total_kb kB; the host can run out of memory before the cap, and the kernel then kills a box"
+if [ "${BOXD_MANAGER:-runit}" = systemd ]; then
+    # The unit's cgroup must be the one boxd-pod measures; a wrong BOXD_CGROUP would admit machines against the wrong cap.
+    # (the unit has DelegateSubgroup=sshd, so systemd has already put this process into the child cgroup "sshd")
+    case $(cat "${BOXD_PROC_CGROUP:-/proc/self/cgroup}") in "0::${CG#"$ROOT"}"|"0::${CG#"$ROOT"}/sshd") ;; *) false ;; esac ||
+        { echo "boxd-sshd: this service runs in $(cat "${BOXD_PROC_CGROUP:-/proc/self/cgroup}"), BOXD_CGROUP is $CG"; exit 1; }
+else
+    echo "+cpu +memory +pids" > $ROOT/cgroup.subtree_control
+    mkdir -p $CG
+fi
+mkdir -p $CG/sshd
+# Move into the child first: a cgroup that holds a process cannot hand controllers to its children (systemd put us in $CG).
+echo $$ > $CG/sshd/cgroup.procs
+echo "+cpu +memory +pids" > $CG/cgroup.subtree_control
+echo "$MEM" > $CG/memory.max
+# No memory.high: it makes a runaway job crawl instead of being killed at the cap.
+echo max > $CG/memory.high
+echo "$SWAP" > $CG/memory.swap.max 2>/dev/null || echo "boxd-sshd: $CG/memory.swap.max cannot be written (a kernel without swap support), the swap cap is skipped"
+chown "$U:$U" $CG $CG/cgroup.procs $CG/cgroup.subtree_control $CG/cgroup.threads
+chown "$U:$U" $CG/sshd $CG/sshd/cgroup.procs $CG/sshd/cgroup.threads
+# Once per boot, before any build session: microsandbox trusts a process id recorded before the reboot, so
+# its boxes are removed first; boxd-pod reap skips virtual machines until the marker exists. /run is memory.
+CLEAN=${BOXD_POD_CLEAN:-/run/boxd-pod.clean}
+[ -e "$CLEAN" ] || { runuser -l "$U" -c 'boxd-pod clear' && : > "$CLEAN"; }
+# MaxStartups: sshd's default drops connections past 10 that have not logged in yet, and a few sessions polling their
+# runs reach that (2026-11-15: "drop connection #10 ... MaxStartups", seen by clients as a connection reset).
+set -- -D -e -f /etc/boxd/sshd_config -o "Port=${BOXD_PORT:-2222}" -o "AllowUsers=$U" -o MaxStartups=100:30:200
+[ -z "${BOXD_TRUSTED_NET:-}" ] || set -- "$@" -o "PerSourcePenaltyExemptList=$BOXD_TRUSTED_NET"
+# Void keeps sshd in /usr/bin, Debian in /usr/sbin.
+SSHD=${BOXD_SSHD:-$(for f in /usr/bin/sshd /usr/sbin/sshd; do [ -x "$f" ] && { echo "$f"; break; }; done)}
+exec "${SSHD:-/usr/bin/sshd}" "$@"

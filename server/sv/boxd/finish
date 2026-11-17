@@ -1,0 +1,14 @@
+#!/bin/sh
+# Stop everything: the power module, the build sshd, then every box (detached runs get SIGTERM first, files stay).
+# Under systemd this same file is /usr/libexec/boxd/boxd-finish, run by boxd.service as ExecStop.
+exec 2>&1
+CONF=${BOXD_CONF:-/etc/boxd/boxd.conf}
+[ -r "$CONF" ] && . "$CONF"
+U=${BOXD_USER:-boxd}
+svc() { if [ "${BOXD_MANAGER:-runit}" = systemd ]; then systemctl "$@"; else sv "$@"; fi; }
+if [ -e "${SVDIR:-/var/service}/boxd-power" ] || { [ "${BOXD_MANAGER:-runit}" = systemd ] && systemctl cat boxd-power.service >/dev/null 2>&1; }; then
+    svc stop boxd-power || echo "boxd: boxd-power did not stop"
+fi
+svc stop boxd-sshd || echo "boxd: boxd-sshd did not stop"
+runuser -l "$U" -c 'boxd-pod clear' || echo "boxd: removing the boxes failed"
+echo "boxd: down"

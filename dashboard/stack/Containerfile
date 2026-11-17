@@ -1,0 +1,25 @@
+# The boxd dashboard as a container image (docs/designs/dashboard.md, "Workstream 4 as built").
+# Build context: the folder that holds this file, dashboard/*.mjs and dashboard/web/ (the bundle that make-bundle writes, or the repository root).
+# 26 is the current long-term-support line of node; the tag is exact, so a rebuild gives the same node.
+FROM node:26.13.1-alpine3.24
+
+# The ssh client program is all the service needs besides node (it has no node modules). Nothing else is installed.
+RUN apk add --no-cache openssh-client \
+ && addgroup -g 10001 boxd && adduser -D -H -u 10001 -G boxd -h /state -s /sbin/nologin boxd \
+ && mkdir -p /app /config /state /run/boxd && chown boxd:boxd /state
+
+COPY dashboard/boxd-dashboard.mjs dashboard/fleet.mjs /app/
+COPY dashboard/web /app/web
+
+USER 10001:10001
+WORKDIR /app
+EXPOSE 8377
+
+# The service answers /api/fleet.json with 503 until its first poll has finished, so "healthy" means it has data.
+# Node itself asks, on the loopback address (no curl in the image); the port is the one of dashboard.json.example.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --start-interval=2s --retries=3 \
+  CMD ["node", "-e", "fetch('http://127.0.0.1:8377/api/fleet.json',{signal:AbortSignal.timeout(4000)}).then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+
+# The service is the only process. This image has no tini: compose runs it with "init: true" (Docker's own init), so signals and
+# orphaned ssh children are handled.
+CMD ["node", "/app/boxd-dashboard.mjs", "/config/dashboard.json"]

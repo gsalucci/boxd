@@ -1,0 +1,104 @@
+#!/bin/sh
+# Build the Debian packages of a released version in a Debian 13 container, publish them to the owner's package registry
+# and prove that the published packages install. Run it on the workstation, from a checkout that has the tag v<version>.
+#   tools/release-deb <version>                 e.g. tools/release-deb 0.4.15
+#   tools/release-deb --no-publish <version>    build and check only; the registry is not touched
+# Environment: BOXD_DEB_ENGINE (container engine, default docker; podman works too), GITEA_TOKEN (a token with package
+# write; when unset it is taken from ~/.secrets, and it is never printed or written anywhere), GITEA_URL (address of the Gitea server, required with publishing) and GITEA_OWNER (account or organisation that owns the packages, required with publishing).
+# Everything lives in one temporary folder that is removed at the end, also on failure.
+set -eu
+
+publish=1
+[ "${1:-}" = --no-publish ] && { publish=0; shift; }
+v=${1:?usage: tools/release-deb [--no-publish] <version>}
+engine=${BOXD_DEB_ENGINE:-docker}
+cd "$(dirname "$0")/.."
+die() { echo "release-deb: $*" >&2; exit 1; }
+
+git rev-parse -q --verify "refs/tags/v$v^{commit}" >/dev/null || die "the tag v$v does not exist"
+command -v "$engine" >/dev/null || die "container engine $engine not found (BOXD_DEB_ENGINE)"
+if [ "$publish" = 1 ]; then
+	for var in GITEA_URL GITEA_OWNER; do
+		eval "[ -n \"\${$var:-}\" ]" || { echo "release-deb: set $var (see the header of tools/release-deb)" >&2; exit 2; }
+	done
+fi
+if [ "$publish" = 1 ] && [ -z "${GITEA_TOKEN:-}" ]; then
+	[ -r "$HOME/.secrets" ] || die "GITEA_TOKEN is unset and ~/.secrets is not readable"
+	# shellcheck disable=SC1091
+	. "$HOME/.secrets"
+	export GITEA_TOKEN
+	# shellcheck disable=SC2088
+	[ -n "${GITEA_TOKEN:-}" ] || die "~/.secrets does not set GITEA_TOKEN"
+fi
+
+t=$(mktemp -d)
+trap 'rm -rf "$t"' EXIT INT TERM
+mkdir "$t/out" "$t/src"
+git archive --prefix="boxd-$v/" -o "$t/boxd-$v.tar.gz" "v$v" || die "git archive of v$v failed"
+tar -xzf "$t/boxd-$v.tar.gz" -C "$t/src"
+epoch=$(git log -1 --format=%ct "v$v")
+want_pod=$(git show "v$v:server/boxd-pod" | sha256sum | cut -d' ' -f1)
+
+cat > "$t/inner.sh" <<'INNER'
+set -e
+apt-get update -qq >/dev/null
+apt-get install -y -qq curl ca-certificates >/dev/null 2>&1
+tar -xzf "/s/boxd-$V.tar.gz" -C /tmp
+cd "/tmp/boxd-$V"
+SOURCE_DATE_EPOCH=$EPOCH BOXD_DEB_OUT=/out tools/build-deb >&2
+cd /out
+for f in *.deb; do
+	echo "deb $(dpkg-deb -f "$f" Package) $(dpkg-deb -f "$f" Version) $(sha256sum "$f" | cut -d' ' -f1)"
+done
+echo "pod $(dpkg-deb --fsys-tarfile "boxd-server_$V-1_all.deb" | tar -xO ./usr/bin/boxd-pod | sha256sum | cut -d' ' -f1)"
+INNER
+
+cat > "$t/proof.sh" <<'PROOF'
+set -e
+b=$URL/api/packages/$OWNER/debian
+apt-get update -qq >/dev/null
+apt-get install -y -qq curl ca-certificates >/dev/null 2>&1
+mkdir -p /etc/apt/keyrings
+curl -fsSL "$b/repository.key" -o /etc/apt/keyrings/gitea.asc
+echo "deb [signed-by=/etc/apt/keyrings/gitea.asc] $b trixie main" > /etc/apt/sources.list.d/boxd.list
+apt-get update -qq >/dev/null
+cd /tmp
+apt-get download -qq "boxd=$V-1" "boxd-client=$V-1" "boxd-server=$V-1" >&2
+for f in *.deb; do
+	echo "deb $(dpkg-deb -f "$f" Package) $(dpkg-deb -f "$f" Version) $(sha256sum "$f" | cut -d' ' -f1)"
+done
+apt-get install -y -qq "boxd-server=$V-1" >&2   # the version asked, not the newest in the registry (seen proving 0.4.14 after 0.4.15)
+echo "server $(dpkg-query -W -f='${Version}' boxd-server)"
+echo "podversion $(grep -m1 '^VERSION=' /usr/bin/boxd-pod)"
+PROOF
+
+echo "release-deb: building $v in debian:13"
+"$engine" run --rm -e "V=$v" -e "EPOCH=$epoch" -v "$t:/s:ro" -v "$t/out:/out" debian:13 sh /s/inner.sh > "$t/built.txt" ||
+	die "the build in the container failed"
+for p in boxd boxd-client boxd-server; do
+	grep -qx "deb $p $v-1 [0-9a-f]\{64\}" "$t/built.txt" || die "package $p $v-1 was not built"
+done
+[ "$(sed -n 's/^pod //p' "$t/built.txt")" = "$want_pod" ] ||
+	die "/usr/bin/boxd-pod in the server package differs from server/boxd-pod at v$v"
+echo "release-deb: built; boxd-pod in the package matches the tag"
+
+if [ "$publish" = 0 ]; then
+	echo "release-deb: --no-publish, stopping before the registry"
+	sed -n 's/^deb //p' "$t/built.txt"
+	exit 0
+fi
+
+# The tag's own tree publishes.
+sh "$t/src/boxd-$v/tools/publish-deb" "$t/out/boxd_$v-1_all.deb" "$t/out/boxd-client_$v-1_all.deb" "$t/out/boxd-server_$v-1_all.deb" ||
+	die "publishing failed"
+
+echo "release-deb: proving the registry in a fresh debian:13"
+"$engine" run --rm -e "V=$v" -e "OWNER=$GITEA_OWNER" -e "URL=$GITEA_URL" -v "$t:/s:ro" debian:13 sh /s/proof.sh > "$t/proved.txt" ||
+	die "the install proof in the container failed"
+grep -E '^deb (boxd|boxd-client|boxd-server) ' "$t/built.txt" | sort > "$t/a"
+grep '^deb ' "$t/proved.txt" | sort > "$t/b"
+cmp -s "$t/a" "$t/b" || die "the published packages differ from the built ones (checksums or versions)"
+[ "$(sed -n 's/^server //p' "$t/proved.txt")" = "$v-1" ] || die "boxd-server did not install at $v-1"
+[ "$(sed -n 's/^podversion //p' "$t/proved.txt")" = "VERSION=$v" ] || die "/usr/bin/boxd-pod does not carry VERSION=$v"
+echo "release-deb: boxd $v published and proven"
+awk '{ printf "  %-14s %s  %s\n", $2, $3, $4 }' "$t/a"

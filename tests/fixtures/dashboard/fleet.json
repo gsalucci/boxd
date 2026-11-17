@@ -1,0 +1,543 @@
+{
+ "schema": 1,
+ "generatedAt": 1794571200000,
+ "version": "0.4.19",
+ "hosts": [
+  {
+   "id": "tower",
+   "state": "awake",
+   "detail": "",
+   "sleeps": true,
+   "addr": "192.0.2.72",
+   "version": "0.4.19",
+   "report": true,
+   "seenAt": 1794571198000,
+   "sinceAt": 1794559800000,
+   "stale": false,
+   "powerModule": true,
+   "threads": 16,
+   "ramGiB": 31.24,
+   "bootAt": 1794218400000,
+   "load": [
+    17.42,
+    9.1,
+    6.85
+   ],
+   "loadHist": [
+    9.2,
+    16.8,
+    17.1,
+    17.42
+   ],
+   "memAvailGiB": 8.91,
+   "buildMemMaxGiB": 26.55,
+   "buildMemUsedGiB": 18.75,
+   "buildMemFreeGiB": 7.8,
+   "boxMemGiB": 12,
+   "vmMemGiB": 8,
+   "swap": {
+    "usedGiB": 1.2,
+    "totalGiB": 8
+   },
+   "pressure": {
+    "some10": 2.31,
+    "some60": 1.12,
+    "full10": 0.4,
+    "full60": 0.18
+   },
+   "memKills": 1,
+   "lastKillAt": 1794561600000,
+   "vmInstalled": true,
+   "vmUsed": 2,
+   "slotsMax": null,
+   "vmRoom": false,
+   "disk": {
+    "pct": 71,
+    "totalGiB": 953.87,
+    "usedGiB": 677.25,
+    "thresholdPct": 85
+   },
+   "ttlSec": 1800,
+   "idle": {
+    "timeoutSec": 1200,
+    "quietSec": 0,
+    "busy": "load"
+   },
+   "keepawake": true
+  },
+  {
+   "id": "laptop",
+   "state": "awake",
+   "detail": "server 0.2.0: status and box list only",
+   "sleeps": false,
+   "addr": "192.0.2.34",
+   "version": "0.2.0",
+   "report": false,
+   "seenAt": 1794571197000,
+   "sinceAt": 1793793600000,
+   "stale": false,
+   "powerModule": null,
+   "threads": 16,
+   "ramGiB": null,
+   "bootAt": null,
+   "load": [
+    0.92,
+    null,
+    null
+   ],
+   "loadHist": [
+    1.2,
+    0.92
+   ],
+   "memAvailGiB": null,
+   "buildMemMaxGiB": null,
+   "buildMemUsedGiB": null,
+   "buildMemFreeGiB": 11.52,
+   "boxMemGiB": null,
+   "vmMemGiB": null,
+   "swap": null,
+   "pressure": null,
+   "memKills": null,
+   "lastKillAt": null,
+   "vmInstalled": true,
+   "vmUsed": 0,
+   "slotsMax": null,
+   "vmRoom": true,
+   "disk": {
+    "pct": 31,
+    "totalGiB": null,
+    "usedGiB": null,
+    "thresholdPct": null
+   },
+   "ttlSec": null,
+   "idle": null,
+   "keepawake": null
+  },
+  {
+   "id": "homeserver",
+   "state": "unreachable",
+   "detail": "no answer",
+   "sleeps": false,
+   "addr": "192.0.2.50",
+   "version": null,
+   "report": false,
+   "seenAt": null,
+   "sinceAt": 1794570600000,
+   "stale": true,
+   "powerModule": null,
+   "threads": null,
+   "ramGiB": null,
+   "bootAt": null,
+   "load": null,
+   "loadHist": [],
+   "memAvailGiB": null,
+   "buildMemMaxGiB": null,
+   "buildMemUsedGiB": null,
+   "buildMemFreeGiB": null,
+   "boxMemGiB": null,
+   "vmMemGiB": null,
+   "swap": null,
+   "pressure": null,
+   "memKills": null,
+   "lastKillAt": null,
+   "vmInstalled": false,
+   "vmUsed": null,
+   "slotsMax": null,
+   "vmRoom": null,
+   "disk": null,
+   "ttlSec": null,
+   "idle": null,
+   "keepawake": null
+  }
+ ],
+ "boxes": [
+  {
+   "name": "boxd-2889387319",
+   "host": "tower",
+   "engine": "vm",
+   "image": "ghcr.io/void-linux/void-glibc:latest",
+   "state": "running",
+   "userFlag": null,
+   "size": "large",
+   "lastUsedAt": 1794571186000,
+   "ttlAt": 1794572986000,
+   "memGiB": 6,
+   "memLimitGiB": 8,
+   "busy": true,
+   "lastExit": 0,
+   "runs": []
+  },
+  {
+   "name": "harbor-admin-3340981172",
+   "host": "tower",
+   "engine": "vm",
+   "image": "docker.io/library/rust:1.83",
+   "state": "running",
+   "userFlag": null,
+   "size": "medium",
+   "lastUsedAt": 1794570986000,
+   "ttlAt": 1794572786000,
+   "memGiB": 3.1,
+   "memLimitGiB": 4,
+   "busy": false,
+   "lastExit": null,
+   "runs": [
+    {
+     "id": "20261113-110800-9f3c",
+     "state": "detached",
+     "exit": null,
+     "startedAt": 1794568080000,
+     "cmd": "cargo test --release -p oracle",
+     "logBytes": 48211,
+     "changedAt": 1794571190000
+    }
+   ]
+  },
+  {
+   "name": "toolsite-1923847561",
+   "host": "tower",
+   "engine": "container",
+   "image": "localhost/toolbox:latest",
+   "state": "stopped",
+   "userFlag": false,
+   "size": null,
+   "lastUsedAt": 1794570180000,
+   "ttlAt": 1794571980000,
+   "memGiB": null,
+   "memLimitGiB": 12,
+   "busy": false,
+   "lastExit": null,
+   "runs": [
+    {
+     "id": "20261113-114300-77aa",
+     "state": "exited",
+     "exit": 0,
+     "startedAt": 1794570180000,
+     "cmd": "pnpm test",
+     "logBytes": 912,
+     "changedAt": 1794570194000
+    }
+   ]
+  },
+  {
+   "name": "webshop-608299631",
+   "host": "tower",
+   "engine": "container",
+   "image": "docker.io/library/debian:stable-slim",
+   "state": "running",
+   "userFlag": true,
+   "size": null,
+   "lastUsedAt": 1794571061000,
+   "ttlAt": 1794572861000,
+   "memGiB": 1.9,
+   "memLimitGiB": 12,
+   "busy": false,
+   "lastExit": 1,
+   "runs": [
+    {
+     "id": "20261113-095000-ab12",
+     "state": "detached",
+     "exit": null,
+     "startedAt": 1794563400000,
+     "cmd": "pnpm dev --host",
+     "logBytes": 5321,
+     "changedAt": 1794569000000
+    }
+   ]
+  },
+  {
+   "name": "void-server-871234905",
+   "host": "laptop",
+   "engine": "container",
+   "image": "localhost/toolbox:latest",
+   "state": "stopped",
+   "userFlag": null,
+   "size": null,
+   "lastUsedAt": 1794570680000,
+   "ttlAt": null,
+   "memGiB": null,
+   "memLimitGiB": null,
+   "busy": null,
+   "lastExit": null,
+   "runs": []
+  }
+ ],
+ "calls": [
+  {
+   "at": 1794571186000,
+   "host": "tower",
+   "box": "boxd-2889387319",
+   "engine": "vm",
+   "cmd": "cargo check -p api",
+   "dur": 4210,
+   "lock": 0,
+   "exit": 0,
+   "reason": null,
+   "run": null
+  },
+  {
+   "at": 1794571061000,
+   "host": "tower",
+   "box": "webshop-608299631",
+   "engine": "container",
+   "cmd": "pnpm test auth",
+   "dur": 9450,
+   "lock": 0,
+   "exit": 1,
+   "reason": null,
+   "run": null
+  },
+  {
+   "at": 1794570680000,
+   "host": "tower",
+   "box": "boxd-2889387319",
+   "engine": "vm",
+   "cmd": "cargo clippy --workspace",
+   "dur": 30004,
+   "lock": 30000,
+   "exit": 0,
+   "reason": null,
+   "run": null
+  },
+  {
+   "at": 1794570180000,
+   "host": "tower",
+   "box": "toolsite-1923847561",
+   "engine": "container",
+   "cmd": "pnpm test",
+   "dur": 12,
+   "lock": 0,
+   "exit": null,
+   "reason": null,
+   "run": "20261113-114300-77aa"
+  },
+  {
+   "at": 1794570000000,
+   "host": "tower",
+   "box": "agent-accept-1",
+   "engine": "container",
+   "cmd": null,
+   "dur": 3,
+   "lock": 0,
+   "exit": 125,
+   "reason": "image not allowed",
+   "run": null
+  },
+  {
+   "at": 1794569500000,
+   "host": "tower",
+   "box": "image",
+   "engine": "container",
+   "cmd": null,
+   "dur": 2100,
+   "lock": 0,
+   "exit": 0,
+   "reason": null,
+   "run": null
+  },
+  {
+   "at": 1794568080000,
+   "host": "tower",
+   "box": "harbor-admin-3340981172",
+   "engine": "vm",
+   "cmd": "cargo test --release -p oracle",
+   "dur": 2210,
+   "lock": 0,
+   "exit": null,
+   "reason": null,
+   "run": "20261113-110800-9f3c"
+  },
+  {
+   "at": 1794566400000,
+   "host": "tower",
+   "box": "acme-wave19-4007723605",
+   "engine": "vm",
+   "cmd": "pnpm playwright install",
+   "dur": 9,
+   "lock": 0,
+   "exit": 75,
+   "reason": "no room for another virtual machine (24100 MB in use + 8192 MB asked > 27188 MB cap); wait for one to end or stop one",
+   "run": null
+  },
+  {
+   "at": 1794565800000,
+   "host": "tower",
+   "box": "acme-wave19-4007723605",
+   "engine": "vm",
+   "cmd": "pnpm playwright install",
+   "dur": 11,
+   "lock": 0,
+   "exit": 75,
+   "reason": "no room for another virtual machine (24100 MB in use + 8192 MB asked > 27188 MB cap); wait for one to end or stop one",
+   "run": null
+  },
+  {
+   "at": 1794563400000,
+   "host": "tower",
+   "box": "webshop-608299631",
+   "engine": "container",
+   "cmd": "pnpm dev --host",
+   "dur": 25,
+   "lock": 0,
+   "exit": null,
+   "reason": null,
+   "run": "20261113-095000-ab12"
+  },
+  {
+   "at": 1794560000000,
+   "host": "tower",
+   "box": "boxd-2889387319",
+   "engine": "vm",
+   "cmd": null,
+   "dur": 73100,
+   "lock": 0,
+   "exit": 101,
+   "reason": null,
+   "run": null
+  }
+ ],
+ "callsCut": false,
+ "images": [
+  {
+   "host": "tower",
+   "name": "toolbox",
+   "tag": "localhost/toolbox:latest",
+   "archive": "toolbox.tar",
+   "sizeGiB": 3.42,
+   "builtAt": 1794535440000,
+   "usedBy": 1
+  },
+  {
+   "host": "laptop",
+   "name": "toolbox",
+   "tag": "localhost/toolbox:latest",
+   "archive": "toolbox.tar",
+   "sizeGiB": null,
+   "builtAt": null,
+   "usedBy": 1
+  }
+ ],
+ "services": [
+  {
+   "host": "tower",
+   "name": "boxd",
+   "version": "0.4.19",
+   "status": "active"
+  },
+  {
+   "host": "tower",
+   "name": "boxd-sshd",
+   "version": "0.4.19",
+   "status": "active"
+  },
+  {
+   "host": "tower",
+   "name": "boxd-power",
+   "version": "0.4.19",
+   "status": "active"
+  },
+  {
+   "host": "laptop",
+   "name": "boxd",
+   "version": "0.2.0",
+   "status": "active"
+  },
+  {
+   "host": "laptop",
+   "name": "boxd-sshd",
+   "version": "0.2.0",
+   "status": "active"
+  },
+  {
+   "host": "laptop",
+   "name": "boxd-power",
+   "version": "0.2.0",
+   "status": "unknown"
+  },
+  {
+   "host": "homeserver",
+   "name": "boxd",
+   "version": null,
+   "status": "unknown"
+  },
+  {
+   "host": "homeserver",
+   "name": "boxd-sshd",
+   "version": null,
+   "status": "unknown"
+  },
+  {
+   "host": "homeserver",
+   "name": "boxd-power",
+   "version": null,
+   "status": "unknown"
+  }
+ ],
+ "alerts": [
+  {
+   "id": "unreachable|homeserver||",
+   "kind": "unreachable",
+   "severity": "danger",
+   "host": "homeserver",
+   "box": null,
+   "sinceAt": 1794570600000,
+   "lastAt": 1794571200000,
+   "count": 1,
+   "title": "homeserver does not answer",
+   "detail": "no answer",
+   "action": "Check that the host is on and that boxctl status shows boxd up."
+  },
+  {
+   "id": "load|tower||",
+   "kind": "load",
+   "severity": "warning",
+   "host": "tower",
+   "box": null,
+   "sinceAt": 1794571080000,
+   "lastAt": 1794571198000,
+   "count": 1,
+   "title": "Load on tower is above its 16 threads",
+   "detail": "Load 17.42: calls wait for a processor.",
+   "action": "Nothing to do unless it lasts; then move a worktree to another host with box --host."
+  },
+  {
+   "id": "lock-wait|tower|boxd-2889387319|",
+   "kind": "lock-wait",
+   "severity": "warning",
+   "host": "tower",
+   "box": "boxd-2889387319",
+   "sinceAt": 1794570680000,
+   "lastAt": 1794570680000,
+   "count": 1,
+   "title": "Calls of box boxd-2889387319 waited for its lock on tower",
+   "detail": "Longest wait 30000 ms. One call at a time uses a box.",
+   "action": "Look for a long call of the same worktree with box ps."
+  },
+  {
+   "id": "refused|tower|acme-wave19-4007723605|",
+   "kind": "refused",
+   "severity": "warning",
+   "host": "tower",
+   "box": "acme-wave19-4007723605",
+   "sinceAt": 1794565800000,
+   "lastAt": 1794566400000,
+   "count": 2,
+   "title": "2 calls of box acme-wave19-4007723605 refused on tower",
+   "detail": "no room for another virtual machine (24100 MB in use + 8192 MB asked > 27188 MB cap); wait for one to end or stop one",
+   "action": "Wait for a virtual machine to end, stop one, or place the worktree on another host with box --host."
+  },
+  {
+   "id": "memory-kill|tower||",
+   "kind": "memory-kill",
+   "severity": "danger",
+   "host": "tower",
+   "box": null,
+   "sinceAt": 1794561600000,
+   "lastAt": 1794561600000,
+   "count": 1,
+   "title": "Memory kills in the build group of tower",
+   "detail": "The kernel ended processes because the build group reached its memory cap.",
+   "action": "Find the box that fills its memory in the boxes view; use a smaller machine size or fewer builds at once."
+  }
+ ]
+}

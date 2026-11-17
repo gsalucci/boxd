@@ -1,0 +1,211 @@
+#!/bin/sh
+# boxd-setup [--key <public key file>] [--images] | --view-key <public key file>: sets up the host for boxd. Run as root after installing the
+# packages, again after changing BOXD_USER, BOXD_WORK, BOXD_TRUSTED_NET or BOXD_POWER. Safe to run again.
+# The package installs files; this command does the machine state:
+#   build account, its ssh key, the @work and @cache subvolumes, fstab lines, podman settings (work-setup)
+#   the main sshd refuses the build account and exempts BOXD_TRUSTED_NET from connection penalties
+#   virtual machine boxes: installs microsandbox-bin and adds the account to group kvm, when the host has /dev/kvm and
+#       processor virtualization; otherwise the host runs containers only
+#   --kvm container boxes: an access rule on /dev/kvm for the build account (setfacl, kept by a udev rule), same condition
+#   compressed swap in memory (zramen on Void, zram-tools on Debian), when installed
+#   enables the runit services boxd, boxd-sshd and boxd-power (when installed); only boxd starts by itself, at boot and
+#       right away: the other two carry a `down` file and are started by boxd. On a systemd host (Debian) it enables the
+#       unit boxd.service for boot and does not start it (set BOXD_PORT first, then boxctl start); no power module there yet
+#   --images  also builds the toolbox image and archives it (long, needs network); run it again after changing the image
+# The key: --key <file>, or BOXD_BUILD_KEY (the key itself). Needed on the first run, then kept.
+# --view-key <file>: a key that may only read (the dashboard's). On its own it does only this, after the first full run: adds the
+#   key to /etc/boxd/view_keys and to the build account's allowed keys, and sets ExposeAuthInfo in /etc/boxd/sshd_config, which the
+#   build sshd needs to tell boxd-pod which key logged in (that file is kept on upgrade). Then boxctl reload. Every full run also
+#   puts the listed keys back into the allowed keys, which a new --key replaces. See docs/pod-contract.md, "Keys that may only read".
+# --add-key <file> [--from <addresses>]: a further key with full run rights (another client machine), listed in /etc/boxd/run_keys and
+#   allowed for the build account; with --from only from those addresses (sshd's from="..." limit: numbers, commas, slashes). Adding a
+#   listed key again replaces its limit. --remove-key <file> takes an added key out again; the first key (--key) is never removed here.
+# Settings: /etc/boxd/boxd.conf. `boxctl start` brings boxd up when it is down.
+set -eu
+CONF=${BOXD_CONF:-/etc/boxd/boxd.conf}
+[ -r "$CONF" ] && . "$CONF"
+U=${BOXD_USER:-boxd}
+WORK=${BOXD_WORK:-/var/lib/boxd/work}
+LIBEXEC=${BOXD_LIBEXEC:-/usr/libexec/boxd}
+SVDIR_=${SVDIR:-/var/service}
+MANAGER=${BOXD_MANAGER:-$([ -d /run/systemd/system ] && echo systemd || echo runit)}
+images= viewkey= addkey= rmkey= from=
+ETC=${BOXD_ETC:-/etc/boxd}
+VIEW=${BOXD_VIEW_KEYS:-$ETC/view_keys}
+RUNKEYS=${BOXD_RUN_KEYS:-$ETC/run_keys}
+# keyline <option> <file>: the file's first line when it is a key line only (no options in front of it: they would be allowed-key options).
+keyline() {
+    [ -n "${2:-}" ] || { echo "boxd-setup: $1 needs a file" >&2; exit 2; }
+    kl=$(head -n 1 "$2")
+    case $kl in
+        ssh-*" "*|ecdsa-*" "*|sk-*" "*) ;;
+        *) echo "boxd-setup: $1 needs a file whose first line is a public key (ssh-ed25519 AAAA... comment)" >&2; exit 2 ;;
+    esac
+}
+AUTH=${BOXD_AUTH_DIR:-/etc/ssh/authorized_keys}/$U
+while [ $# -gt 0 ]; do
+    case $1 in
+        --key) [ $# -ge 2 ] || { echo "boxd-setup: --key needs a file" >&2; exit 2; }
+               BOXD_BUILD_KEY=$(cat "$2"); export BOXD_BUILD_KEY; shift 2 ;;
+        --images) images=1; shift ;;
+        --view-key) [ $# -ge 2 ] || { echo "boxd-setup: --view-key needs a file" >&2; exit 2; }
+               viewkey=$(head -n 1 "$2"); shift 2
+               case $viewkey in   # a key line only: no options in front of it (they would be allowed-key options)
+                   ssh-*" "*|ecdsa-*" "*|sk-*" "*) ;;
+                   *) echo "boxd-setup: --view-key needs a file whose first line is a public key (ssh-ed25519 AAAA... comment)" >&2; exit 2 ;;
+               esac ;;
+        --add-key) keyline "$1" "${2:-}"; addkey=$kl; shift 2 ;;
+        --remove-key) keyline "$1" "${2:-}"; rmkey=$kl; shift 2 ;;
+        --from) case ${2:-} in ''|*[!0-9.,/]*) echo "boxd-setup: --from needs addresses (numbers, dots, commas, slashes)" >&2; exit 2 ;; esac
+               from=$2; shift 2 ;;
+        *) echo "usage: boxd-setup [--key <public key file>] [--images] | --view-key <public key file> | --add-key <public key file> [--from <addresses>] | --remove-key <public key file>" >&2; exit 2 ;;
+    esac
+done
+[ "$(id -u)" = 0 ] || { echo "boxd-setup: run as root" >&2; exit 2; }
+say() { echo "boxd-setup: $*"; }
+
+# Every key of $VIEW is among the allowed keys of the build account, and the sshd says which key logged in.
+view_keys() {
+    [ -f "$VIEW" ] || return 0
+    chmod 644 "$VIEW"   # the build account must be able to read it: boxd-pod refuses everything when it cannot
+    while read -r t k c; do
+        case $t in ''|'#'*) continue ;; esac
+        awk -v t="$t" -v k="$k" '$1 == t && $2 == k { f = 1 } END { exit !f }' "$AUTH" 2>/dev/null || printf '%s\n' "$t $k${c:+ $c}" >> "$AUTH"
+    done < "$VIEW"
+    grep -q '^[[:space:]]*[^#[:space:]]' "$VIEW" || return 0
+    grep -qs '^ExposeAuthInfo[[:space:]]\{1,\}yes' "$ETC/sshd_config" || printf 'ExposeAuthInfo yes\n' >> "$ETC/sshd_config"
+}
+# has <file> <type> <key>: the file has a line for that key (with or without options in front).
+has() { awk -v t="$2" -v k="$3" '{ for (i = 1; i < NF; i++) if ($i == t && $(i + 1) == k) f = 1 } END { exit !f }' "$1" 2>/dev/null; }
+# without <file> <type> <key>: the file without the lines of that key (same file, same mode).
+without() { awk -v t="$2" -v k="$3" '{ f = 0; for (i = 1; i < NF; i++) if ($i == t && $(i + 1) == k) f = 1 } !f' "$1" > "$1.new" && cat "$1.new" > "$1" && rm -f "$1.new"; }
+# Every key of $RUNKEYS is among the allowed keys exactly as listed (a new --key replaced them; a limit may have changed).
+run_keys() {
+    [ -f "$RUNKEYS" ] || return 0
+    while IFS= read -r line; do
+        case $line in ''|'#'*) continue ;; esac
+        set -- ${line#from=* }
+        without "$AUTH" "$1" "$2"; printf '%s\n' "$line" >> "$AUTH"
+    done < "$RUNKEYS"
+}
+if [ -n "$addkey$rmkey" ]; then
+    [ -f "$AUTH" ] || { echo "boxd-setup: no allowed keys file $AUTH yet: run boxd-setup --key <file> first" >&2; exit 1; }
+    [ -f "$RUNKEYS" ] || { mkdir -p "$(dirname "$RUNKEYS")"; : > "$RUNKEYS"; }
+    set -- ${addkey:-$rmkey}; t=$1 k=$2
+    if [ -n "$rmkey" ]; then
+        has "$RUNKEYS" "$t" "$k" || { echo "boxd-setup: that key was not added with --add-key; nothing removed" >&2; exit 1; }
+        without "$RUNKEYS" "$t" "$k"; without "$AUTH" "$t" "$k"
+        say "key removed from $RUNKEYS and from the allowed keys of $U"
+        exit 0
+    fi
+    if ! has "$RUNKEYS" "$t" "$k"; then
+        ! has "$AUTH" "$t" "$k" || { echo "boxd-setup: that key is already allowed for $U (the first key or a key that may only read)" >&2; exit 1; }
+    fi
+    without "$RUNKEYS" "$t" "$k"; printf '%s\n' "${from:+from=\"$from\" }$addkey" >> "$RUNKEYS"
+    run_keys
+    say "key listed in $RUNKEYS and allowed for $U${from:+, only from $from}"
+    exit 0
+fi
+if [ -n "$viewkey" ]; then
+    [ -f "$AUTH" ] || { echo "boxd-setup: no allowed keys file $AUTH yet: run boxd-setup --key <file> first" >&2; exit 1; }
+    [ -f "$VIEW" ] || { mkdir -p "$(dirname "$VIEW")"; : > "$VIEW"; }
+    awk -v t="${viewkey%% *}" -v k="$(echo "$viewkey" | cut -d' ' -f2)" '$1 == t && $2 == k { f = 1 } END { exit !f }' "$VIEW" || printf '%s\n' "$viewkey" >> "$VIEW"
+    view_keys
+    say "view key listed in $VIEW and allowed for $U; run boxctl reload for the build sshd to read ExposeAuthInfo"
+    exit 0
+fi
+
+sh "$LIBEXEC/work-setup"
+view_keys
+run_keys
+
+# Main sshd: the build account may not log in where nothing caps it, and the trusted network is exempt from the
+# connection penalties of OpenSSH 9.8+ (clients probe the port before every ssh and would get blocked).
+{
+    echo "# Written by boxd-setup from /etc/boxd/boxd.conf."
+    echo "DenyUsers $U"
+    [ -z "${BOXD_TRUSTED_NET:-}" ] || echo "PerSourcePenaltyExemptList $BOXD_TRUSTED_NET"
+} > /etc/ssh/sshd_config.d/20-boxd.conf
+chmod 644 /etc/ssh/sshd_config.d/20-boxd.conf
+
+if [ -e /dev/kvm ] && grep -qE '^flags.*\b(vmx|svm)\b' /proc/cpuinfo; then
+    if command -v xbps-install >/dev/null 2>&1; then
+        xbps-query microsandbox-bin >/dev/null 2>&1 || xbps-install -Sy microsandbox-bin >/dev/null
+    elif command -v apt-get >/dev/null 2>&1; then
+        # Needs the package in an apt source (docs/packaging-debian.md); without it the host runs containers only.
+        dpkg -s microsandbox-bin >/dev/null 2>&1 || apt-get install -y microsandbox-bin >/dev/null ||
+            say "microsandbox-bin is not available from apt: install it (docs/packaging-debian.md) and run boxd-setup again"
+    fi
+    if command -v msb >/dev/null 2>&1; then
+        usermod -aG kvm "$U"
+        install -d -m0755 -o "$U" -g "$U" "$WORK/cache/msb"
+        say "virtual machine boxes: available"
+    else
+        say "virtual machine boxes: not available here (microsandbox-bin is not installed), containers only"
+    fi
+    # --kvm container boxes: rootless runc drops the kvm group inside a box but keeps the user id, so the build account gets
+    # its own access rule on the device; the device stays 0660 root:kvm. udev puts the rule back whenever /dev/kvm appears.
+    if command -v xbps-install >/dev/null 2>&1; then
+        xbps-query acl-progs >/dev/null 2>&1 || xbps-install -Sy acl-progs >/dev/null || true
+    elif command -v apt-get >/dev/null 2>&1; then
+        dpkg -s acl >/dev/null 2>&1 || apt-get install -y acl >/dev/null || true
+    fi
+    if command -v setfacl >/dev/null 2>&1; then
+        printf 'KERNEL=="kvm", RUN+="%s -m u:%s:rw /dev/kvm"\n' "$(command -v setfacl)" "$U" > /etc/udev/rules.d/70-boxd-kvm.rules
+        setfacl -m "u:$U:rw" /dev/kvm
+        say "--kvm container boxes: available"
+    else
+        say "--kvm container boxes: not available here (setfacl is missing: acl-progs on Void, acl on Debian did not install)"
+    fi
+else
+    say "virtual machine boxes: not available here (no /dev/kvm or no processor virtualization), containers only"
+fi
+
+if [ "$MANAGER" = systemd ]; then
+    # zram-tools (Debian) reads PERCENT and ALGO from /etc/default/zramswap; only a changed file restarts it.
+    if [ -f /etc/default/zramswap ]; then
+        want='PERCENT=50
+ALGO=zstd'
+        if [ "$(cat /etc/default/zramswap)" != "$want" ]; then
+            printf '%s\n' "$want" > /etc/default/zramswap
+            systemctl restart zramswap >/dev/null 2>&1 || true
+        fi
+    else
+        say "compressed swap: zram-tools is not installed, skipped"
+    fi
+# zramen reads ZRAM_SIZE as a percentage of memory, and only exported variables reach it.
+elif [ -d /etc/sv/zramen ]; then
+    want='export ZRAM_SIZE=50
+export ZRAM_COMP_ALGORITHM=zstd'
+    [ -e "$SVDIR_/zramen" ] || ln -s /etc/sv/zramen "$SVDIR_/"
+    # Only a changed file needs a new device: a restart swaps out and in again, which a rerun on a busy host must not do.
+    if [ "$(cat /etc/sv/zramen/conf 2>/dev/null)" != "$want" ]; then
+        printf '%s\n' "$want" > /etc/sv/zramen/conf
+        sv restart zramen >/dev/null 2>&1 || true
+    fi
+else
+    say "compressed swap: zramen is not installed, skipped"
+fi
+
+if [ "$MANAGER" = systemd ]; then
+    # Only boxd is enabled (it starts at boot); boxd-sshd has no [Install] section and boxd starts it. Not started
+    # here: the owner sets BOXD_PORT first when the default port is taken, then runs `boxctl start`.
+    systemctl daemon-reload
+    systemctl enable boxd.service >/dev/null 2>&1
+    [ "${BOXD_POWER:-off}" != on ] || say "BOXD_POWER=on is not supported on systemd hosts (the power module has no unit yet)"
+    systemctl reload ssh >/dev/null 2>&1 || true   # picks up the DenyUsers line on the admin port
+else
+    for s in boxd boxd-sshd boxd-power; do
+        [ -d "/etc/sv/$s" ] || continue
+        [ -e "$SVDIR_/$s" ] || ln -s "/etc/sv/$s" "$SVDIR_/"
+    done
+    [ "${BOXD_POWER:-off}" != on ] || [ -d /etc/sv/boxd-power ] || say "BOXD_POWER=on but the boxd-power package is not installed"
+    sv reload sshd >/dev/null 2>&1 || true   # picks up the DenyUsers line on the admin port
+fi
+
+if [ -n "$images" ]; then sh "$LIBEXEC/images-build"; else say "no image built; run boxd-setup --images to build and archive the toolbox image"; fi
+if [ "$MANAGER" = systemd ]; then
+    say "done; boxd is enabled for boot (boxctl status shows it, boxctl start starts it now; BOXD_PORT is ${BOXD_PORT:-2222}, check nothing else listens there)"
+else
+    say "done; boxd is enabled (boxctl status shows it, boxctl start starts it when it is down)"
+fi

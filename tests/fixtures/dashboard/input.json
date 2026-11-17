@@ -1,0 +1,77 @@
+{
+ "now": 1794571200000,
+ "hosts": [
+  {
+   "name": "tower",
+   "sleeps": true,
+   "addr": "192.0.2.72",
+   "state": "awake",
+   "detail": "",
+   "seenAt": 1794571198000,
+   "sinceAt": 1794559800000,
+   "report": "tower.report",
+   "calls": "tower.calls",
+   "load": [
+    [
+     1794563700000,
+     3.1
+    ],
+    [
+     1794567600000,
+     9.2
+    ],
+    [
+     1794571080000,
+     16.8
+    ],
+    [
+     1794571140000,
+     17.1
+    ],
+    [
+     1794571198000,
+     17.42
+    ]
+   ],
+   "kills": [
+    [
+     1794561600000,
+     1
+    ]
+   ]
+  },
+  {
+   "name": "laptop",
+   "sleeps": false,
+   "addr": "192.0.2.34",
+   "state": "awake",
+   "detail": "server 0.2.0: status and box list only",
+   "seenAt": 1794571197000,
+   "sinceAt": 1793793600000,
+   "status": "laptop.status",
+   "list": "laptop.list",
+   "load": [
+    [
+     1794571140000,
+     1.2
+    ],
+    [
+     1794571197000,
+     0.92
+    ]
+   ],
+   "kills": []
+  },
+  {
+   "name": "homeserver",
+   "sleeps": false,
+   "addr": "192.0.2.50",
+   "state": "unreachable",
+   "detail": "no answer",
+   "seenAt": null,
+   "sinceAt": 1794570600000,
+   "load": [],
+   "kills": []
+  }
+ ]
+}

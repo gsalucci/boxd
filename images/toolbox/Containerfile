@@ -1,0 +1,80 @@
+# The shared toolbox image of a boxd build server: every tool a project build or test run needs,
+# so a box (box --image localhost/toolbox) starts without installing anything.
+# Built by server/images-build. Caches live in /cache, which boxd-pod mounts into every box.
+FROM docker.io/library/debian:trixie-slim
+
+ARG NODE_VERSION=24.21.0
+ARG PNPM_VERSION=12.16.1
+ARG TSC_RS_VERSION=0.8.0
+ARG TYPESCRIPT_VERSION=7.0.2
+ARG AST_GREP_VERSION=0.51.0
+ARG RUST_PINNED=1.98.1
+ARG GO_VERSION=1.27.4
+ARG POWERSHELL_VERSION=7.7.0
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl xz-utils unzip git patch procps rsync jq bc gdb sqlite3 hyperfine shellcheck bats \
+        gcc g++ make pkg-config musl-tools \
+        openjdk-21-jdk-headless maven \
+        python3 python3-pytest \
+    && rm -rf /var/lib/apt/lists/*
+
+# Container engines for a virtual-machine box (box --vm), where the box is root with its own kernel: docker and podman
+# run inside it. Only the binaries are installed; nothing starts at build time, the box starts dockerd itself (README).
+# Podman uses the kernel overlay, so no fuse-overlayfs. The recommended packages podman needs (network stack, runtime,
+# init) are named because --no-install-recommends drops them; iptables and nftables are what dockerd programs.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        docker.io docker-cli docker-buildx containerd runc \
+        podman netavark aardvark-dns crun catatonit passt \
+        iptables nftables iproute2 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Node from the official tarball; pnpm and tsc-rs as pnpm installs them on the workstations.
+# npm only installs pnpm itself: pnpm cannot install itself without a pnpm.
+RUN curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" | tar -xJ -C /usr/local --strip-components=1 \
+    && rm -f /usr/local/CHANGELOG.md /usr/local/LICENSE /usr/local/README.md \
+    && npm install -g "pnpm@${PNPM_VERSION}" \
+    && npm cache clean --force
+ENV PNPM_HOME=/usr/local/share/pnpm
+ENV PATH=$PNPM_HOME/bin:$PNPM_HOME:$PATH
+# The official compiler too: tests and tools that look for `tsc` (the harness copies a TypeScript installation).
+RUN pnpm add -g "tsc-rs@${TSC_RS_VERSION}" "typescript@${TYPESCRIPT_VERSION}" && pnpm store prune
+
+RUN curl -fsSL -o /tmp/ast-grep.zip "https://github.com/ast-grep/ast-grep/releases/download/${AST_GREP_VERSION}/app-x86_64-unknown-linux-gnu.zip" \
+    && unzip -q /tmp/ast-grep.zip -d /usr/local/bin ast-grep sg && rm /tmp/ast-grep.zip
+
+# Rust: rustup proxies in /usr/local/cargo/bin, toolchains in /usr/local/rustup. The box sets CARGO_HOME=/cache/cargo
+# (registry and build caches); the proxies and toolchains stay here.
+ENV RUSTUP_HOME=/usr/local/rustup
+ENV PATH=/usr/local/cargo/bin:$PATH
+RUN curl -fsSL https://sh.rustup.rs | CARGO_HOME=/usr/local/cargo sh -s -- -y --no-modify-path --profile minimal \
+        --default-toolchain stable -c clippy -c rustfmt -t x86_64-unknown-linux-musl \
+    && CARGO_HOME=/usr/local/cargo rustup toolchain install "${RUST_PINNED}" --profile minimal \
+        -c clippy -c rustfmt -t x86_64-unknown-linux-musl \
+    && chmod -R a+rX /usr/local/rustup /usr/local/cargo
+
+RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" | tar -xz -C /usr/local
+ENV PATH=/usr/local/go/bin:$PATH
+
+# PowerShell without the globalization library; Pester for the scripts' tests.
+RUN mkdir -p /opt/microsoft/powershell/7 \
+    && curl -fsSL "https://github.com/PowerShell/PowerShell/releases/download/v${POWERSHELL_VERSION}/powershell-${POWERSHELL_VERSION}-linux-x64.tar.gz" | tar -xz -C /opt/microsoft/powershell/7 \
+    && chmod +x /opt/microsoft/powershell/7/pwsh && ln -s /opt/microsoft/powershell/7/pwsh /usr/local/bin/pwsh
+ENV DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 POWERSHELL_TELEMETRY_OPTOUT=1
+# Pester is unpacked from its package: Install-Module needs the globalization library that is switched off above.
+RUN curl -fsSL -o /tmp/pester.zip https://www.powershellgallery.com/api/v2/package/Pester \
+    && V=$(unzip -p /tmp/pester.zip Pester.nuspec | sed -n 's|.*<version>\(.*\)</version>.*|\1|p') \
+    && mkdir -p "/usr/local/share/powershell/Modules/Pester/$V" \
+    && unzip -q /tmp/pester.zip -d "/usr/local/share/powershell/Modules/Pester/$V" && rm /tmp/pester.zip
+
+# Caches, all under /cache (mounted by boxd-pod).
+ENV CARGO_HOME=/cache/cargo \
+    npm_config_store_dir=/cache/pnpm-store npm_config_cache=/cache/npm \
+    MAVEN_OPTS=-Dmaven.repo.local=/cache/m2 \
+    GOPATH=/cache/go GOMODCACHE=/cache/go/mod GOCACHE=/cache/go/build \
+    PIP_CACHE_DIR=/cache/pip XDG_CACHE_HOME=/cache/xdg
+
+COPY toolbox-check /usr/local/bin/toolbox-check
+RUN chmod 0755 /usr/local/bin/toolbox-check
+WORKDIR /job/src

@@ -1,0 +1,58 @@
+#!/bin/sh
+# Prints the version of every tool of the toolbox image; exits 1 when one is missing or fails.
+fail=0
+v() {   # v <name> <command...>: first line of the output; a failing command counts as missing
+    n=$1; shift
+    out=$("$@" 2>&1 </dev/null); rc=$?
+    if [ $rc -eq 0 ] && [ -n "$out" ]; then
+        printf '%-12s %s\n' "$n" "$(printf %s "$out" | head -n 1)"
+    else
+        printf '%-12s MISSING\n' "$n"; fail=1
+    fi
+}
+v node node --version
+v pnpm pnpm --version
+v tsc-rs tsc-rs --version
+v tsc tsc --version
+v ast-grep ast-grep --version
+v rustc-stable rustc +stable --version
+v rustc-1.98.1 rustc +1.98.1 --version
+v cargo cargo --version
+v clippy cargo clippy --version
+v rustfmt rustfmt --version
+v musl-target sh -c 'rustup target list --installed --toolchain stable | grep -x x86_64-unknown-linux-musl'
+v musl-gcc musl-gcc --version
+v gcc gcc --version
+v g++ g++ --version
+v make make --version
+v pkg-config pkg-config --version
+v java java -version
+v mvn mvn -Dstyle.color=never -v
+v go go version
+v pwsh pwsh -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+v pester pwsh -NoProfile -Command '(Get-Module -ListAvailable Pester | Select-Object -First 1).Version.ToString()'
+v python3 python3 --version
+v pytest python3 -m pytest --version
+v shellcheck shellcheck --version
+v bats bats --version
+v jq jq --version
+v bc bc --version
+v gdb gdb --version
+v git git --version
+v patch patch --version
+v ps ps --version
+v unzip unzip -v
+v sqlite3 sqlite3 --version
+v rsync rsync --version
+v hyperfine hyperfine --version
+v docker docker --version
+v buildx docker buildx version
+v containerd containerd --version
+v runc runc --version
+v podman podman --version
+v iptables iptables --version
+v nft nft --version
+v curl curl --version
+v xz xz --version
+[ -e /etc/ssl/certs/ca-certificates.crt ] && echo "ca-certs     present" || { echo "ca-certs     MISSING"; fail=1; }
+exit $fail

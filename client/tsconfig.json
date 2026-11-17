@@ -1,0 +1,16 @@
+{
+  // Build: ~/.local/share/pnpm/bin/tsc-rs -p client (emits box.mjs and box-wake.mjs next to the sources;
+  // the tests fail when a committed .mjs is stale). The node types come from @types/node in the root package.json (pnpm install).
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "skipLibCheck": true,
+    "removeComments": false,
+    "types": ["node"],
+    "outDir": "."
+  },
+  "files": ["box-wake.mts", "box.mts"]
+}

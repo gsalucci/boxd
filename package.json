@@ -1,0 +1,8 @@
+{
+  "name": "boxd",
+  "private": true,
+  "description": "Development only: the Node type definitions that tsc-rs needs to compile client/ and dashboard/. Run pnpm install once.",
+  "devDependencies": {
+    "@types/node": "22.19.19"
+  }
+}

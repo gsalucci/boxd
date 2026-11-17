@@ -1,0 +1,23 @@
+# The build account's own sshd (service boxd-sshd). It starts inside the cgroup /sys/fs/cgroup/boxd/sshd, so every
+# session and every box it starts is under the build caps. The service adds the settings of /etc/boxd/boxd.conf on
+# the command line: Port (BOXD_PORT), AllowUsers (BOXD_USER) and PerSourcePenaltyExemptList (BOXD_TRUSTED_NET).
+# Same host keys as the main sshd.
+HostKey /etc/ssh/ssh_host_ed25519_key
+HostKey /etc/ssh/ssh_host_ecdsa_key
+HostKey /etc/ssh/ssh_host_rsa_key
+PidFile none
+# Its allowed keys live here, where the account cannot change them.
+AuthorizedKeysFile /etc/ssh/authorized_keys/%u
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin no
+AllowTcpForwarding no
+AllowAgentForwarding no
+X11Forwarding no
+# Every command goes through the box dispatcher; it reads the client's line from SSH_ORIGINAL_COMMAND.
+# box --env NAME carries the value as BOXD_SECRET_NAME (never on the command line); boxd-pod checks the names.
+AcceptEnv BOXD_SECRET_*
+# sshd names the key that logged in (a file named by SSH_USER_AUTH), so that boxd-pod can limit the keys listed in /etc/boxd/view_keys to
+# the reading commands. A host with view keys and without this line refuses every command, loudly, instead of leaving them unlimited.
+ExposeAuthInfo yes
+ForceCommand /usr/bin/boxd-pod

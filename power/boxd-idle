@@ -1,0 +1,101 @@
+#!/bin/sh
+# boxd-idle: the power module. Suspends the host to memory after BOXD_IDLE_CHECKS quiet checks in a row (one per
+# minute under runit, so 20 minutes by default). Quiet means: no incoming ssh connection (the admin port 22 or
+# the build port BOXD_PORT; connections on it from the addresses of BOXD_IDLE_IGNORE do not count), a 1-minute load below BOXD_IDLE_LOAD_MAX, and nobody holding the boxd-keepawake lock.
+# Processes inside boxes do not count: idle boxes survive a sleep.
+# Before each sleep it arms wake-on-network on the cards named in BOXD_WIRED (cable magic packet) and BOXD_WIFI
+# (wifi magic packet), because both cards lose it, and resets the build area first when the disk is
+# BOXD_RESET_AT percent full or more. With neither card named it never sleeps: nothing could wake the host.
+# The client wakes the host again with box-wake before every ssh (`box setup --wake`).
+# Settings come from /etc/boxd/boxd.conf. Box reaping is not done here: the boxd service does it.
+#
+#   boxd-idle run     runit service: arm, then check every minute
+#   boxd-idle check   one check (the test drives this)
+#   boxd-idle arm     re-apply the wake settings only
+#   boxd-idle status  print the busy reason or "quiet", change nothing
+set -u
+CONF=${BOXD_CONF:-/etc/boxd/boxd.conf}
+[ -r "$CONF" ] && . "$CONF"
+STATE=${BOXD_IDLE_STATE:-/run/boxd-idle}
+IDLE_CHECKS=${BOXD_IDLE_CHECKS:-20}
+LOAD_MAX=${BOXD_IDLE_LOAD_MAX:-0.5}
+RESET_AT=${BOXD_RESET_AT:-85}   # disk use in percent that triggers boxd-reset before a sleep
+LOADAVG=${BOXD_LOADAVG:-/proc/loadavg}
+LOCK=${BOXD_KEEPAWAKE_LOCK:-/run/boxd-keepawake.lock}
+WIRED=${BOXD_WIRED:-}
+WIFI=${BOXD_WIFI:-}
+PORT=${BOXD_PORT:-2222}
+IGNORE=${BOXD_IDLE_IGNORE:-}   # addresses whose build-port connections are not work (the dashboard's polls)
+
+# Connections that are work: the last two words of each line are the local and the peer address:port (the state column is
+# there or not). One on the build port from an address of BOXD_IDLE_IGNORE (the dashboard's reads) is not work; the
+# admin port 22 always counts, from every address. The peer is compared whole, so 10.0.0.90 is not 10.0.0.9.
+ssh_busy() {
+    ss -Htn state established "( sport = :22 or sport = :$PORT )" 2>/dev/null | awk -v port="$PORT" -v ign="$IGNORE" '
+        BEGIN { n = split(ign, a, /[ \t]+/) }
+        { peer = $NF; lp = $(NF - 1); sub(/.*:/, "", lp); sub(/:[0-9]+$/, "", peer); gsub(/[][]/, "", peer); sub(/^::ffff:/, "", peer)
+          if (lp == port && port != 22) for (i = 1; i <= n; i++) if (a[i] != "" && a[i] == peer) next
+          found = 1 }
+        END { exit !found }'
+}
+
+busy_reason() { # busy_reason [--ignore-ssh]
+    # Admin sessions come in on 22, builds on the build port: a quiet foreground build is still work.
+    [ "${1:-}" != --ignore-ssh ] && ssh_busy && { echo ssh; return; }
+    awk -v m="$LOAD_MAX" '{ exit !($1 >= m) }' "$LOADAVG" && { echo load; return; }
+    # boxd-keepawake holds a shared lock; an exclusive try fails while any holder lives.
+    [ -e "$LOCK" ] && ! flock -n -x "$LOCK" true && { echo keepawake; return; }
+    return 0
+}
+
+arm() {
+    if [ -n "$WIRED" ]; then ethtool -s "$WIRED" wol g || echo "arm: wake on the cable failed"; fi
+    if [ -n "$WIFI" ]; then
+        phy=$(iw dev "$WIFI" info 2>/dev/null | awk '/wiphy/ { print "phy" $2 }')
+        if [ -n "$phy" ]; then iw phy "$phy" wowlan enable magic-packet || echo "arm: wake on wifi failed"
+        else echo "arm: no wifi card $WIFI"; fi
+    fi
+}
+
+check() {
+    mkdir -p "$STATE"
+    n=$(cat "$STATE/count" 2>/dev/null) || n=0
+    last=$(cat "$STATE/last" 2>/dev/null) || last=
+    r=$(busy_reason)
+    if [ -z "$r" ] && [ -z "$WIRED$WIFI" ]; then r=no-wake-card; fi
+    if [ -n "$r" ]; then
+        echo 0 > "$STATE/count"
+        [ "$r" = "$last" ] || echo "busy: $r"   # log changes only, not every minute
+        echo "$r" > "$STATE/last"
+        return 0
+    fi
+    n=$((n + 1))
+    echo "$n" > "$STATE/count"
+    echo idle > "$STATE/last"
+    [ "$last" = idle ] || echo "idle, sleeping after $IDLE_CHECKS quiet checks"
+    [ "$n" -ge "$IDLE_CHECKS" ] || return 0
+    echo 0 > "$STATE/count"
+    # Quiet and about to sleep: the safe moment to give the build area back when the disk is filling up.
+    use=$(df --output=pcent / | tail -1 | tr -dc 0-9)
+    if [ "${use:-0}" -ge "$RESET_AT" ]; then
+        echo "disk at $use%, resetting the build area"
+        boxd-reset || echo "reset of the build area failed"
+    fi
+    arm
+    echo "sleeping"
+    zzz -z            # returns after the wake
+    echo "woke up"
+    rm -f "$STATE/last"
+}
+
+case ${1:-} in
+    check) check ;;
+    arm) arm ;;
+    # --ignore-ssh: the reason without counting ssh, for checks that themselves come in over ssh.
+    status) r=$(busy_reason "${2:-}"); echo "${r:-quiet}" ;;
+    run)
+        : > "$LOCK" && chmod 644 "$LOCK"   # boxd-keepawake users only need to read it
+        arm
+        while :; do check; sleep 60; done ;;
+    *) echo "usage: boxd-idle run|check|arm|status" >&2; exit 2 ;;
+esac

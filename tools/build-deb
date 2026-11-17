@@ -1,0 +1,191 @@
+#!/bin/sh
+# Build the boxd Debian packages with dpkg-deb. Needs dpkg-deb, tar, gzip, awk, sed, find and sha256sum (a Debian
+# system or container; curl too when microsandbox-bin is built). No root: dpkg-deb --root-owner-group records
+# root ownership without being root. Builds only: it never signs and never uploads (tools/publish-deb uploads).
+# The file list is the Debian table of docs/designs/layout.md; the control files and maintainer scripts are debpkgs/<package>/.
+#
+#   tools/build-deb [package ...]      default: boxd boxd-server boxd-client microsandbox-bin
+#
+# Environment (all optional):
+#   BOXD_DEB_OUT          where the .deb files go, default <checkout>/deb-out
+#   BOXD_DEB_REVISION     Debian revision, default 1 (version is <upstream>-<revision>)
+#   BOXD_SOURCE_ARCHIVE   tar.gz of a tag (top folder boxd-<version>/, from `git archive --prefix=boxd-<version>/`) to
+#                         build from instead of this checkout; the version comes from the archive's own template
+#   BOXD_MSB_TARBALL, BOXD_MSB_LICENSE   local copies of the pinned microsandbox files (else downloaded); the
+#                         checksums of srcpkgs/microsandbox-bin/template are checked either way
+#   SOURCE_DATE_EPOCH     time stamped into the files, default the last commit time, else now
+set -eu
+
+here=$(cd "$(dirname "$0")" && pwd)
+repo=$(dirname "$here")
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+umask 022
+
+if [ -n "${BOXD_SOURCE_ARCHIVE:-}" ]; then
+	mkdir "$work/src"
+	tar -xzf "$BOXD_SOURCE_ARCHIVE" -C "$work/src" --strip-components=1
+	src=$work/src
+else
+	src=$repo
+fi
+out=${BOXD_DEB_OUT:-$repo/deb-out}
+mkdir -p "$out"
+rev=${BOXD_DEB_REVISION:-1}
+ver=$(sed -n 's/^version=//p' "$src/srcpkgs/boxd/template")
+tpl=$src/srcpkgs/microsandbox-bin/template
+msbver=$(sed -n 's/^version=//p' "$tpl")
+[ -n "$ver" ] && [ -n "$msbver" ] || { echo "build-deb: cannot read the versions from the templates" >&2; exit 1; }
+SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-$(git -C "$src" log -1 --format=%ct 2>/dev/null || date +%s)}
+export SOURCE_DATE_EPOCH
+stamp=$(date -u -R -d "@$SOURCE_DATE_EPOCH")
+packages=${*:-boxd boxd-server boxd-client microsandbox-bin}
+
+command -v dpkg-deb >/dev/null || { echo "build-deb: dpkg-deb is missing; run this in Debian, e.g. box --image docker.io/library/debian:trixie-slim -- tools/build-deb" >&2; exit 1; }
+
+# The Debian table of layout.md: package, path, source, mode (one line each, tab separated).
+rows=$work/rows
+awk -F'|' '
+	/^## Debian packages/ { on = 1; next }
+	/^## / { on = 0 }
+	on && NF == 7 && $2 !~ /Package|---/ {
+		for (i = 2; i <= 5; i++) { gsub(/^ +| +$/, "", $i) }
+		print $2 "\t" $3 "\t" $4 "\t" $5
+	}' "$src/docs/designs/layout.md" > "$rows"
+[ -s "$rows" ] || { echo "build-deb: no Debian table in docs/designs/layout.md" >&2; exit 1; }
+
+# The pinned microsandbox release, fetched once and checked against the template's two checksums.
+msb_files() {
+	[ -d "$work/msb" ] && return 0
+	sums=$(grep -oE '[0-9a-f]{64}' "$tpl")
+	want_tar=$(echo "$sums" | sed -n 1p)
+	want_lic=$(echo "$sums" | sed -n 2p)
+	home=$(sed -n 's/^homepage="\(.*\)"/\1/p' "$tpl")
+	mkdir -p "$work/msb"
+	if [ -n "${BOXD_MSB_TARBALL:-}" ]; then cp "$BOXD_MSB_TARBALL" "$work/msb.tar.gz"
+	else curl -fsSL -o "$work/msb.tar.gz" "$home/releases/download/v$msbver/microsandbox-linux-x86_64.tar.gz"; fi
+	if [ -n "${BOXD_MSB_LICENSE:-}" ]; then cp "$BOXD_MSB_LICENSE" "$work/msb/LICENSE"
+	else curl -fsSL -o "$work/msb/LICENSE" "$home/raw/v$msbver/LICENSE"; fi
+	[ "$(sha256sum "$work/msb.tar.gz" | cut -d' ' -f1)" = "$want_tar" ] || { echo "build-deb: microsandbox tarball checksum differs from the template" >&2; exit 1; }
+	[ "$(sha256sum "$work/msb/LICENSE" | cut -d' ' -f1)" = "$want_lic" ] || { echo "build-deb: microsandbox LICENSE checksum differs from the template" >&2; exit 1; }
+	tar -xzf "$work/msb.tar.gz" -C "$work/msb"
+}
+
+copyright_text() { # $1 package
+	if [ "$1" = microsandbox-bin ]; then
+		cat <<EOT
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: microsandbox
+Source: https://github.com/superradcompany/microsandbox
+
+Files: *
+Copyright: the microsandbox authors, see LICENSE in this folder
+License: Apache-2.0
+
+License: Apache-2.0
+ The upstream licence text is in /usr/share/doc/microsandbox-bin/LICENSE.
+ On Debian systems the full text of the Apache License 2.0 is also in
+ /usr/share/common-licenses/Apache-2.0.
+EOT
+		return
+	fi
+	cat <<EOT
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: boxd
+Source: https://github.com/gsalucci/boxd
+
+Files: *
+Copyright: 2026 gsalucci
+License: Expat
+ Permission is hereby granted, free of charge, to any person obtaining a copy
+ of this software and associated documentation files (the "Software"), to deal
+ in the Software without restriction, including without limitation the rights
+ to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ copies of the Software, and to permit persons to whom the Software is
+ furnished to do so, subject to the following conditions:
+ .
+ The above copyright notice and this permission notice shall be included in all
+ copies or substantial portions of the Software.
+ .
+ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ SOFTWARE.
+EOT
+}
+
+changelog_text() { # $1 package, $2 version
+	cat <<EOF
+$1 ($2) unstable; urgency=medium
+
+  * Debian package built by tools/build-deb from boxd $ver (see
+    docs/packaging-debian.md; upstream changes are in changelog.gz).
+
+ -- boxd maintainers <gsalucci@users.noreply.github.com>  $stamp
+EOF
+}
+
+build() { # $1 package
+	pkg=$1
+	case $pkg in microsandbox-bin) pver=$msbver-$rev ;; *) pver=$ver-$rev ;; esac
+	stage=$work/stage-$pkg
+	rm -rf "$stage"; mkdir -p "$stage/DEBIAN"
+	: > "$work/conffiles-$pkg"
+	awk -F'\t' -v p="$pkg" '$1 == p' "$rows" > "$work/rows-$pkg"; [ -s "$work/rows-$pkg" ] || { echo "build-deb: no rows for $pkg" >&2; exit 1; }
+	while IFS="$(printf '\t')" read -r _ path source mode; do
+		path=$(printf %s "$path" | sed "s|@MSB_VERSION@|$msbver|g")
+		dest=$stage$path
+		case $source in
+			dir) install -d -m "$mode" "$dest" ;;
+			generated:copyright) install -d "$(dirname "$dest")"; copyright_text "$pkg" > "$dest"; chmod "$mode" "$dest" ;;
+			generated:changelog) install -d "$(dirname "$dest")"; changelog_text "$pkg" "$pver" | gzip -9n > "$dest"; chmod "$mode" "$dest" ;;
+			generated:upstream-changelog) install -d "$(dirname "$dest")"; gzip -9n < "$src/CHANGELOG.md" > "$dest"; chmod "$mode" "$dest" ;;
+			link:*) install -d "$(dirname "$dest")"; ln -s "$(printf %s "${source#link:}" | sed "s|@MSB_VERSION@|$msbver|g")" "$dest" ;;
+			download:*)
+				msb_files
+				f=${source#download:}
+				install -d "$(dirname "$dest")"
+				if [ "$f" = LICENSE ]; then install -m "$mode" "$work/msb/LICENSE" "$dest"
+				else
+					found=0
+					for g in "$work/msb"/$f; do
+						[ -f "$g" ] || continue
+						found=1; install -m "$mode" "$g" "$(dirname "$dest")/$(basename "$g")"
+					done
+					[ "$found" = 1 ] || { echo "build-deb: $f is not in the microsandbox tarball" >&2; exit 1; }
+				fi ;;
+			*/) install -d "$dest"; cp -R "$src/$source." "$dest/"
+				find "$dest" -type d -exec chmod 755 {} +; find "$dest" -type f -exec chmod go-w {} + ;;
+			*) [ -f "$src/$source" ] || { echo "build-deb: $source is missing" >&2; exit 1; }
+				install -D -m "$mode" "$src/$source" "$dest" ;;
+		esac
+		case $path in /etc/*) echo "$path" >> "$work/conffiles-$pkg" ;; esac
+	done < "$work/rows-$pkg"
+
+	# The packaged settings name the build cgroup that systemd makes for boxd-sshd.service (docs/designs/layout.md).
+	if [ -f "$stage/etc/boxd/boxd.conf" ]; then
+		sed -i 's|^#BOXD_CGROUP=.*|BOXD_CGROUP=/sys/fs/cgroup/boxd.slice/boxd-sshd.service|' "$stage/etc/boxd/boxd.conf"
+		grep -q '^BOXD_CGROUP=/sys/fs/cgroup/boxd.slice/boxd-sshd.service$' "$stage/etc/boxd/boxd.conf" ||
+			{ echo "build-deb: boxd.conf has no #BOXD_CGROUP line to enable" >&2; exit 1; }
+	fi
+
+	for s in postinst prerm postrm; do
+		[ ! -f "$src/debpkgs/$pkg/$s" ] || install -m 755 "$src/debpkgs/$pkg/$s" "$stage/DEBIAN/$s"
+	done
+	[ ! -s "$work/conffiles-$pkg" ] || install -m 644 "$work/conffiles-$pkg" "$stage/DEBIAN/conffiles"
+	find "$stage" -path "$stage/DEBIAN" -prune -o -type f -print0 | sort -z | xargs -0 md5sum | sed "s|  $stage/|  |" > "$stage/DEBIAN/md5sums"
+	size=$(du -sk --exclude=DEBIAN "$stage" | cut -f1)
+	{ sed -n '1,/^Description:/{/^Description:/!p}' "$src/debpkgs/$pkg/control"
+	  echo "Version: $pver"
+	  echo "Installed-Size: $size"
+	  sed -n '/^Description:/,$p' "$src/debpkgs/$pkg/control"; } > "$stage/DEBIAN/control"
+	find "$stage" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
+	arch=$(sed -n 's/^Architecture: //p' "$stage/DEBIAN/control")
+	dpkg-deb --root-owner-group -Zxz --build "$stage" "$out/${pkg}_${pver}_${arch}.deb" >/dev/null
+	echo "build-deb: $out/${pkg}_${pver}_${arch}.deb"
+}
+
+for p in $packages; do build "$p"; done

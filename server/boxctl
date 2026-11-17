@@ -1,0 +1,71 @@
+#!/bin/sh
+# boxctl start|stop|status|check|log|reload: the owner's one command for boxd. It wraps runit's sv on Void and
+# systemctl on systemd hosts (Debian); BOXD_MANAGER=runit|systemd forces one, else systemd is used when /run/systemd/system exists.
+#   start    start boxd: the build sshd (and the power module when BOXD_POWER=on) come up
+#   stop     stop boxd: everything goes down, boxes included; detached runs get SIGTERM first, files stay
+#   status   what the service manager says about boxd, boxd-sshd and boxd-power
+#   check    the conditions boxd needs (also what the service checks before it starts); exit 1 when one fails
+#   log [boxd|sshd|power] [-f]   the last lines of the service log (sshd by default), or follow it
+#   reload   restart only boxd-sshd and, when BOXD_POWER=on, boxd-power, so changed settings apply; boxes are not touched
+# Settings: /etc/boxd/boxd.conf (BOXD_CONF overrides the path, for tests).
+set -u
+CONF=${BOXD_CONF:-/etc/boxd/boxd.conf}
+[ -r "$CONF" ] && . "$CONF"
+U=${BOXD_USER:-boxd}
+WORK=${BOXD_WORK:-/var/lib/boxd/work}
+POWER=${BOXD_POWER:-off}
+SVDIR_=${SVDIR:-/var/service}
+LOGDIR=${BOXD_LOGDIR:-/var/log}
+MANAGER=${BOXD_MANAGER:-$([ -d /run/systemd/system ] && echo systemd || echo runit)}
+
+# installed <service>: runit links a service into SVDIR to enable it; a systemd unit file only has to exist
+# (boxd-sshd is started by boxd and is never enabled on its own).
+installed() {
+    if [ "$MANAGER" = systemd ]; then systemctl cat "$1.service" >/dev/null 2>&1; else [ -e "$SVDIR_/$1" ]; fi
+}
+check() {
+    bad=0
+    fail() { echo "boxctl: $*" >&2; bad=1; }
+    [ "$(id -u)" = 0 ] || fail "run as root"
+    id "$U" >/dev/null 2>&1 || fail "account $U does not exist (run boxd-setup)"
+    # btrfs mode: the work area is a mount; directory mode (hosts without btrfs, see work-setup): a plain folder with this marker
+    mountpoint -q "$WORK" || [ -e "$WORK/.boxd-dir-mode" ] || fail "work area $WORK is not mounted (run boxd-setup)"
+    installed boxd-sshd || fail "service boxd-sshd is not enabled (run boxd-setup)"
+    case $POWER in off) ;; on) installed boxd-power || fail "BOXD_POWER=on but service boxd-power is not enabled (install boxd-power, run boxd-setup)" ;;
+        *) fail "BOXD_POWER must be off or on, not $POWER" ;; esac
+    return $bad
+}
+
+case ${1:-} in
+    start) if [ "$MANAGER" = systemd ]; then systemctl start boxd; else sv -w 60 start boxd; fi ;;
+    stop) if [ "$MANAGER" = systemd ]; then systemctl stop boxd; else sv -w 120 stop boxd; fi ;;
+    status)
+        if [ "$MANAGER" = systemd ]; then
+            systemctl status boxd boxd-sshd --no-pager
+            installed boxd-power && systemctl status boxd-power --no-pager
+        else
+            sv status boxd boxd-sshd
+            [ -e "$SVDIR_/boxd-power" ] && sv status boxd-power
+        fi
+        echo "power module: $POWER"; exit 0 ;;
+    check) check && echo "boxd: conditions hold" ;;
+    log)
+        shift; which=sshd follow=
+        for a in "$@"; do case $a in -f) follow=-f ;; *) which=$a ;; esac; done
+        case $which in
+            boxd) svc=boxd ;; sshd) svc=boxd-sshd ;; power) svc=boxd-power ;;
+            *) echo "usage: boxctl log [boxd|sshd|power] [-f]" >&2; exit 2 ;;
+        esac
+        if [ "$MANAGER" = systemd ]; then exec journalctl -u "$svc.service" -n 100 --no-pager $follow; fi
+        exec tail -n 100 $follow "$LOGDIR/$svc/current" ;;
+    reload)
+        if [ "$MANAGER" = systemd ]; then
+            systemctl restart boxd-sshd || exit 1
+            [ "$POWER" = on ] && { systemctl restart boxd-power || exit 1; }
+        else
+            sv restart boxd-sshd || exit 1
+            [ "$POWER" = on ] && { sv restart boxd-power || exit 1; }
+        fi
+        exit 0 ;;
+    *) echo "usage: boxctl start|stop|status|check|log|reload" >&2; exit 2 ;;
+esac

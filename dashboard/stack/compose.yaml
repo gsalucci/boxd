@@ -1,0 +1,33 @@
+# boxd dashboard stack: ~/stacks/boxd-dashboard/ (see INSTALL.md).
+# The reverse proxy (container "proxy", on the network "proxy") reaches the service as boxd-dashboard:8377; no host port is published.
+services:
+  boxd-dashboard:
+    container_name: boxd-dashboard
+    # The context is this folder, as unpacked from the bundle: it holds only what the image needs.
+    image: boxd-dashboard:local
+    build:
+      context: .
+      dockerfile: Containerfile
+    init: true                 # the image has no tini; Docker's init runs as process 1
+    restart: unless-stopped
+    environment:
+      - TZ=UTC
+    volumes:
+      - ./dashboard.json:/config/dashboard.json:ro   # the settings (copy of dashboard.json.example)
+      - ./data:/state                                # history, known_hosts (the hosts' keys, pinned at first contact)
+      - ./data/key:/run/boxd/key:ro                  # the login key; the settings name this path
+    read_only: true            # the service writes only under /state; it needs no /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 192m
+    memswap_limit: 192m        # no swap beyond the limit
+    pids_limit: 64
+    cpus: 0.5
+    # The health check is the image's own (Containerfile HEALTHCHECK): node asks /api/fleet.json on the loopback address.
+    networks:
+      - proxy
+
+networks:
+  proxy:
+    external: true

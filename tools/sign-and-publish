@@ -1,0 +1,70 @@
+#!/bin/sh
+# Pull the built packages from the build host, index them, sign them and publish them to the
+# Gitea generic package registry. Runs on the owner's workstation (Void, has xbps-rindex).
+# The signing key lives only here: the build host and its boxes never see it.
+#
+# Environment:
+#   BOXD_SIGNING_KEY   path of the private key (required)
+#   GITEA_TOKEN        token with package write rights (required)
+#   BOXD_BUILD_HOST    ssh target of the build host, e.g. boxd-tower; empty means BOXD_BUILD_OUT is a
+#                      local folder (packages already copied here, e.g. with box --pull)
+#   BOXD_BUILD_OUT     folder with the .xbps files on the build host,
+#                      default boxd-packages/void-packages/hostdir/binpkgs (relative to its home)
+#   BOXD_REPO_DIR      local repository folder, default $HOME/.local/share/boxd-repo
+#                      (the files of older versions stay there and in the registry, but an xbps index lists
+#                      only the newest version of each package: an exact older version cannot be installed by name)
+#   BOXD_PUBLISH_ALL   set to 1 to upload every file, not only the newly pulled ones
+#   BOXD_REGISTRY      required, e.g. https://gitea.example/api/packages/OWNER/generic/boxd/x86_64
+set -eu
+
+: "${BOXD_SIGNING_KEY:?set BOXD_SIGNING_KEY to the private key path}"
+: "${GITEA_TOKEN:?set GITEA_TOKEN}"
+out=${BOXD_BUILD_OUT:-boxd-packages/void-packages/hostdir/binpkgs}
+repo=${BOXD_REPO_DIR:-$HOME/.local/share/boxd-repo}
+[ -n "${BOXD_REGISTRY:-}" ] || { echo "sign-and-publish: set BOXD_REGISTRY (address of the package registry)" >&2; exit 2; }
+reg=$BOXD_REGISTRY
+agent=xbps/2.0   # libxbps default, lib/fetch/fetch.h _LIBFETCH_VER in the xbps source
+[ -f "$BOXD_SIGNING_KEY" ] || { echo "no such key: $BOXD_SIGNING_KEY" >&2; exit 1; }
+
+mkdir -p "$repo"
+list=$repo/.pulled
+# 1. pull unsigned packages; --out-format prints the names that were really transferred.
+src="$out/"; [ -z "${BOXD_BUILD_HOST:-}" ] || src="$BOXD_BUILD_HOST:$out/"
+rsync -a --out-format='%n' --include='*.xbps' --exclude='*' "$src" "$repo/" \
+	| grep '\.xbps$' > "$list" || true
+if [ "${BOXD_PUBLISH_ALL:-0}" = 1 ]; then
+	(cd "$repo" && ls ./*.xbps | sed 's|^\./||') > "$list"
+fi
+if [ ! -s "$list" ]; then
+	echo "sign-and-publish: nothing new to publish"
+	exit 0
+fi
+
+# 2. index, then sign the index and every package.
+cd "$repo"
+xbps-rindex -a ./*.xbps
+xbps-rindex --sign --signedby "boxd" --privkey "$BOXD_SIGNING_KEY" "$repo"
+xbps-rindex --sign-pkg --privkey "$BOXD_SIGNING_KEY" ./*.xbps
+
+# 3. upload: packages and signatures first, the index last, so an index never points at a missing file.
+upload() {
+	f=$1
+	# A registry refuses a second upload of a name (409): delete first. 404 means it was not there.
+	code=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE -H "Authorization: token $GITEA_TOKEN" "$reg/$f")
+	case $code in 204|404) ;; *) echo "delete $f failed: $code" >&2; exit 1;; esac
+	code=$(curl -s -o /dev/null -w '%{http_code}' -X PUT -H "Authorization: token $GITEA_TOKEN" \
+		--upload-file "$f" "$reg/$f")
+	case $code in 200|201) echo "uploaded $f";; *) echo "upload $f failed: $code" >&2; exit 1;; esac
+}
+files=$(while read -r p; do echo "$p"; echo "$p.sig2"; done < "$list")
+for f in $files; do upload "$f"; done
+upload x86_64-repodata
+
+# 4. verify as a client would: anonymous, xbps user agent, byte for byte.
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+for f in $files x86_64-repodata; do
+	curl -fsSL -A "$agent" -o "$tmp/$f" "$reg/$f"
+	[ "$(sha256sum < "$f")" = "$(sha256sum < "$tmp/$f")" ] || { echo "MISMATCH after upload: $f" >&2; exit 1; }
+done
+echo "sign-and-publish: verified $(echo $files | wc -w) files and the index"

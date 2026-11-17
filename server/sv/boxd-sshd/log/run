@@ -1,0 +1,3 @@
+#!/bin/sh
+mkdir -p /var/log/boxd-sshd
+exec svlogd -tt /var/log/boxd-sshd

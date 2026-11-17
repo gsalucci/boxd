@@ -1,0 +1,27 @@
+# The build account's own sshd inside a capped cgroup (what /etc/sv/boxd-sshd is on Void). Started by boxd.service,
+# never enabled on its own (no [Install] section). The file it runs is server/sv/boxd-sshd/run, installed as sshd-run:
+# it moves itself into a child cgroup, sets the caps (BOXD_MEM_MAX, BOXD_SWAP_MAX) on this unit's cgroup, hands the
+# cgroup to the build account for rootless podman, then execs sshd. The cgroup is /sys/fs/cgroup/boxd.slice/boxd-sshd.service,
+# which the packaged /etc/boxd/boxd.conf names as BOXD_CGROUP; sshd-run refuses to start when the two disagree.
+[Unit]
+Description=boxd build sshd (capped cgroup, forced command boxd-pod)
+After=network.target
+
+[Service]
+Type=simple
+Environment=BOXD_MANAGER=systemd
+Slice=boxd.slice
+Delegate=yes
+# systemd puts the main process into the child cgroup "sshd" of the unit's cgroup. The unit's own cgroup then holds no process and
+# can keep the controllers it hands to its children (sshd-run enables them there). Without this, a start while boxes are still
+# running below (after a stop, see KillMode) fails with "Device or resource busy": a cgroup that hands controllers to children
+# cannot hold a process, and systemd wants to put the new main process directly into it.
+DelegateSubgroup=sshd
+# The default task cap of a service would apply to every box below; each box has its own limit (BOXD_LIMITS).
+TasksMax=infinity
+# Only the sshd main process gets the stop signal: sessions and boxes keep running until boxd's finish file removes
+# them, exactly as under runit (a plain stop of this unit must not kill running builds mid-write).
+KillMode=process
+ExecStart=/bin/sh /usr/libexec/boxd/sshd-run
+Restart=on-failure
+RestartSec=5

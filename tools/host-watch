@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+# host-watch: checks that the build hosts behave as docs/pod-contract.md says, from the agents' machine, read only.
+# It never wakes a sleeping host (it asks `box hosts` first) and changes nothing on a host.
+# shortcut: its two short ssh calls per sample count as work if one is open at the instant of the host's sleep check
+# (once a minute), which can delay a sleep by one round; put the agents' machine's reads on a view key address in
+# BOXD_IDLE_IGNORE if the tower is ever seen awake because of it.
+#
+#   tools/host-watch                      one sample of every registered host, findings on standard output
+#   tools/host-watch --loop [<seconds>]   a sample every <seconds> (default 300); writes progress.log and anomalies.log
+#   tools/host-watch check <host> <report file> <now>      the checks of one `pod report`, for the tests
+#   tools/host-watch choices <choices.log> <from line>     the checks of the placement log, for the tests
+#
+# A finding is printed once, when it has held for as many samples in a row as its check asks, and once more as
+# "ended" when it is gone. State and logs: HOST_WATCH_DIR (default ~/.local/state/boxd/watch).
+#
+# What is checked ("Memory budget", "Activity, cleanup and reset", "Host choice", "The collector" of the contract):
+#   distribution  the sizes of the running machines fit the group's cap; no more machines than the ceiling; a placement
+#                 went to the first host in order that had room
+#   memory        the kernel killed a process of the boxes; the group is at its cap; memory pressure
+#   cleanup       an idle box older than the time limit is still there; a run is "running" in a box that is not;
+#                 the work area is above the eviction level; a host stays awake without work; a box whose worktree
+#                 is gone for hours is still recorded
+#   hosts         a host that should answer does not; the hosts run different versions
+set -u
+D=${HOST_WATCH_DIR:-$HOME/.local/state/boxd/watch}
+STATE=${BOXD_STATE:-$HOME/.local/state/boxd}
+
+# Raw findings of one report, one per line: <samples needed><TAB><level><TAB><key><TAB><text>.
+check() { # <host> <report file> <now>
+  awk -F'\t' -v host="$1" -v now="$3" '
+    function kv(   i, p) { delete f; for (i = 2; i <= NF; i++) { p = index($i, "="); f[substr($i, 1, p - 1)] = substr($i, p + 1) } }
+    function out(need, level, key, text) { printf "%s\t%s\t%s:%s\t%s: %s\n", need, level, host, key, host, text }
+    $1 == "host" { kv(); for (k in f) h[k] = f[k] }
+    $1 == "box" { kv(); state[f["box"]] = f["state"]
+      if (f["state"] == "running") {
+        if (f["busy"] == "yes" || f["runs"] + 0 > 0) work = 1
+        else if (f["last_used"] + 0 > 0) idle[f["box"]] = now - f["last_used"]
+        if (f["engine"] == "vm") vmsum += f["mem_limit_mb"]
+      } }
+    $1 == "run" { kv(); if (f["state"] == "running") { work = 1; run[f["box"] "/" f["id"]] = f["box"] } }
+    END {
+      if (!("ttl" in h)) { out(2, "ALERT", "report", "its report has no host line"); exit }
+      max = h["group_mem_max_mb"]
+      if (max ~ /^[0-9]+$/ && max > 0) {
+        if (vmsum > max + 0) out(1, "ALERT", "commitment", "the running machines add up to " vmsum " MB, more than the group cap of " max " MB")
+        if (h["group_mem_used_mb"] * 100 >= max * 95) out(2, "WARN", "cap", "the boxes use " h["group_mem_used_mb"] " of " max " MB (host has " h["mem_avail_mb"] " MB available, swap used " h["swap_used_mb"] " MB)")
+      }
+      if (h["vm_max"] ~ /^[0-9]+$/ && h["vm_used"] + 0 > h["vm_max"] + 0) out(1, "ALERT", "ceiling", h["vm_used"] " machines run, the ceiling is " h["vm_max"])
+      if (h["pressure_full60"] + 0 >= 10) out(2, "WARN", "pressure", "memory pressure of the boxes is " h["pressure_full60"] " percent (full, 60 seconds)")
+      # Eviction starts at 70 percent and takes one folder a minute; 75 for 15 minutes means it does not keep up.
+      if (h["disk_pct"] + 0 >= 75) out(3, "WARN", "disk", "the work area is " h["disk_pct"] " percent full, eviction should hold it under 70")
+      # The reaper runs every minute; ten minutes over the time limit is a reaper that does not work.
+      for (b in idle) if (idle[b] > h["ttl"] + 600) out(2, "WARN", "idle-box:" b, "box " b " is idle for " int(idle[b] / 60) " minutes and still there (time limit " int(h["ttl"] / 60) ")")
+      for (r in run) if (state[run[r]] != "running") out(2, "WARN", "stale-run:" r, "run " r " is listed as running but its box is not")
+      if (h["power"] == "on" && !work && h["keepawake"] == "held") out(6, "WARN", "awake", "awake without work for 6 samples, something holds the lock that keeps it awake (last busy reason: " h["idle_last"] ")")
+    }' "$2"
+}
+
+# Placement decisions from line <from> on. The probed hosts are logged in order. `order` must name the first of them;
+# `overflow` means the first had no room (a state other than `awake` or `asleep`). `spread` (more free memory on a
+# later host), moves (`--host`) and retries after a lost race are not judged.
+choices() { # <choices.log> <from line>
+  awk -F'\t' -v from="$2" '
+    NR >= from && ($5 == "order" || $5 == "overflow") && $6 != "" {
+      split($6, p, ","); e = index(p[1], "="); first = substr(p[1], 1, e - 1); s = substr(p[1], e + 1)
+      if (($5 == "order" && first != $4) || ($5 == "overflow" && (s == "awake" || s == "asleep")))
+        printf "1\tALERT\tevent:choice:%s\tplacement of %s at %s went to %s as \"%s\", but %s was first in order with room (%s)\n", NR, $2, $1, $4, $5, first, $6
+    }' "$1"
+}
+
+# Boxes whose worktree is gone but which the collector has not removed: it runs only after somebody's `box` call.
+# A record of a host that is not awake is not a finding: the collector never wakes a host, the record waits for it.
+stranded() { # <now> <awake hosts, space separated>
+  local r w since
+  for r in "$STATE"/boxes/*; do
+    [ -f "$r" ] || continue
+    case " $2 " in *" $(jq -r .host "$r" 2>/dev/null) "*) ;; *) continue ;; esac
+    since=$(jq -r '.missingSince // empty' "$r" 2>/dev/null); [ -n "$since" ] || continue
+    w=$(jq -r .worktree "$r")
+    [ ! -d "$w" ] && [ $(( $1 - since / 1000 )) -gt 7200 ] &&
+      printf '1\tWARN\tstranded:%s\tthe worktree %s is gone for %s hours and its box is still recorded (%s)\n' "${r##*/}" "$w" $(( ($1 - since / 1000) / 3600 )) "${r##*/}"
+  done
+}
+
+# Turns raw findings (standard input) into what is new: a finding is printed when it has held <needed> samples in a
+# row, and "ended" when a printed one is gone. Keys that start with `event:` are single events and never "end".
+settle() { # <counts file>
+  local c=$1; touch "$c"
+  awk -F'\t' -v counts="$c" '
+    BEGIN { while ((getline l < counts) > 0) { split(l, a, "\t"); old[a[1]] = a[2]; need[a[1]] = a[3] } close(counts) }
+    { n = old[$3] + 1; seen[$3] = 1; keep[$3] = n "\t" $1; if (n == $1) print $2 "\t" $4 }
+    END {
+      for (k in old) if (!(k in seen) && old[k] >= need[k] && k !~ /^event:/ && k !~ /:event:/) print "OK\tended: " k
+      printf "" > counts; for (k in keep) print k "\t" keep[k] > counts
+    }'
+}
+
+# One sample of every registered host. Prints the settled findings.
+sample() {
+  local now host kind state rest f prev boot oom versions="" line awake=""
+  now=$(date +%s); mkdir -p "$D/state"
+  {
+    while IFS=$'\t' read -r host kind state rest; do
+      [ -n "$host" ] || continue
+      f="$D/state/$host.report"
+      case $state in
+        asleep) [ "$kind" = sleeps ] && continue; printf '2\tALERT\t%s:down\t%s: is %s\n' "$host" "$host" "$state"; continue ;;
+        awake) ;;
+        *) printf '2\tALERT\t%s:down\t%s: is %s\n' "$host" "$host" "$state"; continue ;;
+      esac
+      ssh -n -o ConnectTimeout=8 -o BatchMode=yes "boxd-$host" pod report > "$f.new" 2>/dev/null && grep -q '^host' "$f.new" ||
+        { printf '2\tALERT\t%s:down\t%s: answers `pod status` but not `pod report`\n' "$host" "$host"; continue; }
+      mv "$f.new" "$f"; awake="$awake $host"
+      check "$host" "$f" "$now"
+      line=$(grep -m1 '^host' "$f" | tr '\t' '\n')
+      boot=$(sed -n 's/^boot=//p' <<<"$line"); oom=$(sed -n 's/^oom_kills=//p' <<<"$line")
+      versions="$versions $(sed -n 's/^version=//p' <<<"$line")"
+      { read -r prev < "$D/state/$host.oom"; } 2>/dev/null || prev=
+      if [ "${prev%% *}" = "$boot" ] && [ "$oom" -gt "${prev##* }" ] 2>/dev/null; then
+        printf '1\tALERT\t%s:event:oom:%s\t%s: the kernel killed a process of the boxes for memory (kills %s, were %s)\n' "$host" "$oom" "$host" "$oom" "${prev##* }"
+      elif [ -n "$prev" ] && [ "${prev%% *}" != "$boot" ]; then
+        printf '1\tWARN\t%s:event:boot:%s\t%s: restarted since the last sample\n' "$host" "$boot" "$host"
+      fi
+      echo "$boot $oom" > "$D/state/$host.oom"
+      printf '%s\t%s\n' "$host" "$(tr '\t' '\n' <<<"$line" | grep -E '^(vm_used|vm_max|group_mem_used_mb|group_mem_max_mb|mem_avail_mb|swap_used_mb|disk_pct|oom_kills|keepawake)=' | tr '\n' ' ')$(grep -c '^box' "$f") boxes, $(grep -c $'^run\t.*state=running' "$f") runs" >> "$D/state/summary.new"
+    done < <(box hosts 2>/dev/null)
+    # shellcheck disable=SC2086
+    [ "$(printf '%s\n' $versions | sort -u | wc -l)" -gt 1 ] && printf '1\tWARN\tversions\tthe hosts run different versions:%s\n' "$versions"
+    if [ -f "$STATE/choices.log" ]; then
+      { read -r prev < "$D/state/choices.line"; } 2>/dev/null || prev=$(( $(wc -l < "$STATE/choices.log") + 1 ))   # first sample: only what comes after it
+      choices "$STATE/choices.log" "$prev"; echo $(( $(wc -l < "$STATE/choices.log") + 1 )) > "$D/state/choices.line"
+    fi
+    stranded "$now" "$awake"
+  } | settle "$D/state/counts"
+}
+
+case ${1:-} in
+  check) check "$2" "$3" "$4" ;;
+  choices) choices "$2" "$3" ;;
+  settle) settle "$2" ;;
+  stranded) stranded "$2" "$3" ;;
+  --loop)
+    mkdir -p "$D/state"; echo $$ > "$D/watch.pid"
+    say() { printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$D/progress.log"; }
+    say "host watch: started, a sample every ${2:-300} seconds"
+    while :; do
+      rm -f "$D/state/summary.new"
+      sample > "$D/state/found" 2>> "$D/errors.log"
+      while IFS=$'\t' read -r level text; do
+        say "host watch: $level $text"; [ "$level" = OK ] || printf '%s %s %s\n' "$(date '+%F %T')" "$level" "$text" >> "$D/anomalies.log"
+      done < "$D/state/found"
+      if [ -f "$D/state/summary.new" ]; then while IFS=$'\t' read -r h s; do say "host watch: $h $s"; done < "$D/state/summary.new"
+      else say "host watch: no host answered (asleep or unreachable)"; fi
+      sleep "${2:-300}"
+    done ;;
+  '') sample ;;
+  *) sed -n '2,9p' "$0"; exit 2 ;;
+esac
