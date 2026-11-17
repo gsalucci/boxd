@@ -19,7 +19,7 @@ CGROOT=${BOXD_CGROOT:-/sys/fs/cgroup}
 CGROUP=${BOXD_CGROUP:-$CGROOT/boxd}
 PROC=${BOXD_PROC:-/proc}   # test hook, like BOXD_MEMINFO: where `pod report` finds a box's process and its cgroup
 KVM=${BOXD_KVM:-/dev/kvm}   # test hook: the device a --kvm box gets
-VERSION=0.4.26
+VERSION=0.4.28
 # Keys that may only read, one "<type> <key> [comment]" per line (view_only below); and the largest answer of pod calls and pod log.
 VIEW_KEYS=${BOXD_VIEW_KEYS:-/etc/boxd/view_keys}
 READ_MAX=${BOXD_READ_MAX:-1048576}
@@ -154,6 +154,35 @@ while kill -0 "$p" 2>/dev/null && [ ! -S /var/run/docker.sock ]; do sleep 0.1; d
 # died with "Cannot fork"). 32768 is accepted as root and ran 6000 processes; 4194304 is refused, so it is this kernel's ceiling.
 # A guest that refuses or lacks the file keeps its limit, silently.
 GUEST_PID_MAX='{ echo 32768 > /proc/sys/kernel/pid_max; } 2>/dev/null'
+
+# The account number of a machine made with --user (uid and gid), one for every machine.
+VM_UID=1000
+
+# --user in a machine: the owner of the files is the mount, not a step. The two mounts of such a machine are made with uid=<N>,gid=<N>
+# (VM_UID, fixed at creation, see pod_run): the guest shows every file under /job and /cache, also one a later sync wrote, as that
+# owner, and the host's owner stays the build account (measured 2026-11-17, microsandbox 0.7.15). So nothing is changed per file.
+# This script runs as root in the guest before every command of such a machine ($1 is VM_UID) and prints the account's name:
+# 1. the account with that uid: the one the image already has, whatever its name, or else "box" is made (a group with that gid is
+# used when the image has one, else made; home /job/home); no groupadd, no useradd, or one that fails, ends with status 3 and the call is
+# refused, never run as root; 2. member of docker when that group exists and it is not yet; 3. dmesg opens for every account, so the
+# kernel's kill lines of a detached run (GUEST_KILLS) still come when the command runs as the account. The command is given
+# HOME=/job/home by the caller, whatever home the account has. BOXD_GUEST_JOB, BOXD_GUEST_ETC and BOXD_GUEST_DMESG are test hooks.
+# No single quote in the text: it is a sh -c argument that tests also eval.
+GUEST_USER=': boxd-user-setup
+j=${BOXD_GUEST_JOB:-/job}; e=${BOXD_GUEST_ETC:-/etc}; i=$1; n= g=
+while IFS=: read -r a _ b _; do [ "$b" != "$i" ] || [ -n "$n" ] || n=$a; done <"$e/passwd"
+if [ -z "$n" ]; then
+  command -v useradd >/dev/null 2>&1 || exit 3
+  while IFS=: read -r a _ b _; do [ "$b" != "$i" ] || g=1; done <"$e/group"
+  [ -n "$g" ] || groupadd -g "$i" box >/dev/null 2>&1 || exit 3
+  useradd -M -u "$i" -g "$i" -d "$j/home" -s "$(command -v bash || echo /bin/sh)" box >/dev/null 2>&1 || exit 3
+  n=box
+fi
+case $n in ""|*[!A-Za-z0-9_.-]*) exit 3 ;; esac
+mkdir -p "$j/home"
+case " $(id -nG "$n" 2>/dev/null) " in *" docker "*) ;; *) ! getent group docker >/dev/null 2>&1 || usermod -aG docker "$n" >/dev/null 2>&1 || : ;; esac
+{ echo 0 >"${BOXD_GUEST_DMESG:-/proc/sys/kernel/dmesg_restrict}"; } 2>/dev/null
+echo "$n"'
 
 # The real memory need of a machine, measured where it is known (2026-11-17): the host sees a machine use its whole size, because the guest
 # fills spare memory with file cache and never gives it back. This loop runs in the guest while the machine lives and keeps the highest
@@ -818,6 +847,7 @@ pod_report() {
         user="-" size="-" mem="-" mpk="-"
         if [ "$engine" = vm ]; then
             size=$(cat "$j/.vm-size" 2>/dev/null); size=${size:-large}   # large when there is no record, as pod run reads it
+            user=no; [ ! -e "$j/.vm-user" ] || user=yes
             lim=$(lim_mb "$(size_lim "$size")")
             mpk=$(mem_peak "$j") || mpk="-"
             [ "$state" != running ] || mem=$(vm_mb "$box")
@@ -980,9 +1010,9 @@ pod_run() {
     [ -z "$vm" ] || engine=vm
     CALL_ENGINE=$engine
     # --user is sticky like the engine and the image: a box made with it keeps it, also through --recreate.
-    # Virtual machine boxes have no unprivileged user yet.
-    [ -z "$vm" ] || [ -z "$user" ] || die "--user is not supported for virtual machine boxes yet"
-    [ -n "$vm" ] || [ -z "$cuser" ] || user=1
+    # A machine has no label: its record is the file .vm-user in the box folder, next to .vm-size.
+    if [ -n "$vm" ]; then cuser=; [ ! -e "$J/.vm-user" ] || cuser=1; fi
+    [ -z "$cuser" ] || user=1
     # --kvm is sticky the same way, and for container boxes only (a virtual machine box has no nested virtualization:
     # no /dev/kvm, no vmx or svm flag inside, checked on the tower 2026-11-14).
     [ -z "$vm" ] || [ -z "$kvm" ] || die "--kvm is only for container boxes"
@@ -1085,8 +1115,10 @@ pod_run() {
     # 9>&- 7>&- : the long-lived box processes must not inherit the locks.
     if [ -n "$vm" ]; then
         if [ -n "$create" ]; then
+            # --user: both mounts present their files as the account (uid and gid VM_UID), see GUEST_USER; no --user: the line as it was.
+            local mo=""; [ -z "$user" ] || mo=",uid=$VM_UID,gid=$VM_UID"
             vmx create --name "$name" \
-                --mount-dir "$J:/job:host-perms=mirror" --mount-dir "$WORK/cache/pod:/cache:host-perms=mirror" \
+                --mount-dir "$J:/job:host-perms=mirror$mo" --mount-dir "$WORK/cache/pod:/cache:host-perms=mirror$mo" \
                 --mount-owned /var/lib/docker:kind=disk,size=$VM_ENGINE_DISK --mount-owned /var/lib/containers:kind=disk,size=$VM_ENGINE_DISK \
                 --mount-owned /tmp:kind=disk,size=$VM_TMP_DISK \
                 "${CACHE_ENV[@]}" \
@@ -1125,13 +1157,9 @@ pod_run() {
     # Which build the box was made from; a box made from another image has no record, so the next build replaces it.
     if [ -n "$create" ]; then
         if [ -n "$vm" ]; then printf %s "$size" >"$J/.vm-size"; else rm -f "$J/.vm-size"; fi
+        if [ -n "$vm" ] && [ -n "$user" ]; then : >"$J/.vm-user"; else rm -f "$J/.vm-user"; fi
         if [ -n "$imgfile" ]; then printf %s "$newid" >"$J/.built-id"
         elif [ "$image" != "localhost/built-$box:latest" ]; then rm -f "$J/.built-id"; fi
-        # Said once, when the box is made: root in a box is not obvious, and a test failure caused by it was taken for a real one.
-        if [ -n "$vm" ]; then echo "boxd-pod: new machine box $box: commands run as root (--user does not apply to a machine)" >&2
-            [ -z "$chosen" ] || echo "boxd-pod: machine box $box: size $size chosen from its past need of $chosen MB (give --size to choose yourself)" >&2
-        elif [ -n "$user" ]; then echo "boxd-pod: new container box $box: commands run as an ordinary account (--user)" >&2
-        else echo "boxd-pod: new container box $box: commands run as root; an ordinary account needs --user at creation" >&2; fi
     fi
     exec 9>&-
 
@@ -1144,6 +1172,26 @@ pod_run() {
         ) </dev/null >/dev/null || die "snapshot failed"
     fi
 
+    # --user in a machine: the account (see GUEST_USER); the command runs as it, with the home the container side has.
+    local -a vu=()
+    if [ -n "$vm" ] && [ -n "$user" ]; then
+        local un
+        un=$(vmx exec -w / "$name" -- sh -c "$GUEST_USER" _ "$VM_UID" </dev/null 2>/dev/null); rc=$?
+        [ $rc -ne 3 ] || die "--user needs useradd in the machine's image"
+        un=${un##*$'\n'}
+        [ $rc -eq 0 ] && [[ $un =~ ^[A-Za-z0-9_.-]+$ ]] || die "cannot set up the account of box $box"
+        vu=(-u "$un" -e HOME=/job/home)
+    fi
+    # Said once, when the box is made, after the refusals and the snapshot so that a refused call has one line: root in a box is not obvious, and a test failure caused by it was taken for a real one.
+    if [ -n "$create" ]; then
+        if [ -n "$vm" ]; then
+            if [ -n "$user" ]; then echo "boxd-pod: new machine box $box: commands run as an ordinary account (--user)" >&2
+            else echo "boxd-pod: new machine box $box: commands run as root; an ordinary account needs --user at creation" >&2; fi
+            [ -z "$chosen" ] || echo "boxd-pod: machine box $box: size $size chosen from its past need of $chosen MB (give --size to choose yourself)" >&2
+        elif [ -n "$user" ]; then echo "boxd-pod: new container box $box: commands run as an ordinary account (--user)" >&2
+        else echo "boxd-pod: new container box $box: commands run as root; an ordinary account needs --user at creation" >&2; fi
+    fi
+
     local -a eng
     [ -z "${SSH_TTY:-}" ] || tty=-t
     # --env values: into this process's environment only now (the engines take a bare -e NAME from it), carriers cleared.
@@ -1152,7 +1200,7 @@ pod_run() {
     for v in ${!BOXD_SECRET_*}; do unset "$v"; done
     local -a eu=()
     [ -z "$user" ] || eu=(--user "$(id -u):$(id -g)" -e HOME=/job/home)
-    if [ -n "$vm" ]; then eng=(msb exec --stream "${ev[@]}" -w /job/src "$name" --); else eng=(podman exec "${eu[@]}" "${ev[@]}" -w /job/src "$name"); fi
+    if [ -n "$vm" ]; then eng=(msb exec --stream "${vu[@]}" "${ev[@]}" -w /job/src "$name" --); else eng=(podman exec "${eu[@]}" "${ev[@]}" -w /job/src "$name"); fi
 
     if [ -n "$run" ]; then
         : > "$J/runs/$run.log"
@@ -1189,7 +1237,7 @@ pod_run() {
     local k0; k0=$(oom_kills)
     if [ -n "$tty" ]; then   # on a terminal sshd hangs the session up and the engine follows it
         if [ -n "$vm" ]; then
-            vmx exec $tty "${ev[@]}" -w /job/src "$name" -- "${argv[@]}"
+            vmx exec $tty "${vu[@]}" "${ev[@]}" -w /job/src "$name" -- "${argv[@]}"
         else
             podman exec -i $tty "${eu[@]}" "${ev[@]}" -w /job/src "$name" "${argv[@]}"
         fi
@@ -1206,7 +1254,7 @@ pod_run() {
         local call=c$$-${EPOCHREALTIME//[!0-9]/}-$RANDOM ep wp gone="" pp=$PPID
         trap 'gone=1' HUP TERM PIPE INT
         if [ -n "$vm" ]; then
-            msb exec --stream "${ev[@]}" -e "BOXD_CALL=$call" -w /job/src "$name" -- "${argv[@]}" <&0 &   # msb itself, not vmx: $! must be the engine process
+            msb exec --stream "${vu[@]}" "${ev[@]}" -e "BOXD_CALL=$call" -w /job/src "$name" -- "${argv[@]}" <&0 &   # msb itself, not vmx: $! must be the engine process
         else
             podman exec -i "${eu[@]}" "${ev[@]}" -e "BOXD_CALL=$call" -w /job/src "$name" "${argv[@]}" <&0 &
         fi

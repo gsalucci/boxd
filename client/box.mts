@@ -19,7 +19,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-export const VERSION = "0.4.26";
+export const VERSION = "0.4.28";
 const BOX = /^[a-z0-9][a-z0-9_.-]{0,62}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const MAC = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i;
@@ -84,8 +84,9 @@ container or, with --vm, a small virtual machine; the same box on every call) an
   --env <NAME>     hand the credential NAME from your environment to the command (repeatable; names ending in
                    _TOKEN, _KEY, _SECRET or _PASSWORD); sent by ssh's own environment passing, never on the command
                    line, in a file or a log
-  --user           the box runs every command as an unprivileged user that owns the synced files (container
-                   boxes only); an existing box keeps it once made with it, adding it to a root box needs --recreate
+  --user           the box runs every command as an unprivileged user that owns the synced files (container and
+                   virtual machine boxes; a machine's account has the number 1000 and may run docker); an existing box keeps
+                   it once made with it, adding it to a root box needs --recreate. A hosted CI runner is --vm --user --git
   --kvm            the box gets the host's /dev/kvm, so QEMU inside runs on hardware virtualization (container boxes
                    only; the same virtualization the build account has); kept like --user, adding it needs --recreate
   --recreate       replace the box with a fresh one (files stay; same engine and image unless you name others)

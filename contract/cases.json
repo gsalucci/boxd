@@ -1735,26 +1735,91 @@
       ]
     },
     {
-      "name": "--user with --vm is refused",
+      "name": "--user with --vm: both mounts carry the account's ids (the /cache one too), the account is set up as root, then the command runs with -u box and HOME",
       "command": "pod run boxd-2889387319 --vm --user -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
       "containers": {},
       "sandboxes": {},
-      "exit": 125,
-      "stderr": "boxd-pod: --user is not supported for virtual machine boxes yet",
-      "podman_calls_absent": [
-        "^rm",
-        "^run",
-        "^start",
-        "^exec"
+      "exit": 0,
+      "stderr": "boxd-pod: new machine box boxd-2889387319: commands run as an ordinary account (--user)",
+      "msb_calls": [
+        "^create --name pod-boxd-2889387319 --mount-dir /work/jobs/boxd-2889387319:/job:host-perms=mirror,uid=1000,gid=1000 --mount-dir /work/cache/pod:/cache:host-perms=mirror,uid=1000,gid=1000 ",
+        "^exec -w / pod-boxd-2889387319 -- sh -c .*pid_max",
+        "^exec -w / pod-boxd-2889387319 -- sh -c : boxd-user-setup .*useradd",
+        "^exec --stream -u box -e HOME=/job/home -e BOXD_CALL=[0-9a-z-]+ -w /job/src pod-boxd-2889387319 -- cargo test -p my crate$"
       ],
-      "msb_calls_absent": [
-        "^create",
-        "^start",
-        "^exec"
+      "files": [
+        "/work/jobs/boxd-2889387319/.vm-user"
       ]
     },
     {
-      "name": "--user on an existing virtual machine box is refused without --vm too",
+      "name": "a machine made with --user whose idle sandbox was removed is made again from its folder with the account's ids",
+      "command": "pod run boxd-2889387319 --vm -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "containers": {},
+      "sandboxes": {},
+      "job_files": {
+        ".vm-user": ""
+      },
+      "exit": 0,
+      "stderr": "boxd-pod: new machine box boxd-2889387319: commands run as an ordinary account (--user)",
+      "msb_calls": [
+        "^create --name pod-boxd-2889387319 --mount-dir /work/jobs/boxd-2889387319:/job:host-perms=mirror,uid=1000,gid=1000 --mount-dir /work/cache/pod:/cache:host-perms=mirror,uid=1000,gid=1000 ",
+        "^exec -w / pod-boxd-2889387319 -- sh -c : boxd-user-setup ",
+        "^exec --stream -u box -e HOME=/job/home -e BOXD_CALL=[0-9a-z-]+ -w /job/src pod-boxd-2889387319 -- cargo test"
+      ]
+    },
+    {
+      "name": "a machine made without --user: the create line has no ids on either mount",
+      "command": "pod run boxd-2889387319 --vm -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "containers": {},
+      "sandboxes": {},
+      "exit": 0,
+      "msb_calls": [
+        "^create --name pod-boxd-2889387319 --mount-dir /work/jobs/boxd-2889387319:/job:host-perms=mirror --mount-dir /work/cache/pod:/cache:host-perms=mirror "
+      ],
+      "msb_calls_absent": [
+        "uid=",
+        "gid="
+      ]
+    },
+    {
+      "name": "--user in an image whose account with the id has another name: the command runs as that name",
+      "command": "pod run boxd-2889387319 --vm --user -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "containers": {},
+      "sandboxes": {},
+      "env": {
+        "FAKE_USER_NAME": "debian"
+      },
+      "exit": 0,
+      "msb_calls": [
+        "^exec --stream -u debian -e HOME=/job/home -e BOXD_CALL=[0-9a-z-]+ -w /job/src pod-boxd-2889387319 -- cargo test"
+      ]
+    },
+    {
+      "name": "a machine made with --user keeps it: a later call without it still sets the account up and runs with -u box, no new machine, no line",
+      "command": "pod run boxd-2889387319 -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "containers": {},
+      "sandboxes": {
+        "pod-boxd-2889387319": {
+          "image": "docker.io/library/debian:stable-slim",
+          "state": "running"
+        }
+      },
+      "job_files": {
+        ".vm-user": ""
+      },
+      "exit": 0,
+      "stderr": "",
+      "msb_calls": [
+        "^exec -w / pod-boxd-2889387319 -- sh -c : boxd-user-setup .*useradd",
+        "^exec --stream -u box -e HOME=/job/home -e BOXD_CALL=[0-9a-z-]+ -w /job/src pod-boxd-2889387319 -- cargo test -p my crate$"
+      ],
+      "msb_calls_absent": [
+        "^create",
+        "^rm"
+      ]
+    },
+    {
+      "name": "--user on a machine made without it is refused, machine untouched",
       "command": "pod run boxd-2889387319 --user -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
       "containers": {},
       "sandboxes": {
@@ -1764,11 +1829,97 @@
         }
       },
       "exit": 125,
-      "stderr": "boxd-pod: --user is not supported for virtual machine boxes yet",
+      "stderr": "boxd-pod: box boxd-2889387319 was made without --user, asked for --user; add --recreate",
       "msb_calls_absent": [
         "^start",
         "^exec",
-        "^rm"
+        "^rm",
+        "^create"
+      ]
+    },
+    {
+      "name": "--user --recreate replaces a root machine with a user machine, recorded",
+      "command": "pod run boxd-2889387319 --user --recreate -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "containers": {},
+      "sandboxes": {
+        "pod-boxd-2889387319": {
+          "image": "docker.io/library/debian:stable-slim",
+          "state": "running"
+        }
+      },
+      "exit": 0,
+      "stderr": "boxd-pod: new machine box boxd-2889387319: commands run as an ordinary account (--user)",
+      "msb_calls": [
+        "^rm -f pod-boxd-2889387319$",
+        "^create --name pod-boxd-2889387319 --mount-dir /work/jobs/boxd-2889387319:/job:host-perms=mirror,uid=1000,gid=1000 --mount-dir /work/cache/pod:/cache:host-perms=mirror,uid=1000,gid=1000 ",
+        "^exec -w / pod-boxd-2889387319 -- sh -c : boxd-user-setup .*useradd",
+        "^exec --stream -u box -e HOME=/job/home -e BOXD_CALL=[0-9a-z-]+ -w /job/src pod-boxd-2889387319 -- cargo test -p my crate$"
+      ],
+      "files": [
+        "/work/jobs/boxd-2889387319/.vm-user"
+      ]
+    },
+    {
+      "name": "--recreate without --user keeps the machine's user",
+      "command": "pod run boxd-2889387319 --recreate -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "containers": {},
+      "sandboxes": {
+        "pod-boxd-2889387319": {
+          "image": "docker.io/library/debian:stable-slim",
+          "state": "running"
+        }
+      },
+      "job_files": {
+        ".vm-user": ""
+      },
+      "exit": 0,
+      "stderr": "boxd-pod: new machine box boxd-2889387319: commands run as an ordinary account (--user)",
+      "msb_calls": [
+        "^rm -f pod-boxd-2889387319$",
+        "^create --name pod-boxd-2889387319 --mount-dir /work/jobs/boxd-2889387319:/job:host-perms=mirror,uid=1000,gid=1000 --mount-dir /work/cache/pod:/cache:host-perms=mirror,uid=1000,gid=1000 ",
+        "^exec -w / pod-boxd-2889387319 -- sh -c : boxd-user-setup .*useradd",
+        "^exec --stream -u box -e HOME=/job/home -e BOXD_CALL=[0-9a-z-]+ -w /job/src pod-boxd-2889387319 -- cargo test -p my crate$"
+      ],
+      "files": [
+        "/work/jobs/boxd-2889387319/.vm-user"
+      ]
+    },
+    {
+      "name": "a machine made without --user runs as root: no account step, no -u, and no record",
+      "command": "pod run boxd-2889387319 --vm -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "containers": {},
+      "sandboxes": {},
+      "exit": 0,
+      "msb_calls_absent": [
+        "boxd-user-setup",
+        " -u "
+      ],
+      "files_absent": [
+        "/work/jobs/boxd-2889387319/.vm-user"
+      ]
+    },
+    {
+      "name": "--user in a machine whose image has no useradd is refused with one line, the command does not run",
+      "command": "pod run boxd-2889387319 --vm --user -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "containers": {},
+      "sandboxes": {},
+      "env": {
+        "FAKE_USER_EXIT": "3"
+      },
+      "exit": 125,
+      "stderr": "boxd-pod: --user needs useradd in the machine's image",
+      "msb_calls_absent": [
+        "-w /job/src"
+      ]
+    },
+    {
+      "name": "--user with --container still gives the container its own account, and --user does not leave a machine record",
+      "command": "pod run boxd-2889387319 --container --user -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "containers": {},
+      "sandboxes": {},
+      "exit": 0,
+      "files_absent": [
+        "/work/jobs/boxd-2889387319/.vm-user"
       ]
     },
     {
@@ -3058,7 +3209,7 @@
       "command": "pod status",
       "msb": false,
       "exit": 0,
-      "stdout_re": "^version=0\\.4\\.26\tengines=container\tcpus=8\tload1=[0-9]+\\.[0-9]+\tvm_used=0\tvm_max=3\tvm_room=no\tboxes=0\tdisk_pct=37\tmem_free_mb=unknown\timages=\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=-\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096$"
+      "stdout_re": "^version=0\\.4\\.28\tengines=container\tcpus=8\tload1=[0-9]+\\.[0-9]+\tvm_used=0\tvm_max=3\tvm_room=no\tboxes=0\tdisk_pct=37\tmem_free_mb=unknown\timages=\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=-\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096$"
     },
     {
       "name": "pod status: one of three machines running, room for another; boxes counts both engines",
@@ -3080,7 +3231,7 @@
           "state": "stopped"
         }
       },
-      "stdout_re": "^version=0\\.4\\.26\tengines=container,vm\tcpus=8\tload1=[0-9]+\\.[0-9]+\tvm_used=1\tvm_max=3\tvm_room=yes\tboxes=3\tdisk_pct=37\tmem_free_mb=unknown\timages=\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=-\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096$"
+      "stdout_re": "^version=0\\.4\\.28\tengines=container,vm\tcpus=8\tload1=[0-9]+\\.[0-9]+\tvm_used=1\tvm_max=3\tvm_room=yes\tboxes=3\tdisk_pct=37\tmem_free_mb=unknown\timages=\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=-\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096$"
     },
     {
       "name": "pod status: all machines used, no room (vm_room is the server's own answer)",
@@ -3641,9 +3792,10 @@
         "jobs/a/runs/r2.pid": "1\n",
         "jobs/b/.vm-size": "small",
         "jobs/b/.mem-peak": "2900",
-        "jobs/a/.mem-peak": "700"
+        "jobs/a/.mem-peak": "700",
+        "jobs/b/.vm-user": ""
       },
-      "stdout_re": "^host\tversion=0\\.4\\.26\tengines=container,vm\tcpus=8\tload1=[0-9]+\\.[0-9]+\tload5=[0-9]+\\.[0-9]+\tload15=[0-9]+\\.[0-9]+\tboot=[0-9]+\tmem_total_mb=32000\tmem_avail_mb=9000\tswap_total_mb=8000\tswap_used_mb=1200\tgroup_mem_max_mb=32768\tgroup_mem_used_mb=1024\tpressure_some10=2\\.31\tpressure_some60=1\\.12\tpressure_full10=0\\.40\tpressure_full60=0\\.18\toom_kills=1\tvm_used=0\tvm_max=none\tvm_room=yes\tvm_mem_mb=8192\tbox_mem_mb=12288\tdisk_pct=37\tdisk_total_mb=976562\tdisk_used_mb=361328\tttl=1800\tpower=on\tidle_checks=20\tidle_count=7\tidle_last=idle\treset_at=85\tkeepawake=free\nbox\tbox=a\tengine=container\timage=docker\\.io/library/rust:1\tstate=running\tlast_used=0\tuser=no\tsize=-\tmem_limit_mb=12288\tmem_mb=(-|[0-9]+)\tbusy=no\truns=1\tmem_peak_mb=-\nbox\tbox=b\tengine=vm\timage=localhost/toolbox:latest\tstate=stopped\tlast_used=0\tuser=-\tsize=small\tmem_limit_mb=2048\tmem_mb=-\tbusy=no\truns=0\tmem_peak_mb=2900\nrun\tbox=a\tid=r1\tstate=ended\texit=3\tbytes=11\tchanged=[0-9]+\nrun\tbox=a\tid=r2\tstate=running\texit=-\tbytes=4\tchanged=[0-9]+\nimage\tname=toolbox\tbytes=0\tbuilt=[0-9]+$",
+      "stdout_re": "^host\tversion=0\\.4\\.28\tengines=container,vm\tcpus=8\tload1=[0-9]+\\.[0-9]+\tload5=[0-9]+\\.[0-9]+\tload15=[0-9]+\\.[0-9]+\tboot=[0-9]+\tmem_total_mb=32000\tmem_avail_mb=9000\tswap_total_mb=8000\tswap_used_mb=1200\tgroup_mem_max_mb=32768\tgroup_mem_used_mb=1024\tpressure_some10=2\\.31\tpressure_some60=1\\.12\tpressure_full10=0\\.40\tpressure_full60=0\\.18\toom_kills=1\tvm_used=0\tvm_max=none\tvm_room=yes\tvm_mem_mb=8192\tbox_mem_mb=12288\tdisk_pct=37\tdisk_total_mb=976562\tdisk_used_mb=361328\tttl=1800\tpower=on\tidle_checks=20\tidle_count=7\tidle_last=idle\treset_at=85\tkeepawake=free\nbox\tbox=a\tengine=container\timage=docker\\.io/library/rust:1\tstate=running\tlast_used=0\tuser=no\tsize=-\tmem_limit_mb=12288\tmem_mb=(-|[0-9]+)\tbusy=no\truns=1\tmem_peak_mb=-\nbox\tbox=b\tengine=vm\timage=localhost/toolbox:latest\tstate=stopped\tlast_used=0\tuser=yes\tsize=small\tmem_limit_mb=2048\tmem_mb=-\tbusy=no\truns=0\tmem_peak_mb=2900\nrun\tbox=a\tid=r1\tstate=ended\texit=3\tbytes=11\tchanged=[0-9]+\nrun\tbox=a\tid=r2\tstate=running\texit=-\tbytes=4\tchanged=[0-9]+\nimage\tname=toolbox\tbytes=0\tbuilt=[0-9]+$",
       "podman_calls_absent": [
         "^run",
         "^start",
@@ -3676,7 +3828,7 @@
         "BOXD_KEEPAWAKE_LOCK": "/work/no-lock",
         "BOXD_IDLE_STATE": "/work/no-idle"
       },
-      "stdout_re": "^host\tversion=0\\.4\\.26\tengines=container\tcpus=8\t.*\tgroup_mem_max_mb=-\tgroup_mem_used_mb=-\tpressure_some10=-\tpressure_some60=-\tpressure_full10=-\tpressure_full60=-\toom_kills=-\tvm_used=0\tvm_max=3\tvm_room=no\tvm_mem_mb=8192\tbox_mem_mb=12288\tdisk_pct=37\tdisk_total_mb=976562\tdisk_used_mb=361328\tttl=1800\tpower=off\tidle_checks=-\tidle_count=-\tidle_last=-\treset_at=-\tkeepawake=none$"
+      "stdout_re": "^host\tversion=0\\.4\\.28\tengines=container\tcpus=8\t.*\tgroup_mem_max_mb=-\tgroup_mem_used_mb=-\tpressure_some10=-\tpressure_some60=-\tpressure_full10=-\tpressure_full60=-\toom_kills=-\tvm_used=0\tvm_max=3\tvm_room=no\tvm_mem_mb=8192\tbox_mem_mb=12288\tdisk_pct=37\tdisk_total_mb=976562\tdisk_used_mb=361328\tttl=1800\tpower=off\tidle_checks=-\tidle_count=-\tidle_last=-\treset_at=-\tkeepawake=none$"
     },
     {
       "name": "pod report lists every running run and, of the ended ones, the three with the greatest ids per box",
@@ -4673,7 +4825,7 @@
       "containers": {},
       "sandboxes": {},
       "exit": 0,
-      "stderr": "boxd-pod: new machine box boxd-2889387319: commands run as root (--user does not apply to a machine)",
+      "stderr": "boxd-pod: new machine box boxd-2889387319: commands run as root; an ordinary account needs --user at creation",
       "job_files": {
         ".mem-peak": "11000",
         ".vm-size": "xlarge"
@@ -4688,7 +4840,7 @@
       "containers": {},
       "sandboxes": {},
       "exit": 0,
-      "stderr": "boxd-pod: new machine box boxd-2889387319: commands run as root (--user does not apply to a machine)",
+      "stderr": "boxd-pod: new machine box boxd-2889387319: commands run as root; an ordinary account needs --user at creation",
       "job_files": {
         ".mem-peak": "6554"
       },
@@ -4705,7 +4857,7 @@
       "containers": {},
       "sandboxes": {},
       "exit": 0,
-      "stderr": "boxd-pod: new machine box boxd-2889387319: commands run as root (--user does not apply to a machine)",
+      "stderr": "boxd-pod: new machine box boxd-2889387319: commands run as root; an ordinary account needs --user at creation",
       "job_files": {
         ".mem-peak": "1000"
       },
@@ -4719,7 +4871,7 @@
       "containers": {},
       "sandboxes": {},
       "exit": 0,
-      "stderr": "boxd-pod: new machine box boxd-2889387319: commands run as root (--user does not apply to a machine)",
+      "stderr": "boxd-pod: new machine box boxd-2889387319: commands run as root; an ordinary account needs --user at creation",
       "job_files": {
         ".mem-peak": "12x"
       },
@@ -4738,7 +4890,7 @@
         }
       },
       "exit": 0,
-      "stderr": "boxd-pod: new machine box boxd-2889387319: commands run as root (--user does not apply to a machine)",
+      "stderr": "boxd-pod: new machine box boxd-2889387319: commands run as root; an ordinary account needs --user at creation",
       "job_files": {
         ".mem-peak": "1000"
       },
@@ -4783,7 +4935,7 @@
       "containers": {},
       "sandboxes": {},
       "exit": 0,
-      "stderr": "boxd-pod: new machine box boxd-2889387319: commands run as root (--user does not apply to a machine)",
+      "stderr": "boxd-pod: new machine box boxd-2889387319: commands run as root; an ordinary account needs --user at creation",
       "env": {
         "BOXD_VM_LIMITS": "-c 2 -m 2G"
       },

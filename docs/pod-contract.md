@@ -79,7 +79,7 @@ container or microsandbox sandbox), so a box name means one box whatever the eng
 `/work/jobs/<box>`, its `.lock`, `.last-used` and `.running`, `--snapshot`, the detach wrapper, boxd-keepawake and
 the reaper are shared.
 
-**`--user` (container boxes only).** The box runs every command as an unprivileged user whose id owns the synced
+**`--user`.** The box runs every command as an unprivileged user whose id owns the synced
 files: the build account's own id. A new box is made with `--userns=keep-id` (inside, the build account's uid and
 gid equal its host ones, so files under `/job` stay its own), `--label boxd.user=1` and `-e HOME=/job/home`
 (the folder `/work/jobs/<box>/home` is created first; the sync never touches it), and every `podman exec` of
@@ -88,9 +88,26 @@ account that runs `boxd-pod`) before `-w`. The label is read back from `podman c
 (`{{.Config.Labels}}`). Sticky like engine and image: a later call without `--user` keeps it, and so does
 `--recreate` without it. `--user` on an existing box made without it is refused (exit 125,
 `boxd-pod: box <box> was made without --user, asked for --user; add --recreate`); `--user --recreate` replaces
-it. Limit: there is no way to go back to a root box except `pod stop` and a new call. `--user` with the `vm` engine,
-also on an existing virtual machine box, is refused (exit 125, `boxd-pod: --user is not supported for virtual
-machine boxes yet`); the check follows the engine lookup of step 4 and comes before any removal or creation.
+it. Limit: there is no way to go back to a root box except `pod stop` and a new call.
+
+**`--user` in a machine.** The account has the number 1000 (user and group). Made with `--user`, a machine has the empty file
+`/work/jobs/<box>/.vm-user` next to `.vm-size` (a machine has no label); a creation without `--user` removes it. Every rule above holds
+the same: sticky (also through `--recreate`, and when the machine is made again from its folder after the reaper removed it), and the
+refusal `boxd-pod: box <box> was made without --user, asked for --user; add --recreate` reads the file for a machine. The files get their
+owner from the mounts: such a machine is created with `--mount-dir /work/jobs/<box>:/job:host-perms=mirror,uid=1000,gid=1000` and
+`--mount-dir /work/cache/pod:/cache:host-perms=mirror,uid=1000,gid=1000` (a machine without `--user` keeps the lines without the two
+ids). The guest then shows every file under `/job` and `/cache`, also one a later sync wrote, as 1000:1000, while on the host the owner stays
+the build account; no file is changed at any call. Before the command, after the sync and after `--snapshot`, each call that runs in such a
+machine runs one `msb exec -w / pod-<box> -- sh -c <script> _ 1000` as root in the guest (the script text starts with `: boxd-user-setup`).
+It finds the account with that number in `/etc/passwd`, whatever its name, or else makes `box` (group 1000 made unless it exists, home
+`/job/home`, `useradd -M -u 1000 -g 1000`), makes `/job/home`, adds the account to the group `docker` when the image has it and it is not
+a member, opens `dmesg` for every account (so the kill lines of a detached run still come), and prints the account's name. The command
+then runs as `msb exec [-t|--stream] -u <name> -e HOME=/job/home ...` (foreground, with and without a terminal, and detached; `HOME` is
+the same as in a container box whatever home the account has); the server's own helper commands (the start script, `pod ps`, the cleanup
+of a lost call) stay root. An image without `useradd` or `groupadd` where the account must be made, or one that fails, is refused after the
+machine exists: exit 125, `boxd-pod: --user needs useradd in the machine's image`, one line, the command is not run. Older servers refuse
+`--user` with the `vm` engine (exit 125, `boxd-pod: --user is not supported for virtual machine boxes yet`) and an older client sends the
+flag as it always did, so against this server it gets the account. `--kvm` stays for container boxes only.
 
 **`--kvm` (container boxes only).** A new box is made with `--device /dev/kvm --label boxd.kvm=1`, so QEMU inside
 runs on the processor's hardware virtualization: the box's code gets the same virtualization the build account has. Its
@@ -272,7 +289,7 @@ the file keeps its limit, silently. The real fix is a guest kernel not built sma
         pressure its files not written for `BOXD_KEEP_DAYS` are removed (see "Retention").
 
    d. **vm only:** the docker start script of "Engines". It also runs `git config --system --replace-all safe.directory /job/src` (when `git` exists in the image): the guest's root is not the owner of the synced files (the mirror of the build account's ids), and git refuses a repository owned by another account ("dubious ownership"), so `git status` in `/job/src` would fail after `--git` or `--snapshot`. It trusts that one folder, inside the machine only; the host's configuration is untouched. In a container box the files belong to the account that runs commands (container root maps to the build account; `--user` uses `--userns=keep-id`), so nothing is needed there.
-6. Touch `/work/jobs/<box>/.last-used`. When this call made the box (a first call, `--recreate`, or a replacement because the image build changed), one line goes to standard error, after the box exists and before the command, saying which account commands run as: `boxd-pod: new container box <box>: commands run as root; an ordinary account needs --user at creation`, `boxd-pod: new container box <box>: commands run as an ordinary account (--user)`, or `boxd-pod: new machine box <box>: commands run as root (--user does not apply to a machine)`. A later call into the same box prints none, and nothing goes to standard output. The server says it because only the server knows that the call made the box; a refusal (exit 125 or 75) comes before it, so a refusal still has exactly one `boxd-pod:` line. The line is plain text for people; a client never parses it.
+6. Touch `/work/jobs/<box>/.last-used`. When this call made the box (a first call, `--recreate`, or a replacement because the image build changed), one line goes to standard error, after the box exists, after the refusals of the call and the snapshot, and before the command, saying which account commands run as: `boxd-pod: new container box <box>: commands run as root; an ordinary account needs --user at creation`, `boxd-pod: new container box <box>: commands run as an ordinary account (--user)`, or `boxd-pod: new machine box <box>: commands run as an ordinary account (--user)` / `boxd-pod: new machine box <box>: commands run as root; an ordinary account needs --user at creation`. A later call into the same box prints none, and nothing goes to standard output. The server says it because only the server knows that the call made the box; a refusal (exit 125 or 75) comes before it, so a refusal still has exactly one `boxd-pod:` line. The line is plain text for people; a client never parses it.
 7. `--snapshot`: on the host, in `/work/jobs/<box>/src`: `git init -q` if no `.git`, `git add -A`, commit as
    `boxd <boxd@localhost>` (a repository for tests that need one; the sync never carries `.git`). The repository is made on the host by the account that owns the files, so git never meets a foreign owner while it is made. `--git` (client only, see "Client") gives a repository at the worktree's own commit instead; the two cannot go together.
 8. Foreground (no `--detach`), exit code the command's, `.last-used` touched again at the end:
@@ -437,7 +454,7 @@ engine call that starts, stops or changes anything (they ask `podman ps` and `ms
   module's state folder `BOXD_IDLE_STATE`, `BOXD_RESET_AT`; each a dash when the power module is off, or its file cannot be read), and
   last `keepawake`: `held`, `free`, or `none` when the lock file (`BOXD_KEEPAWAKE_LOCK`) does not exist.
 - One `box` line per box, sorted by name: `box`, `engine`, `image`, `state` (`running` or `stopped`, as `pod list`), `last_used` (epoch
-  seconds, 0 when never), `user` (`yes`, `no`; a dash for a virtual machine), `size` (`small`, `medium`, `large`, `xlarge`; a dash for a
+  seconds, 0 when never), `user` (`yes`, `no`; for a machine from the file `.vm-user`, a dash from older servers), `size` (`small`, `medium`, `large`, `xlarge`; a dash for a
   container), `mem_limit_mb`, `mem_mb` (a dash when stopped or unreadable), `busy` (`yes` while a foreground or detached run holds the
   box's `.running` lock, tested without waiting, as the reaper does), `runs` (detached runs still running), and, last, `mem_peak_mb` (see "Memory need"; a dash for a container box and for a machine with nothing recorded). `mem_mb` of a virtual
   machine is the resident memory (`VmRSS`) of its machine process; of a container, `memory.current` of the cgroup of the

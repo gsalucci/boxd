@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.4.28
+
+- **A `--user` machine box gets its files and the shared caches through the mounts, not through a walk before each
+  call.** 0.4.27 handed the account every file under `/job/src` before each call and left `/cache` to root, so
+  cargo, pnpm, npm, Go and Maven could not write their caches as the account (`Permission denied`, seen on a real
+  machine). A machine made with `--user` is now created with `uid=1000,gid=1000` on its `/job` and `/cache` mounts:
+  inside, every file made on the host shows as the account's, also those a later sync writes, and on the host they
+  stay the build account's. The account is the image's own one with that number when it has one, else `box`; the
+  command runs with `HOME=/job/home`. A machine made by 0.4.27 with `--user` needs `--recreate` once.
+
+## 0.4.27
+
+- **`--user` works for machine boxes.** `box --vm --user --git ...` now gives all three at once: an ordinary account,
+  the machine's container runtime and the worktree as a git repository, which is what a hosted runner gives. A machine
+  made with `--user` keeps it (also through `--recreate`), as a container box does. Before each call the server makes
+  the account `box` in the machine when it is missing (home `/job/home`, member of group `docker` when the image has
+  it) and hands it every file under `/job/src` and `/job/home` that is not its own, so files written by a later sync
+  are covered; the command then runs as that account. An image without `useradd` is refused with
+  `boxd-pod: --user needs useradd in the machine's image`. `pod report` shows `user=yes` for such a machine and the
+  creation line names the account. Asked for by a user whose tests fail as root for reasons that are not the code.
+
 ## 0.4.26
 
 - **`box stop`: free a box's memory and keep its files.** Stops this worktree's box on its host; the folder with the

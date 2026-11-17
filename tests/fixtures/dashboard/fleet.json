@@ -1,7 +1,7 @@
 {
  "schema": 1,
  "generatedAt": 1794571200000,
- "version": "0.4.26",
+ "version": "0.4.28",
  "hosts": [
   {
    "id": "tower",
@@ -9,7 +9,7 @@
    "detail": "",
    "sleeps": true,
    "addr": "192.0.2.72",
-   "version": "0.4.26",
+   "version": "0.4.28",
    "report": true,
    "seenAt": 1794571198000,
    "sinceAt": 1794559800000,
@@ -157,7 +157,7 @@
    "engine": "vm",
    "image": "ghcr.io/void-linux/void-glibc:latest",
    "state": "running",
-   "userFlag": null,
+   "userFlag": false,
    "size": "large",
    "lastUsedAt": 1794571186000,
    "ttlAt": 1794572986000,
@@ -173,7 +173,7 @@
    "engine": "vm",
    "image": "docker.io/library/rust:1.83",
    "state": "running",
-   "userFlag": null,
+   "userFlag": false,
    "size": "medium",
    "lastUsedAt": 1794570986000,
    "ttlAt": 1794572786000,
@@ -421,19 +421,19 @@
   {
    "host": "tower",
    "name": "boxd",
-   "version": "0.4.26",
+   "version": "0.4.28",
    "status": "active"
   },
   {
    "host": "tower",
    "name": "boxd-sshd",
-   "version": "0.4.26",
+   "version": "0.4.28",
    "status": "active"
   },
   {
    "host": "tower",
    "name": "boxd-power",
-   "version": "0.4.26",
+   "version": "0.4.28",
    "status": "active"
   },
   {

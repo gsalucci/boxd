@@ -124,7 +124,8 @@ case $1 in
         else n=$(basename "$f" .tar); : > "$FAKE_VM_IMAGES/localhost_$n:latest"; fi ;;
     exec)
         case "$*" in *boxd-call-cleanup*) [ -z "${FAKE_CLEAN:-}" ] || echo cleaned > "$FAKE_CLEAN"; exit 0 ;; esac
-        shift; while :; do case $1 in -t|--stream) shift ;; -e) shift 2 ;; *) break ;; esac; done
+        case "$*" in *boxd-user-setup*) echo "${FAKE_USER_NAME:-box}"; exit "${FAKE_USER_EXIT:-0}" ;; esac
+        shift; while :; do case $1 in -t|--stream) shift ;; -e|-u) shift 2 ;; *) break ;; esac; done
         # the docker start script runs with the working folder /, the command in /job/src
         if [ "$2" = / ]; then exit "${FAKE_STARTER_EXIT:-0}"; fi
         [ -z "${FAKE_BLOCK_EXEC:-}" ] || block exec-blocked
@@ -870,7 +871,7 @@ eq "a new container box made with --user says so" "boxd-pod: new container box $
 pod "pod run $box -- $B64"
 eq "a later call without --user keeps the account and says nothing" 0 "$(grep -c '^boxd-pod: new ' "$T/e/err")"
 setup; pod "pod run $box --vm -- $B64"
-eq "a new machine box says it runs commands as root and that --user does not apply" "boxd-pod: new machine box $box: commands run as root (--user does not apply to a machine)" "$(grep '^boxd-pod: new ' "$T/e/err")"
+eq "a new machine box says it runs commands as root and that an account needs --user at creation" "boxd-pod: new machine box $box: commands run as root; an ordinary account needs --user at creation" "$(grep '^boxd-pod: new ' "$T/e/err")"
 setup; mkdir -p "$BOXD_CGROOT/boxd"; printf 'oom_kill 3\n' > "$BOXD_CGROOT/boxd/memory.events"
 export FAKE_EXEC_EXIT=137 FAKE_EXEC_CRASH=4 FAKE_BLOCK_EXEC=1
 pod "pod run $box --detach 20261115-140000-0001 -- $B64"; read -r _ <&3
@@ -1185,6 +1186,36 @@ until [ -s "$G/pid" ]; do kill -0 "$stand" 2>/dev/null || break; done
 start_loop; eq "guest starter: a live loop named by the pid file is not started twice" "no" "$([ -e "$G/peak" ] && echo yes || echo no)"
 exec 5>"$G/hold"; exec 5>&-; wait "$stand"
 echo $$ > "$G/pid"; start_loop; eq "guest starter: a pid file that names another process (stale after a restart) starts a loop" "3072" "$(cat "$G/peak" 2>/dev/null)"
+
+# --user in a machine: the guest script (GUEST_USER) runs here for real, with fake id, useradd, groupadd, usermod and getent first on PATH
+# (each records its arguments), the guest's passwd and group files and the folder /job in a scratch tree (BOXD_GUEST_*). It prints the
+# account's name; no file is ever changed (the mounts carry the owner), which the case "no chown" below pins.
+eval "$(sed -n "/^GUEST_USER=/,/^echo \"\$n\"'\$/p" "$POD")"
+setup; U=$T/e/userguest; mkdir -p "$U/bin" "$U/etc" "$U/job/src"
+for t in mkdir; do ln -s "$(command -v $t)" "$U/bin/$t"; done
+printf '#!/bin/sh\necho "$FAKE_GROUPS"\n' > "$U/bin/id"
+printf '#!/bin/sh\necho "useradd $*" >> "$FAKE_U/log"; exit "${FAKE_USERADD_EXIT:-0}"\n' > "$U/bin/useradd"
+printf '#!/bin/sh\necho "groupadd $*" >> "$FAKE_U/log"\n' > "$U/bin/groupadd"
+printf '#!/bin/sh\necho "usermod $*" >> "$FAKE_U/log"\n' > "$U/bin/usermod"
+printf '#!/bin/sh\n[ -z "${FAKE_NODOCKER:-}" ]\n' > "$U/bin/getent"
+printf '#!/bin/sh\necho "chown $*" >> "$FAKE_U/log"\n' > "$U/bin/chown"
+printf '#!/bin/sh\necho "find $*" >> "$FAKE_U/log"\n' > "$U/bin/find"
+chmod +x "$U"/bin/id "$U"/bin/useradd "$U"/bin/groupadd "$U"/bin/usermod "$U"/bin/getent "$U"/bin/chown "$U"/bin/find
+printf 'root:x:0:0::/root:/bin/sh\n' > "$U/etc/passwd"; printf 'root:x:0:\n' > "$U/etc/group"; : > "$U/log"
+userguest() { : > "$U/log"; env PATH="$U/bin" FAKE_U="$U" BOXD_GUEST_JOB="$U/job" BOXD_GUEST_ETC="$U/etc" BOXD_GUEST_DMESG="$U/dmesg" "$@" /bin/sh -c "$GUEST_USER" _ 1000; }
+eq "guest user: the text has no single quote" "" "$(case $GUEST_USER in *\'*) echo bad ;; esac)"
+out=$(userguest FAKE_GROUPS=); eq "guest user: no account with the number: the group and the account are made with it, home /job/home, member of docker, name printed" \
+    "box|groupadd -g 1000 box|useradd -M -u 1000 -g 1000 -d $U/job/home -s /bin/sh box|usermod -aG docker box" "$out|$(paste -sd'|' "$U/log")"
+eq "guest user: the home folder was made, dmesg was opened for every account" "yes 0" "$([ -d "$U/job/home" ] && echo yes) $(cat "$U/dmesg")"
+eq "guest user: no file is changed: no chown, no find" 0 "$(grep -c '^chown\|^find' "$U/log")"
+printf 'debian:x:1000:1000::/home/debian:/bin/bash\n' >> "$U/etc/passwd"
+out=$(userguest FAKE_GROUPS="debian docker"); eq "guest user: the image has an account with the number under another name: that name is used, nothing is made, already in docker" "debian|" "$out|$(cat "$U/log")"
+out=$(userguest FAKE_GROUPS="debian"); eq "guest user: that account not yet in docker: added" "debian|usermod -aG docker debian" "$out|$(cat "$U/log")"
+out=$(userguest FAKE_GROUPS="debian" FAKE_NODOCKER=1); eq "guest user: an image without the group docker: no usermod" "debian|" "$out|$(cat "$U/log")"
+: > "$U/etc/passwd"; printf 'staff:x:1000:\n' > "$U/etc/group"
+out=$(userguest FAKE_GROUPS=); eq "guest user: the gid is taken by a group already: no groupadd, the account joins it" "box|useradd -M -u 1000 -g 1000 -d $U/job/home -s /bin/sh box|usermod -aG docker box" "$out|$(paste -sd'|' "$U/log")"
+userguest FAKE_GROUPS= FAKE_USERADD_EXIT=9 >/dev/null; eq "guest user: a useradd that fails ends with status 3, no name" "3" "$?"
+rm -f "$U/bin/useradd"; out=$(userguest FAKE_GROUPS=); eq "guest user: an image without useradd ends with status 3" "3 " "$? $out"
 
 # A sync is a use of the box folder: it renews the stamp and holds the folder busy while it runs.
 setup; mkdir -p "$W/jobs/$box/src"; touch -d @1000 "$W/jobs/$box/.last-used"
