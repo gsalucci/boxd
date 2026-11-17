@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.4.21
+
+- **GitHub makes the public release by itself.** A pushed tag `v<version>` runs the tests, builds the Void packages in a Void
+  container and signs them, builds and checks the Debian packages, creates the release with all of them
+  (`tools/release-github`) and proves in fresh Void and Debian containers that both kinds install from it. A tag with a
+  suffix (`v0.4.21-citest1`) is a trial that makes a prerelease. The tests also run on every push. New tools:
+  `tools/sign-repo` (the index and signing step, now shared with `tools/sign-and-publish`), `tools/release-version`,
+  `tools/test-shell`, `tools/ci-build-void`, `tools/ci-build-deb`, `tools/ci-prove`.
+- **Tests no longer depend on the machine.** The retention case measures what an empty folder weighs on the file system
+  it runs on (0 MB on btrfs, 1 MB on ext4). The call log case uses any installed locale with a decimal comma. The process
+  report test no longer starts `sleep` through a link with another name (on Ubuntu 26.04 that ends at once and the test
+  waited for it without end) and fails at once when a helper process is gone. `tools/test-shell` names and stops
+  whatever a test leaves behind. The checks that the compiled client files are fresh look for the compiler in `BOXD_TSC`,
+  then on the path, and are skipped with a reason where there is none.
+- The README has an Acknowledgements section for what boxd ships and what it is built on.
+- No behaviour of `box`, `boxd-pod` or the dashboard changes in this release.
+
 ## 0.4.20
 
 - **boxd is public, under the MIT license.** The source is at https://github.com/gsalucci/boxd. The packages state the
