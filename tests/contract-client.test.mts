@@ -1,4 +1,4 @@
-// Every `client`, `choose` and `source` case of contract/cases.json against client/box.mjs: plan() for the box calls,
+// Every `client`, `choose`, `source` and `drop_words` case of contract/cases.json against client/box.mjs: plan() for the box calls,
 // imagePlan() for `box image push`.
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 
 const REPO = path.resolve(import.meta.dirname, "..");
-const { plan, imagePlan, choose, source } = await import(path.join(REPO, "client/box.mjs"));
+const { plan, imagePlan, choose, source, removedWords } = await import(path.join(REPO, "client/box.mjs"));
 const all = JSON.parse(readFileSync(path.join(REPO, "contract/cases.json"), "utf8"));
 
 for (const c of all.client) {
@@ -49,3 +49,6 @@ for (const c of all.source) {
     if (c.how !== "choose") { assert.equal(r.host, c.host); assert.equal(r.record, c.record); }
   });
 }
+
+// What the client says of a removed box's real need, a pure function of the server's `pod drop` answer.
+for (const c of all.drop_words) test(`drop words: ${c.name}`, () => assert.equal(removedWords(c.answer), c.words));

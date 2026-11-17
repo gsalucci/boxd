@@ -19,7 +19,7 @@ CGROOT=${BOXD_CGROOT:-/sys/fs/cgroup}
 CGROUP=${BOXD_CGROUP:-$CGROOT/boxd}
 PROC=${BOXD_PROC:-/proc}   # test hook, like BOXD_MEMINFO: where `pod report` finds a box's process and its cgroup
 KVM=${BOXD_KVM:-/dev/kvm}   # test hook: the device a --kvm box gets
-VERSION=0.4.24
+VERSION=0.4.25
 # Keys that may only read, one "<type> <key> [comment]" per line (view_only below); and the largest answer of pod calls and pod log.
 VIEW_KEYS=${BOXD_VIEW_KEYS:-/etc/boxd/view_keys}
 READ_MAX=${BOXD_READ_MAX:-1048576}
@@ -152,6 +152,38 @@ while kill -0 "$p" 2>/dev/null && [ ! -S /var/run/docker.sock ]; do sleep 0.1; d
 # A guest that refuses or lacks the file keeps its limit, silently.
 GUEST_PID_MAX='{ echo 32768 > /proc/sys/kernel/pid_max; } 2>/dev/null'
 
+# The real memory need of a machine, measured where it is known (2026-11-17): the host sees a machine use its whole size, because the guest
+# fills spare memory with file cache and never gives it back. This loop runs in the guest while the machine lives and keeps the highest
+# MemTotal - MemAvailable (megabytes) in /job/.mem-peak: the box's folder, which the host reads and the sync (only /job/src) never
+# touches. The file is written only when the value grows, through a temporary file and a rename, so a reader never sees half a number;
+# an older value in the file (an earlier machine of the same box) is the start, so the peak only grows. A guest without sleep, without
+# /proc/meminfo or without the memory word MemAvailable ends the loop at once and records nothing. The words BOXD_GUEST_* are the test hooks
+# (the file of memory facts, the number of rounds, the pause in seconds); in a guest they are unset. No single quote in the text: the
+# starter below puts it inside single quotes.
+GUEST_MEM_PEAK='command -v sleep >/dev/null 2>&1 || exit 0
+f=${BOXD_MEM_PEAK_FILE:-/job/.mem-peak}; r=${BOXD_GUEST_ROUNDS:-}
+echo $$ >"${BOXD_MEM_PEAK_PID:-/run/boxd-mem-peak.pid}" || exit 0
+p=$(cat "$f" 2>/dev/null); case $p in ""|*[!0-9]*) p=0 ;; esac
+while :; do
+  t= a=
+  while read -r k v _; do case $k in MemTotal:) t=$v ;; MemAvailable:) a=$v ;; esac; done <"${BOXD_GUEST_MEMINFO:-/proc/meminfo}"
+  [ -n "$t" ] && [ -n "$a" ] || exit 0
+  case "$t$a" in *[!0-9]*) exit 0 ;; esac
+  u=$(((t - a) / 1024))
+  if [ "$u" -gt "$p" ]; then p=$u; echo "$p" >"$f.$$" && mv "$f.$$" "$f"; fi
+  [ -z "$r" ] || { r=$((r - 1)); [ "$r" -gt 0 ] || exit 0; }
+  sleep "${BOXD_GUEST_NAP:-3}"
+done'
+# Starts the loop once per machine: the pid file names it, and a process of that number counts only when its command line carries the
+# marker (a stale file from before a restart may name another process). Output closed and its own session, as dockerd below, so the call
+# that starts it returns at once and the loop is not a process of the call. Run before every command with the rest of the start script.
+GUEST_MEM_START="MP='$GUEST_MEM_PEAK'"'
+p=$(cat "${BOXD_MEM_PEAK_PID:-/run/boxd-mem-peak.pid}" 2>/dev/null)
+case $(tr "\000" " " 2>/dev/null <"/proc/${p:-x}/cmdline") in
+*boxd-mem-peak*) ;;
+*) setsid sh -c "$MP" boxd-mem-peak </dev/null >/dev/null 2>&1 & ;;
+esac'
+
 # Runs the command of a detached run inside a machine ("$@") and then prints, prefixed, the guest kernel's kill lines that
 # came after it started (2026-11-15 and 2026-11-16: a docker container of a run died in a 4 GB machine, the host killed
 # nothing and the guest's kernel log went with the machine). "After it started" is a count, not a clock: the matching lines
@@ -167,9 +199,10 @@ exit $rc'
 
 # pod ps: run inside the box (container or vm), plain sh and /proc only, so any image works. One line per process,
 # oldest first: pid, elapsed seconds, processor seconds, working folder ("?" when unreadable), command. Leaves out
-# pid 1, the box's own keep-alive (sleep infinity, catatonit) and this script with its helpers (ppid = $$).
+# pid 1, the box's own keep-alive (sleep infinity, catatonit), this script with its helpers (ppid = $$) and the memory loop of
+# GUEST_MEM_PEAK with its sleep (the pid file names it).
 # /proc times are in clock ticks of 1/100 s on Linux.
-PS_SCRIPT='read -r up _ </proc/uptime; up=${up%.*}; o=
+PS_SCRIPT='read -r up _ </proc/uptime; up=${up%.*}; o=; m=$(cat "${BOXD_MEM_PEAK_PID:-/run/boxd-mem-peak.pid}" 2>/dev/null)
 for d in /proc/[0-9]*; do
   p=${d#/proc/}
   [ "$p" = 1 ] || [ "$p" = $$ ] && continue
@@ -178,7 +211,7 @@ for d in /proc/[0-9]*; do
   [ -n "$c" ] || continue
   case $c in "sleep infinity"|"catatonit -P"|catatonit) continue ;; esac
   set -- ${s##*) }
-  [ "$2" = $$ ] && continue
+  [ "$2" = $$ ] || [ "$p" = "$m" ] || [ "$2" = "$m" ] && continue
   shift 11; cpu=$(( ($1 + $2) / 100 )); shift 8
   o="$o
 $p	$((up - $1 / 100))	$cpu	$(readlink "$d/cwd" 2>/dev/null || echo "?")	$c"
@@ -284,6 +317,22 @@ vm_used() {
 }
 # The msb create options of a machine size.
 size_lim() { case $1 in small) echo "-c 2 -m 2G" ;; medium) echo "-c 4 -m 4G" ;; xlarge) echo "-c 8 -m 12G" ;; *) echo "$VM_LIMITS" ;; esac; }
+# size_for_peak <megabytes>: the smallest of small, medium and large (the host's default, never a larger size: xlarge is the user's choice
+# alone) that holds a measured need with a quarter to spare (megabytes of the size at least 1.25 times the need, in whole numbers:
+# size * 4 >= need * 5). Prints its name; fails, printing nothing, when even the default does not hold it (a box that is that full keeps its
+# recorded size). A size above the default is skipped: a host whose default is below medium never gets a medium machine from this.
+size_for_peak() {
+    local s mb def
+    def=$(lim_mb "$VM_LIMITS"); [[ $def =~ ^[0-9]+$ && ${1:-} =~ ^[0-9]+$ ]] || return 1
+    for s in small medium large; do
+        mb=$(lim_mb "$(size_lim "$s")")
+        [ "$s" = large ] || [ "$mb" -le "$def" ] || continue
+        [ $((mb * 4)) -ge $(($1 * 5)) ] && { echo "$s"; return 0; }
+    done
+    return 1
+}
+# mem_peak <box folder>: the highest need the guest measured, in megabytes (the file /job/.mem-peak of the guest loop); fails when none is recorded.
+mem_peak() { local v; v=$(cat "$1/.mem-peak" 2>/dev/null) && [[ $v =~ ^[1-9][0-9]{0,8}$ ]] && echo "$v"; }
 # lim_mb <msb create options>: the memory of a machine made with them, in megabytes; nothing when they name none.
 lim_mb() { [[ $1 =~ -m\ ([0-9]+)([MG]) ]] || return 0; [ "${BASH_REMATCH[2]}" = M ] && echo "${BASH_REMATCH[1]}" || echo $((BASH_REMATCH[1] * 1024)); }
 # vm_refusal <own sandbox name> <megabytes asked>: why one more machine of that size cannot start now; prints nothing
@@ -438,12 +487,17 @@ used_of() { stat -c %Y "$WORK/jobs/$1/.last-used" 2>/dev/null || stat -c %Y "$WO
 # drop_box <box> <reason> <epoch> [force]: removes the box and its folder. Never while the box is being made (.lock);
 # never while a run or a sync holds it (.running), unless forced. Fails (1) when it removed nothing.
 drop_box() {
-    local box=$1 J=$WORK/jobs/$1 log=$WORK/cache/evictions.log mb
+    local box=$1 J=$WORK/jobs/$1 log=$WORK/cache/evictions.log mb pk sz smb need=
     [[ $box =~ $BOX_RE ]] && [ -d "$J" ] || return 1
     (
         exec 9>"$J/.lock"; flock -n 9 || exit 1
         [ -n "${4:-}" ] || [ ! -e "$J/.running" ] || flock -n -x "$J/.running" true || exit 1
         pod_stop "$box" || exit 1
+        # The need the machine measured, read when nothing writes it any more; with its size it is the answer's words and a line of mem-peaks.log.
+        if pk=$(mem_peak "$J"); then
+            sz=$(cat "$J/.vm-size" 2>/dev/null); case $sz in small|medium|xlarge) ;; *) sz=large ;; esac
+            smb=$(lim_mb "$(size_lim "$sz")"); smb=${smb:--}
+        fi
         # In the account's user namespace: files made by other users inside a box belong to its subordinate ids (only there are they readable, so the size is measured there too).
         # shortcut: the size is the folder's alone, the built image removed below is not counted; when a report needs the image too: read its size before `podman rmi`.
         mb=$(podman unshare du -smx -- "$J" </dev/null 2>/dev/null 9>&- | cut -f1) || mb=
@@ -454,7 +508,13 @@ drop_box() {
         ! have_msb || vmx image rm "localhost/built-$box:latest" </dev/null >/dev/null 2>&1 9>&-
         mkdir -p "$WORK/cache" && printf '%s\t%s\t%s\n' "$3" "$box" "$2" >> "$log"
         [ "$(wc -l < "$log")" -le 2000 ] || { tail -n 1000 "$log" > "$log.new" && mv "$log.new" "$log"; }
-        echo "evicted $box ($2)${mb:+, $mb MB freed}"
+        # The week of numbers the owner decides from: time, box, size name, size and need (docs/pod-contract.md, "Memory need").
+        if [ -n "${pk:-}" ]; then
+            log=$WORK/cache/mem-peaks.log; need=", needed $pk MB of $smb MB ($sz)"
+            printf '%s\t%s\t%s\t%s\t%s\n' "$3" "$box" "$sz" "$smb" "$pk" >> "$log"
+            [ "$(wc -l < "$log")" -le 20000 ] || { tail -n 10000 "$log" > "$log.new" && mv "$log.new" "$log"; }
+        fi
+        echo "evicted $box ($2)$need${mb:+, $mb MB freed}"
     )
 }
 # Images under disk pressure: every named image goes unless a box uses it (the engines refuse those themselves) or it is the
@@ -719,7 +779,7 @@ run_lines() {
 # `pod status` also has come from it, so the two always agree.
 pod_report() {
     local st k v box image state engine bl mem user size lim j rl busy l5 l15 boot mt ma sw su gmax gcur oom dt du f
-    local power=${BOXD_POWER:-off} ic="-" cnt="-" last="-" rat="-" ka=none lock=${BOXD_KEEPAWAKE_LOCK:-/run/boxd-keepawake.lock}
+    local mpk power=${BOXD_POWER:-off} ic="-" cnt="-" last="-" rat="-" ka=none lock=${BOXD_KEEPAWAKE_LOCK:-/run/boxd-keepawake.lock}
     local ist=${BOXD_IDLE_STATE:-/run/boxd-idle} vmrows="" runs="" rows used_mb cap_mb
     local -a pr
     local -A S
@@ -752,10 +812,11 @@ pod_report() {
     while IFS=$'\t' read -r box image state engine; do
         [[ $box =~ $BOX_RE ]] || continue
         j=$WORK/jobs/$box; [ "$state" = running ] || state=stopped
-        user="-" size="-" mem="-"
+        user="-" size="-" mem="-" mpk="-"
         if [ "$engine" = vm ]; then
             size=$(cat "$j/.vm-size" 2>/dev/null); size=${size:-large}   # large when there is no record, as pod run reads it
             lim=$(lim_mb "$(size_lim "$size")")
+            mpk=$(mem_peak "$j") || mpk="-"
             [ "$state" != running ] || mem=$(vm_mb "$box")
         else
             lim=$(ctr_limit_mb)
@@ -766,8 +827,8 @@ pod_report() {
         # Busy while a run holds the box's .running lock (shared), tested without waiting, as reap does.
         busy=no; ! box_busy "$box" || busy=yes
         rl=$(run_lines "$box"); runs="$runs$rl"$'\n'
-        printf 'box\tbox=%s\tengine=%s\timage=%s\tstate=%s\tlast_used=%s\tuser=%s\tsize=%s\tmem_limit_mb=%s\tmem_mb=%s\tbusy=%s\truns=%s\n' \
-            "$box" "$engine" "$image" "$state" "$(stamp_of "$box")" "$user" "$size" "${lim:--}" "$mem" "$busy" "$(grep -c "$(printf '\tstate=running\t')" <<<"$rl")"
+        printf 'box\tbox=%s\tengine=%s\timage=%s\tstate=%s\tlast_used=%s\tuser=%s\tsize=%s\tmem_limit_mb=%s\tmem_mb=%s\tbusy=%s\truns=%s\tmem_peak_mb=%s\n' \
+            "$box" "$engine" "$image" "$state" "$(stamp_of "$box")" "$user" "$size" "${lim:--}" "$mem" "$busy" "$(grep -c "$(printf '\tstate=running\t')" <<<"$rl")" "$mpk"
     done < <(sort <<<"$rows")
     printf %s "$runs" | grep .
     while IFS= read -r f; do
@@ -829,7 +890,7 @@ pod_clear() {
 pod_run() {
     local box=${1:-} image="" imgfile="" vm="" container="" user="" cuser="" kvm="" ckvm="" ulabels="" recreate="" snapshot="" run="" b64="" tty="" name J out rc
     local -a envs=()
-    local size="" have="" lim="" asked="" used_mb=0 cap_mb=0 max="" box_fit_mb box_why
+    local size="" have="" lim="" asked="" pk pick chosen="" used_mb=0 cap_mb=0 max="" box_fit_mb box_why
     local newid="" changed="" rebuilt="" full engine=container pc="" vc="" cimg="" cst="" vimg="" vst="" other mine cur st create="" start="" n
     shift
     CALL_T0=${EPOCHREALTIME//[!0-9]/} CALL_BOX=$box CALL_ENGINE=container
@@ -942,6 +1003,7 @@ pod_run() {
         [ -z "$mine" ] || [ -z "$kvm" ] || [ -n "$ckvm" ] || die "box $box was made without --kvm, asked for --kvm; add --recreate"
         [ -z "$mine" ] || [ -z "$size" ] || [ "$size" = "$have" ] || die "box $box is $have, asked for $size; add --recreate"
     fi
+    asked=$size
     size=${size:-$have}
     lim=$(size_lim "$size")
     # A box made from an older build of the Containerfile is replaced without --recreate (files stay).
@@ -951,6 +1013,11 @@ pod_run() {
         [ "$st" = running ] || start=1
     else
         create=1 start=1
+    fi
+    # A machine made for a box with no --size and a recorded need: the smallest size that holds it with a quarter to spare, never above the
+    # default. A new machine after --recreate has no record. The size is recorded below as for any size, and admission counts it.
+    if [ -n "$vm" ] && [ -n "$create" ] && [ -z "$asked" ] && [ -z "$recreate" ] && pk=$(mem_peak "$J") && pick=$(size_for_peak "$pk"); then
+        size=$pick chosen=$pk lim=$(size_lim "$size")
     fi
 
     # Every refusal comes before any removal, so a refused call keeps the old box.
@@ -1010,6 +1077,7 @@ pod_run() {
     if [ -n "$recreate" ] || [ -n "$rebuilt" ]; then
         [ -z "$pc" ] || podman rm -f "$name" >/dev/null
         [ -z "$vc" ] || vmx rm -f "$name" </dev/null >/dev/null
+        [ -z "$recreate" ] || rm -f "$J/.mem-peak"   # a fresh machine starts the measure from nothing (a rebuilt one keeps it)
     fi
     # 9>&- 7>&- : the long-lived box processes must not inherit the locks.
     if [ -n "$vm" ]; then
@@ -1024,7 +1092,7 @@ pod_run() {
             vmx start "$name" </dev/null 9>&- 7>&- >/dev/null || die "cannot start box $box"
         fi
         exec 7>&-
-        vmx exec -w / "$name" -- sh -c "${start:+$GUEST_PID_MAX; }$DOCKER_START" </dev/null 9>&- >/dev/null 2>&1 || true
+        vmx exec -w / "$name" -- sh -c "${start:+$GUEST_PID_MAX; }$GUEST_MEM_START"$'\n'"$DOCKER_START" </dev/null 9>&- >/dev/null 2>&1 || true
     elif [ -n "$create" ]; then
         local -a uflags=()
         if [ -n "$user" ]; then
@@ -1058,6 +1126,7 @@ pod_run() {
         elif [ "$image" != "localhost/built-$box:latest" ]; then rm -f "$J/.built-id"; fi
         # Said once, when the box is made: root in a box is not obvious, and a test failure caused by it was taken for a real one.
         if [ -n "$vm" ]; then echo "boxd-pod: new machine box $box: commands run as root (--user does not apply to a machine)" >&2
+            [ -z "$chosen" ] || echo "boxd-pod: machine box $box: size $size chosen from its past need of $chosen MB (give --size to choose yourself)" >&2
         elif [ -n "$user" ]; then echo "boxd-pod: new container box $box: commands run as an ordinary account (--user)" >&2
         else echo "boxd-pod: new container box $box: commands run as root; an ordinary account needs --user at creation" >&2; fi
     fi
@@ -1080,7 +1149,7 @@ pod_run() {
     for v in ${!BOXD_SECRET_*}; do unset "$v"; done
     local -a eu=()
     [ -z "$user" ] || eu=(--user "$(id -u):$(id -g)" -e HOME=/job/home)
-    if [ -n "$vm" ]; then eng=(msb exec "${ev[@]}" -w /job/src "$name" --); else eng=(podman exec "${eu[@]}" "${ev[@]}" -w /job/src "$name"); fi
+    if [ -n "$vm" ]; then eng=(msb exec --stream "${ev[@]}" -w /job/src "$name" --); else eng=(podman exec "${eu[@]}" "${ev[@]}" -w /job/src "$name"); fi
 
     if [ -n "$run" ]; then
         : > "$J/runs/$run.log"
@@ -1134,7 +1203,7 @@ pod_run() {
         local call=c$$-${EPOCHREALTIME//[!0-9]/}-$RANDOM ep wp gone="" pp=$PPID
         trap 'gone=1' HUP TERM PIPE INT
         if [ -n "$vm" ]; then
-            msb exec "${ev[@]}" -e "BOXD_CALL=$call" -w /job/src "$name" -- "${argv[@]}" <&0 &   # msb itself, not vmx: $! must be the engine process
+            msb exec --stream "${ev[@]}" -e "BOXD_CALL=$call" -w /job/src "$name" -- "${argv[@]}" <&0 &   # msb itself, not vmx: $! must be the engine process
         else
             podman exec -i "${eu[@]}" "${ev[@]}" -e "BOXD_CALL=$call" -w /job/src "$name" "${argv[@]}" <&0 &
         fi

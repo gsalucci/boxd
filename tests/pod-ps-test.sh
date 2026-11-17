@@ -12,7 +12,7 @@ eq() { if [ "$2" = "$3" ]; then printf 'ok   %s\n' "$1"; else printf 'FAIL %s: e
 
 T=$(mktemp -d "${TMPDIR:-/tmp}/pod-ps-test.XXXXXX")
 pids=()
-trap 'kill "${pids[@]}" 2>/dev/null; pkill -f "^sleep 99993$"; rm -rf "$T"' EXIT   # 99993 is the child of a sh -c
+trap 'kill "${pids[@]}" 2>/dev/null; pkill -f "^sleep 99993$"; pkill -f "^sleep 99994$"; rm -rf "$T"' EXIT   # 99993 is the child of a sh -c
 mkdir -p "$T/work dir" "$T/bin"
 # A program whose command name (comm in /proc/<pid>/stat) holds ") ": a copy of bash that blocks opening a pipe nobody
 # writes to. Not a link to sleep: where sleep is one binary for many tools (Ubuntu 26.04), an unknown name ends at once.
@@ -45,5 +45,14 @@ eq "nothing on standard error (processes ending mid-scan are skipped quietly)" "
 eq "the report leaves itself out" 0 "$(grep -c 'read -r up' <<<"$out")"
 eq "five tab separated fields on every line" "" "$(awk -F'\t' 'NF != 5' <<<"$out" | head -3)"
 eq "oldest first (elapsed never grows down the list)" "" "$(awk -F'\t' 'NR > 1 && $2 > prev {print NR ": " $2 " after " prev} {prev = $2}' <<<"$out" | head -3)"
+
+# The guest's memory loop (GUEST_MEM_PEAK) and its sleep are not work: the pid file names the loop, its child is hidden by its parent.
+# A stand-in with a sleep child, its pid in a file; without the file's name in the setting both show, with it neither.
+m=$(start "$T" sh -c 'echo $$ >"$0"; sleep 99994 & wait' "$T/mempid") || exit 1; pids+=("$m")
+until [ -s "$T/mempid" ] && [ -n "$(pgrep -P "$m" -x sleep)" ]; do kill -0 "$m" 2>/dev/null || break; done
+kid=$(pgrep -P "$m" -x sleep)
+eq "the memory loop and its sleep show when no pid file names them" "2" "$(sh -c "$PS_SCRIPT" | grep -cP "^($m|$kid)\t")"
+eq "the memory loop and its sleep are left out when the pid file names the loop" "0" "$(BOXD_MEM_PEAK_PID="$T/mempid" sh -c "$PS_SCRIPT" | grep -cP "^($m|$kid)\t")"
+eq "other processes still show with the pid file set" "yes" "$(BOXD_MEM_PEAK_PID="$T/mempid" sh -c "$PS_SCRIPT" | grep -q "^$a" && echo yes)"
 
 [ "$fails" -eq 0 ] && echo "ALL OK" || { echo "$fails FAILED"; exit 1; }

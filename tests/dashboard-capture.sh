@@ -47,6 +47,7 @@ echo "docker.io/library/debian:stable-slim running user" > "$T/state/webshop-608
 echo "localhost/toolbox:latest stopped" > "$T/state/toolsite-1923847561"
 for b in boxd-2889387319 harbor-admin-3340981172 webshop-608299631 toolsite-1923847561; do mkdir -p "$J/$b/runs"; done
 echo medium > "$J/harbor-admin-3340981172/.vm-size"
+echo 2900 > "$J/harbor-admin-3340981172/.mem-peak"   # the need the machine measured (mem_peak_mb)
 touch -d @1794571186 "$J/boxd-2889387319/.last-used"; touch -d @1794570986 "$J/harbor-admin-3340981172/.last-used"
 touch -d @1794571061 "$J/webshop-608299631/.last-used"; touch -d @1794570180 "$J/toolsite-1923847561/.last-used"
 # Memory of the boxes: a machine's resident memory (its process), a container's cgroup (its init process).

@@ -121,7 +121,7 @@ case $1 in
         else n=$(basename "$f" .tar); : > "$FAKE_VM_IMAGES/localhost_$n:latest"; fi ;;
     exec)
         case "$*" in *boxd-call-cleanup*) [ -z "${FAKE_CLEAN:-}" ] || echo cleaned > "$FAKE_CLEAN"; exit 0 ;; esac
-        shift; while :; do case $1 in -t) shift ;; -e) shift 2 ;; *) break ;; esac; done
+        shift; while :; do case $1 in -t|--stream) shift ;; -e) shift 2 ;; *) break ;; esac; done
         # the docker start script runs with the working folder /, the command in /job/src
         if [ "$2" = / ]; then exit "${FAKE_STARTER_EXIT:-0}"; fi
         [ -z "${FAKE_BLOCK_EXEC:-}" ] || block exec-blocked
@@ -526,6 +526,7 @@ eq "detach, machine killed by the out-of-memory killer: the log says so, then EX
     "$(vmrun 20261115-131105-0517 3 4)"
 eq "detach, machine ended otherwise: the log says it ended" "boxd: the virtual machine of box $box ended under this run|EXIT 1" "$(vmrun 20261115-131105-0518 3 3)"
 eq "detach, machine still alive: no note, only EXIT" "EXIT 1" "$(vmrun 20261115-131105-0519 3 alive)"
+eq "detach in a machine: the command is started with --stream, so the log grows while it runs (without it the engine writes at the end)" 1 "$(grep -c "^exec --stream -w /job/src pod-$box -- sh -c " "$FAKE_MSB_LOG")"
 setup; mkdir -p "$BOXD_CGROOT/boxd"; printf 'oom_kill 3\n' > "$BOXD_CGROOT/boxd/memory.events"
 FAKE_EXEC_CRASH=4 FAKE_EXEC_EXIT=1 pod "pod run $box --vm -- $B64"
 eq "foreground, machine killed: the note on standard error, the command's code kept" \
@@ -1120,6 +1121,61 @@ pod "pod run $box -- $B64"; eq "and not again" "" "$(grep 'folder of this box' "
 printf 'ssh-ed25519 AAAAviewkey dashboard\n' > "$W/view_keys"; printf 'publickey ssh-ed25519 AAAAviewkey\n' > "$W/auth"
 CASE_ENV=(BOXD_VIEW_KEYS="$W/view_keys" SSH_USER_AUTH="$W/auth"); pod "pod drop $box"
 eq "drop: a key that may only read cannot drop" "125 yes" "$rc $([ -d "$W/jobs/$box" ] && echo yes)"; CASE_ENV=()
+
+# The real memory need of a machine box (docs/pod-contract.md, "Memory need"). Every way a box folder goes writes one line of
+# cache/mem-peaks.log (time, box, size name, size, need), only for a box that has a recorded need; the answer of pod drop says it too.
+mkdepth() { mkdir -p "$W/jobs/$1"; [ -z "${2:-}" ] || echo "$2" > "$W/jobs/$1/.mem-peak"; [ -z "${3:-}" ] || echo "$3" > "$W/jobs/$1/.vm-size"; }
+setup; : > "$BOXD_POD_CLEAN"; mkdir -p "$W/cache"
+mkdepth old 2900 medium; mkdepth plain; mkdepth junk 12x small; mkdepth young 500 small
+touch -d @1000 "$W/jobs/old/.last-used" "$W/jobs/plain/.last-used" "$W/jobs/junk/.last-used"; touch -d @$((10 * day)) "$W/jobs/young/.last-used"
+reapnow $((1001 + 14 * day))
+eq "mem-peaks.log, retention by age: one line for the old box with a need; none for a box without a need or with a need that is not a number; the young one stays" \
+    "$((1001 + 14 * day))	old	medium	4096	2900|young" "$(cat "$W/cache/mem-peaks.log" | paste -sd'|')|$(ls "$W/jobs" | grep young)"
+eq "retention by age: the reaper's own line carries the need before the freed words" "yes" "$(grep -q '^evicted old (unused 14 days), needed 2900 MB of 4096 MB (medium), [0-9]* MB freed$' "$T/e/out" && echo yes)"
+eq "retention by age: evictions.log is as before (three fields)" "old	unused 14 days" "$(grep '^[0-9]*	old	' "$W/cache/evictions.log" | cut -f2-)"
+export FAKE_DF=$T/e/df; rm -rf "$W/jobs"/*; : > "$W/cache/mem-peaks.log"
+mkdepth a 7900 ""; mkdepth live 100 small; touch -d @100 "$W/jobs/a/.last-used"; touch -d @99000 "$W/jobs/live/.last-used"
+echo 70 > "$FAKE_DF"; reapnow 100000
+eq "mem-peaks.log, retention by disk pressure: a box with no size record is large (8192 MB); the line is the reaper's clock" "100000	a	large	8192	7900|live" "$(paste -sd'|' "$W/cache/mem-peaks.log")|$(ls "$W/jobs")"
+unset FAKE_DF
+mkdepth gone 2900 medium; pod "pod drop gone"
+eq "mem-peaks.log, pod drop: the answer carries the need before the freed words" "yes" "$(grep -q '^evicted gone (worktree gone), needed 2900 MB of 4096 MB (medium), [0-9]* MB freed$' "$T/e/out" && echo yes)"
+eq "mem-peaks.log, pod drop: the line is there, the folder is not" "gone	medium	4096	2900|no" "$(tail -n 1 "$W/cache/mem-peaks.log" | cut -f2-)|$([ -e "$W/jobs/gone" ] && echo yes || echo no)"
+mkdepth nope; pod "pod drop nope"; eq "mem-peaks.log: a box with no need adds no line" "2" "$(wc -l < "$W/cache/mem-peaks.log")"
+pod "pod drop absent"; eq "mem-peaks.log: a box with no folder adds no line" "2" "$(wc -l < "$W/cache/mem-peaks.log")"
+seq 1 20000 | sed 's/.*/1\tz\tsmall\t2048\t1/' > "$W/cache/mem-peaks.log"; mkdepth last 100 small; pod "pod drop last"
+eq "mem-peaks.log is kept to its last 10000 lines when it passes 20000" "10000 last" "$(wc -l < "$W/cache/mem-peaks.log") $(tail -n 1 "$W/cache/mem-peaks.log" | cut -f2)"
+mkdepth viewer 100 small; CASE_ENV=(BOXD_VIEW_KEYS="$W/view_keys" SSH_USER_AUTH="$W/auth"); printf 'ssh-ed25519 AAAAviewkey dashboard\n' > "$W/view_keys"; printf 'publickey ssh-ed25519 AAAAviewkey\n' > "$W/auth"
+pod "pod report"; eq "pod report may be read by a key that only reads, and changes no file" "0" "$rc"; CASE_ENV=()
+
+# The loop that records the need runs in the guest: its text (GUEST_MEM_PEAK) is run here against a file of memory facts, a bounded
+# number of rounds and no pause. Memory in the files is megabytes: used = total - available.
+eval "$(sed -n "/^GUEST_MEM_PEAK=/,/^done'\$/p" "$POD")"; eval "$(sed -n "/^GUEST_MEM_START=/,/^esac'\$/p" "$POD")"
+setup; G=$T/e/guest; mkdir -p "$G"
+meminfo() { printf 'MemTotal: %s kB\nMemFree: 1 kB\nMemAvailable: %s kB\n' $(($1 * 1024)) $(($2 * 1024)) > "$G/mi"; }
+guest_env=(BOXD_GUEST_MEMINFO="$G/mi" BOXD_MEM_PEAK_FILE="$G/peak" BOXD_MEM_PEAK_PID="$G/pid" BOXD_GUEST_NAP=0)
+guest() { env "${guest_env[@]}" BOXD_GUEST_ROUNDS=$1 sh -c "$GUEST_MEM_PEAK"; }
+eq "guest loop: the text has no single quote (the starter puts it inside single quotes)" "" "$(case $GUEST_MEM_PEAK in *\'*) echo bad ;; esac)"
+meminfo 8192 5120; guest 3; eq "guest loop: records MemTotal - MemAvailable in megabytes, ends after its rounds" "0 3072 no" "$? $(cat "$G/peak") $([ -e "$G/peak.$$" ] && echo yes || echo no)"
+eq "guest loop: no temporary file is left, and the pid file names the loop" "mi peak pid yes" "$(ls "$G" | paste -sd' ') $([[ $(cat "$G/pid") =~ ^[0-9]+$ ]] && echo yes)"
+meminfo 8192 6144; guest 2; eq "guest loop: a lower reading leaves the peak alone" "3072" "$(cat "$G/peak")"
+meminfo 8192 4096; guest 1; eq "guest loop: a higher reading raises it, starting from the file (an earlier machine of the box)" "4096" "$(cat "$G/peak")"
+meminfo 8192 6144; : > "$G/peak.mark"; touch -d @1000 "$G/peak"; guest 2; eq "guest loop: it writes the file only when the value grows" "1000" "$(stat -c %Y "$G/peak")"
+echo abc > "$G/peak"; meminfo 8192 6144; guest 1; eq "guest loop: a file that is not a number counts as nothing" "2048" "$(cat "$G/peak")"
+rm -f "$G/peak"; printf 'MemTotal: 8388608 kB\nMemFree: 1 kB\n' > "$G/mi"; guest 1; eq "guest loop: no MemAvailable (an old kernel): ends quietly, records nothing" "0 no" "$? $([ -e "$G/peak" ] && echo yes || echo no)"
+rm -f "$G/mi"; guest 1 2>/dev/null; eq "guest loop: no readable memory file: ends quietly, records nothing" "no" "$([ -e "$G/peak" ] && echo yes || echo no)"
+meminfo 8192 5120; rm -f "$G/pid"; env PATH=/nonexistent "${guest_env[@]}" BOXD_GUEST_ROUNDS=1 /bin/sh -c "$GUEST_MEM_PEAK"
+eq "guest loop: an image without sleep records nothing and does not spin" "0 no no" "$? $([ -e "$G/peak" ] && echo yes || echo no) $([ -e "$G/pid" ] && echo yes || echo no)"
+# The starter: one loop per machine. A stand-in that carries the marker holds the pid file; the starter must leave it alone.
+start_loop() { env "${guest_env[@]}" BOXD_GUEST_ROUNDS=1 sh -c "$GUEST_MEM_START"'
+wait'; }
+rm -f "$G/peak" "$G/pid"; meminfo 8192 5120; start_loop
+eq "guest starter: no loop yet, so it starts one (its own session, output closed), which records" "3072" "$(cat "$G/peak" 2>/dev/null)"
+rm -f "$G/peak"; mkfifo "$G/hold"; sh -c 'echo $$ >"$0"; read x <"$1"' "$G/pid" "$G/hold" boxd-mem-peak </dev/null >/dev/null 2>&1 & stand=$!
+until [ -s "$G/pid" ]; do kill -0 "$stand" 2>/dev/null || break; done
+start_loop; eq "guest starter: a live loop named by the pid file is not started twice" "no" "$([ -e "$G/peak" ] && echo yes || echo no)"
+exec 5>"$G/hold"; exec 5>&-; wait "$stand"
+echo $$ > "$G/pid"; start_loop; eq "guest starter: a pid file that names another process (stale after a restart) starts a loop" "3072" "$(cat "$G/peak" 2>/dev/null)"
 
 # A sync is a use of the box folder: it renews the stamp and holds the folder busy while it runs.
 setup; mkdir -p "$W/jobs/$box/src"; touch -d @1000 "$W/jobs/$box/.last-used"

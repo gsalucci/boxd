@@ -17,7 +17,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-export const VERSION = "0.4.24";
+export const VERSION = "0.4.25";
 const BOX = /^[a-z0-9][a-z0-9_.-]{0,62}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const MAC = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i;
@@ -1064,7 +1064,7 @@ export async function collect(env, opts) {
                 appendFileSync(path.join(stateDir(env), "gc.log"), `${[new Date(opts.now).toISOString(), e.host, e.box, e.worktree, live ? "run live" : "idle"].join("\t")}\n`);
             }
             catch { /* evidence only */ }
-            const line = `${dropped ? `removed ${h.name} box ${e.box} and its files${freed(drop.out)}` : `stopped ${h.name} box ${e.box} (this server cannot remove its files yet)`}: worktree ${e.worktree} is gone${live ? " (a run was still going)" : ""}`;
+            const line = `${dropped ? `removed ${h.name} box ${e.box} and its files${removedWords(drop.out)}` : `stopped ${h.name} box ${e.box} (this server cannot remove its files yet)`}: worktree ${e.worktree} is gone${live ? " (a run was still going)" : ""}`;
             if (opts.quiet)
                 process.stderr.write(`[box gc] ${line}\n`);
             else
@@ -1078,6 +1078,21 @@ export async function collect(env, opts) {
 }
 // The size the server measured before it removed a folder: only the one strict form (`evicted <box> (<reason>), <n> MB freed`) is believed; an older server, a box without a folder or any other text gives "".
 const freed = (out) => { const m = /^evicted .*, (\d{1,9}) MB freed$/m.exec(out); return m ? `, ${m[1]} MB freed` : ""; };
+// What a machine box really needed (the server's `pod drop` answer carries `, needed <peak> MB of <size> MB (<name>)` before the freed words;
+// an older server says nothing, and an older client ignores it, its pattern reads only the ending). The advice (pure): above 80 percent of its
+// size the box was close to its limit, and the next size up is named when there is one; otherwise the smallest size that holds the need with a
+// quarter to spare is named, and left out when that is the size the box had. `mb` is the box's own size (what its size word means on that host).
+export function sizeAdvice(peak, name, mb) {
+    const ladder = SIZES.map(([n, m]) => [n, n === name ? mb : m]).reverse(), up = ladder[ladder.findIndex(([n]) => n === name) + 1];
+    if (peak * 100 > mb * 80)
+        return up && up[1] > mb ? `close to the limit: --size ${up[0]} gives ${up[1]} MB` : "close to the limit";
+    const fit = ladder.find(([, m]) => m * 4 >= peak * 5);
+    return fit && fit[0] !== name ? `--size ${fit[0]} would have held it` : "";
+}
+export function removedWords(out) {
+    const m = /^evicted .*, needed (\d{1,9}) MB of (\d{1,9}) MB \((small|medium|large|xlarge)\)(, \d{1,9} MB freed)?$/m.exec(out), a = m && sizeAdvice(Number(m[1]), m[3], Number(m[2]));
+    return `${freed(out)}${m ? `; it needed ${m[1]} MB of its ${m[2]} MB at most${a ? ` (${a})` : ""}` : ""}`;
+}
 // box drop: the collector's removal for this worktree's box, asked for. Never wakes a host, never removes a box with a command in it
 // (no force: the collector removes a box under a live run only after the worktree is gone, this is a person's call from inside it).
 // pod drop answers 0 for a box the host no longer has (only the folder, or nothing, to remove), so a reaped box is cleaned too.
@@ -1136,7 +1151,7 @@ async function dropCall(args, env) {
         appendFileSync(path.join(stateDir(env), "gc.log"), `${[new Date().toISOString(), host, t.box, worktree, "asked"].join("\t")}\n`);
     }
     catch { /* evidence only */ }
-    process.stdout.write(`box drop: removed ${host} box ${t.box} and its files${freed(dropped.out)}\n`);
+    process.stdout.write(`box drop: removed ${host} box ${t.box} and its files${removedWords(dropped.out)}\n`);
     return 0;
 }
 // After an ordinary call: at most once per GC_GAP_MS per machine (the stamp is written first, so two calls do not both run it).

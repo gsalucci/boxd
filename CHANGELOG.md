@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.4.25
+
+- **A run in a machine box writes its output as it comes.** The machine engine's command runner held the output of a
+  command without a terminal until the command ended, then wrote it at once: `box log` of a detached run in a machine
+  box stayed empty (`bytes=0`) for the whole run, `--follow` printed nothing until the end, and a machine that died
+  took the output with it. The detached run and the foreground call without a terminal now start with the engine's
+  `--stream` option (measured: lines arrive at once, output and error stay apart, the exit code is kept). Needs
+  microsandbox 0.7.15, the packaged version. Container boxes never had the problem. Reported by a user who watched a
+  45 minute run with an empty log.
+- **Each machine box records what it really needs in memory.** Seen from the host a machine always uses its whole size,
+  because the system inside fills spare memory with file cache. A small loop inside the machine now keeps the highest
+  `MemTotal - MemAvailable` in `jobs/<box>/.mem-peak`; `pod report` shows it as `mem_peak_mb` on the box line; when
+  the box's folder goes, one line (time, box, size, megabytes of the size, peak) is appended to
+  `cache/mem-peaks.log`. The peak belongs to the box: it is kept and only grows when the idle machine is made again;
+  `--recreate` starts from nothing.
+- **`box drop` and the collector say what a removed machine box needed**, with advice where it helps:
+  `...freed; it needed 2900 MB of its 8192 MB at most (--size medium would have held it)`, or
+  `(close to the limit: --size xlarge gives 12288 MB)` above 80 percent.
+- **A machine made again without `--size` takes the smallest size that held its past need** with a quarter to spare
+  (small, medium or the host's default, never above it) and says so:
+  `boxd-pod: machine box <box>: size medium chosen from its past need of 2900 MB (give --size to choose yourself)`.
+  Admission is unchanged: it counts sizes, now possibly a smaller one.
+
 ## 0.4.24
 
 - **Container boxes are admitted, no longer only limited by the cap.** A call that would start work in a container box is

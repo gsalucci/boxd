@@ -361,3 +361,13 @@ tests the machine text only, so it does not retry, does not wait and prints no h
 
 **Evidence.** `contract/cases.json` (choose and pod cases), `tests/contract-pod-test.sh` ("box admission"), `tests/box-client.test.mts`
 (spread through the command, container admission, "moves by itself"), `tests/host-watch-test.sh` (`fit`).
+
+## 2026-11-17: measuring the real need
+
+The host cannot tell what a machine really needs: seen from the host a virtual machine always uses its whole size, because the guest
+fills spare memory with file cache and never gives it back. Users pick sizes by guess. So the guest measures: a small loop keeps the highest
+`MemTotal - MemAvailable` of its `/proc/meminfo` in `jobs/<box>/.mem-peak`. `pod report` shows it (`mem_peak_mb`), `box drop` tells the user
+what the box needed and which size would have held it, and a machine made again with no `--size` takes the smallest size that holds the
+need with a quarter to spare (never above the default). **Admission is unchanged**: machines are still counted by their sizes, until the owner
+decides, from `cache/mem-peaks.log` (one line per removed box with a recorded need: time, box, size name, size, need), whether admission may
+count a machine by its need. Contract: "Memory need" in `docs/pod-contract.md`.

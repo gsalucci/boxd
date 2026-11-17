@@ -60,6 +60,7 @@ waiting cannot fix, like a missing image, still exits at once).
 - **A foreground call ends with the process that started it** (exit 129, the command inside the box is ended too). Work that
   must outlive you (a server, a long build you will read later) needs `--detach`; `BOXD_KEEP_ORPHAN=1` is only for a wrapper
   that exits on purpose.
+- When `box drop` says `it needed <n> MB of its <m> MB at most`, that is the most memory the machine really used inside (file cache not counted); a smaller size, named in the line, would have held it, and a smaller size leaves room for other machines. A new machine for a box with no `--size` takes its size from that need by itself.
 - After you delete a worktree yourself, run `box drop` first, from inside it: the box is found from the worktree. It removes the box, its files on the server and its record at once, refuses while the box is busy (a call or a detached run; the image's own daemons do not count), and does not wake a sleeping server (the collector then does it later).
 - `box gc` (`--dry-run` to only look) removes the boxes and server files of worktrees that were deleted (found missing by two passes 15 minutes
   apart), lists boxes nobody here owns and reports commands running over 6 hours; it also runs by itself after ordinary calls

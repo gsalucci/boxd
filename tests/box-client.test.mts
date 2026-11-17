@@ -1729,6 +1729,29 @@ test("drop: the size the server measured is relayed; an answer without it, or wi
   }
 });
 
+test("drop: what the box really needed is added, with advice where it helps; the collector's line carries the same words", () => {
+  const answer = (out: string) => {
+    const s = servers([{ name: "test", status: FREE }]), rp = newRepo();
+    hostFile(s, "test", "list", LINE(rp.box, "stopped")); putEntry(s, "test", rp.box, rp.top); hostFile(s, "test", "drop.out", out);
+    return go(rp, s, ["drop"], { BOXD_HOST: "test" }).out.replace(rp.box, "BOX");
+  };
+  assert.equal(answer("evicted x (worktree gone), needed 2900 MB of 8192 MB (large), 512 MB freed\n"),
+    "box drop: removed test box BOX and its files, 512 MB freed; it needed 2900 MB of its 8192 MB at most (--size medium would have held it)\n");
+  assert.equal(answer("evicted x (worktree gone), needed 7900 MB of 8192 MB (large), 512 MB freed\n"),
+    "box drop: removed test box BOX and its files, 512 MB freed; it needed 7900 MB of its 8192 MB at most (close to the limit: --size xlarge gives 12288 MB)\n");
+  assert.equal(answer("evicted x (worktree gone), needed 6000 MB of 8192 MB (large)\n"), "box drop: removed test box BOX and its files; it needed 6000 MB of its 8192 MB at most\n");
+  const s = servers([{ name: "test", status: FREE }]);
+  hostFile(s, "test", "list", LINE("gone-1", "stopped")); putEntry(s, "test", "gone-1", NOWHERE, T0 - 20 * MIN); hostFile(s, "test", "drop.out", "evicted gone-1 (worktree gone), needed 2900 MB of 8192 MB (large), 77 MB freed\n");
+  assert.match(gc(s, ["gc"], T0).out, /^box gc: removed test box gone-1 and its files, 77 MB freed; it needed 2900 MB of its 8192 MB at most \(--size medium would have held it\): worktree .* is gone\n$/);
+});
+
+test("call: the client sends no --size of its own accord, so the server can choose a machine from the past need", () => {
+  const s = servers([{ name: "test", status: FREE }]), rp = newRepo();
+  const r = go(rp, s, ["--vm", "--no-sync", "true"], { BOXD_HOST: "test" });
+  const runs = r.calls.filter((c) => c.includes("pod run"));
+  assert.equal(runs.length > 0 && runs.every((c) => c.includes("--vm") && !c.includes("--size")), true, r.calls.join("\n"));
+});
+
 test("drop: a box the host no longer has is still cleaned (pod drop answers 0 for it)", () => {
   const s = servers([{ name: "test", status: FREE }]), rp = newRepo();
   hostFile(s, "test", "list", ""); putEntry(s, "test", rp.box, rp.top);
