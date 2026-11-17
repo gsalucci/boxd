@@ -90,6 +90,7 @@ waiting cannot fix, like a missing image, still exits at once).
 - Tests that need a git repository: `--snapshot`. A synced tree has no git data otherwise (`.git` is not sent): a build that embeds
   `git describe` says `unknown`; pass `--snapshot` when the build needs it (it makes a new commit named snapshot).
 - Tools that need the worktree's real commit (`git rev-parse HEAD`, git status): `--git` makes `/job/src` a repository at the same commit hash, one commit, detached; uncommitted work shows as changes. It stays until the next `--git` call. Not with `--snapshot` or `--no-sync`.
+- Before a release, or to reproduce a hosted run: `--commit HEAD` (or another commit) makes `/job/src` exactly what a fresh clone at that commit holds, with no uncommitted or untracked files and no old build outputs; use `--git` for everyday work on uncommitted changes. Mixing the two in one box alternates the source.
 - With `--git`, a file that is new and not yet committed exists in the box but is untracked there: `git status` shows it, `git ls-files` does not. A test that reads the list of tracked files will not see it and can pass in the box and fail after the commit: commit first, or check `git status --short` in the box.
 - The clock inside a box is coordinated universal time (UTC); the servers' own clocks and the times `box` prints (run ids, `box runs`) are local time.
 - Memory and out-of-memory kills inside a virtual machine box: `box --no-sync -- sh -c 'free -m; grep oom_kill /proc/vmstat'`

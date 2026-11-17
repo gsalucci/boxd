@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync, execFileSync } from "node:child_process";
-import { chmodSync, closeSync, constants, openSync, mkdtempSync, mkdirSync, readdirSync, symlinkSync, readFileSync, rmSync, writeFileSync, existsSync, statSync } from "node:fs";
+import { chmodSync, closeSync, constants, openSync, mkdtempSync, mkdirSync, readdirSync, symlinkSync, lstatSync, readlinkSync, readFileSync, rmSync, writeFileSync, existsSync, statSync } from "node:fs";
 import { once } from "node:events";
 import net from "node:net";
 import { tmpdir } from "node:os";
@@ -2061,6 +2061,171 @@ test("--git: refused with --snapshot and with --no-sync, one line each, nothing 
   assert.ok(!c.calls.some((x) => x.startsWith("ssh ") && x.includes(" pod run ")), "no run");
   const outside = path.join(root, "git-outside"); mkdirSync(outside);
   assert.match(runBox(["--git", "true"], { cwd: outside }).err, /box: not inside a git worktree/);
+});
+
+// ---- --commit: the box's source is what a fresh clone at that commit holds (real repositories, the fake ssh, the real rsync) ----
+
+// A repository with tracked files of every kind, a commit "main", then a working folder that differs from it in every way.
+function commitRepo() {
+  const { r, remote, src } = gitRepo();
+  writeFileSync(path.join(r, ".gitignore"), "out/\n"); writeFileSync(path.join(r, "run.sh"), "#!/bin/sh\n"); chmodSync(path.join(r, "run.sh"), 0o755);
+  symlinkSync("a.txt", path.join(r, "link")); mkdirSync(path.join(r, "docs")); writeFileSync(path.join(r, "docs", "d.txt"), "d");
+  git(r, "add", "-A");
+  git(r, "update-index", "--add", "--cacheinfo", `160000,${git(r, "rev-parse", "HEAD")},vendor/lib`);
+  git(r, "commit", "-q", "-m", "kinds");
+  return { r, remote, src };
+}
+const dirty = (r: string) => {
+  writeFileSync(path.join(r, "a.txt"), "edited"); writeFileSync(path.join(r, "untracked.txt"), "u"); mkdirSync(path.join(r, "out")); writeFileSync(path.join(r, "out", "x.o"), "o");
+  rmSync(path.join(r, "f0.txt")); mkdirSync(path.join(r, "vendor/lib"), { recursive: true }); writeFileSync(path.join(r, "vendor/lib/inside.txt"), "i");
+};
+// every file and link under the box's source folder, without .git, and every folder that holds nothing
+const srcTree = (src: string) => (readdirSync(src, { recursive: true, withFileTypes: true }) as import("node:fs").Dirent[])
+  .map((e) => ({ rel: path.relative(src, path.join(e.parentPath, e.name)), dir: e.isDirectory() && !e.isSymbolicLink() })).filter((e) => !e.rel.split(path.sep).includes(".git"));
+const scratch = () => { const d = mkdtempSync(path.join(root, "tmp-")); return d; };
+
+test("--commit: the box holds the commit's tracked files only, with their modes, links and an empty submodule folder; a leftover of an earlier call is gone, what is outside the source folder stays", () => {
+  const { r, remote, src } = commitRepo();
+  assert.equal(sendFrom(r, remote).code, 0);                                     // an ordinary call first: syncs the working folder
+  mkdirSync(path.join(src, "target")); writeFileSync(path.join(src, "target", "built.o"), "b"); writeFileSync(path.join(src, "old-untracked.txt"), "x");
+  const home1 = path.join(src, "..", "home"); mkdirSync(home1); writeFileSync(path.join(home1, "keep"), "k");
+  dirty(r);
+  const before = { status: git(r, "status", "--porcelain"), a: readFileSync(path.join(r, "a.txt"), "utf8"), index: readFileSync(path.join(r, ".git/index")), branches: git(r, "for-each-ref") };
+  const t = scratch(), run = runBox(["--commit", "HEAD", "true"], { cwd: r, env: { FAKE_REMOTE: remote, TMPDIR: t } });
+  assert.equal(run.code, 0, run.err);
+  const sha = git(r, "rev-parse", "HEAD");
+  assert.equal(run.err, `box: source is commit ${sha} (HEAD), not the working folder\n`);
+  const names = srcTree(src).filter((e) => !e.dir).map((e) => e.rel).sort(), want = git(r, "ls-tree", "-r", "--name-only", "HEAD").split("\n").filter((n) => n !== "vendor/lib").sort();
+  assert.deepEqual(names, want, "exactly the tracked files");
+  assert.equal(readFileSync(path.join(src, "a.txt"), "utf8"), "three", "the uncommitted edit did not reach the box");
+  assert.equal(readFileSync(path.join(src, "f0.txt"), "utf8"), "one", "a file deleted in the working folder is there");
+  assert.ok(!existsSync(path.join(src, "untracked.txt")) && !existsSync(path.join(src, "out")), "no untracked file, no ignored output");
+  assert.ok(!existsSync(path.join(src, "target")) && !existsSync(path.join(src, "old-untracked.txt")), "leftovers of the earlier call are deleted");
+  assert.equal(readFileSync(path.join(home1, "keep"), "utf8"), "k", "outside the source folder nothing is touched");
+  assert.ok((statSync(path.join(src, "run.sh")).mode & 0o111) !== 0, "executable");
+  assert.ok((statSync(path.join(src, "a.txt")).mode & 0o111) === 0, "not executable");
+  assert.ok(lstatSync(path.join(src, "link")).isSymbolicLink() && readlinkSync(path.join(src, "link")) === "a.txt", "symbolic link");
+  assert.deepEqual(readdirSync(path.join(src, "vendor/lib")), [], "submodule: an empty folder");
+  assert.equal(git(src, "rev-parse", "HEAD"), sha); assert.deepEqual(status(src), [""]);
+  assert.equal(git(src, "rev-list", "--count", "HEAD"), "1"); assert.equal(git(src, "rev-parse", "--is-shallow-repository"), "true");
+  assert.throws(() => git(src, "symbolic-ref", "-q", "HEAD"), "detached");
+  assert.equal(git(src, "remote"), ""); assert.ok(!existsSync(path.join(src, ".git", "hooks")));
+  for (const { f, b } of gitBytes(src)) for (const secret of ["Zed Secretname", "private.example", r]) assert.ok(!b.includes(secret), `${secret} found in ${f}`);
+  // the user's working folder, index and branches are as they were
+  assert.equal(git(r, "status", "--porcelain"), before.status); assert.equal(readFileSync(path.join(r, "a.txt"), "utf8"), before.a);
+  assert.ok(readFileSync(path.join(r, ".git/index")).equals(before.index), "the index is byte for byte the same"); assert.equal(git(r, "for-each-ref"), before.branches);
+  assert.deepEqual(readdirSync(t), [], "the temporary export is gone");
+});
+
+test("--commit: the pod line is the one of a call without it, and the client's own option goes nowhere else", () => {
+  const { r, remote } = commitRepo();
+  const plain = runBox(["--user", "true"], { cwd: r, env: { FAKE_REMOTE: remote } }), c = runBox(["--commit", "HEAD", "--user", "true"], { cwd: r, env: { FAKE_REMOTE: remote } });
+  assert.equal(c.code, 0, c.err);
+  assert.deepEqual(c.calls.filter((x) => x.startsWith("ssh ")), plain.calls.filter((x) => x.startsWith("ssh ")));
+  assert.ok(!c.calls.some((x) => x.startsWith("ssh ") && x.includes("commit")));
+  const sync = c.calls.find((x) => x.startsWith("rsync -a --delete")) as string;
+  assert.match(sync, /^rsync -a --delete --delete-excluded --checksum --mkpath --filter=P \/\.git --safe-links --exclude=\/\.git \S+\/boxd-commit-[^/]+\/src\/ boxd-test:jobs\/\S+\/src\/$/);
+});
+
+test("--commit: a branch, a tag, a short hash and a relative name each resolve to the full hash; the message names what was asked", () => {
+  const { r, remote, src } = commitRepo();
+  git(r, "branch", "old", "HEAD~1"); git(r, "tag", "v1", "HEAD~2");
+  const head = git(r, "rev-parse", "HEAD");
+  for (const rev of ["old", "v1", git(r, "rev-parse", "--short=7", "HEAD~1"), "HEAD~2", head.slice(0, 12), "main"]) {
+    const run = sendFrom(r, remote, "--commit", rev);
+    assert.equal(run.code, 0, run.err);
+    const full = git(r, "rev-parse", `${rev}^{commit}`);
+    assert.equal(run.err, `box: source is commit ${full} (${rev}), not the working folder\n`);
+    assert.equal(git(src, "rev-parse", "HEAD"), full);
+    assert.equal(readFileSync(path.join(src, "a.txt"), "utf8"), git(r, "show", `${full}:a.txt`), `the files are those of ${rev}`);
+    assert.deepEqual(status(src), [""]);
+  }
+});
+
+test("--commit: an unknown revision is one line, exit 2, nothing started; so is a name that looks like an option", () => {
+  const { r, remote } = commitRepo();
+  for (const rev of ["no-such-branch", "-x", "HEAD~99", git(r, "rev-parse", "HEAD:a.txt")]) {
+    const run = sendFrom(r, remote, "--commit", rev);
+    assert.equal(run.code, 2); assert.equal(run.err.split("\n")[0], `box: --commit ${rev}: not a commit in this repository`); assert.deepEqual(run.calls, []);
+  }
+  assert.equal(runBox(["--commit"], { cwd: r, env: { FAKE_REMOTE: remote } }).err.split("\n")[0], "box: --commit needs a value");
+});
+
+test("--commit: refused with --git, --snapshot, --no-sync, --include and --clean in one grouped line, nothing sent", () => {
+  const { r, remote } = commitRepo();
+  for (const o of [["--git"], ["--snapshot"], ["--no-sync"], ["--include", "a.txt"], ["--clean"]]) {
+    const run = sendFrom(r, remote, "--commit", "HEAD", ...o);
+    assert.equal(run.code, 2, o[0]); assert.match(run.err.split("\n")[0] as string, new RegExp(`^box: --commit cannot go with ${o[0]}: [^\\n]*$`)); assert.deepEqual(run.calls, []);
+  }
+  const all = sendFrom(r, remote, "--commit", "HEAD", "--git", "--snapshot", "--no-sync", "--include", "a.txt", "--clean");
+  assert.equal(all.code, 2); assert.ok(all.err.startsWith("box: --commit cannot go with --git, --snapshot, --no-sync, --include, --clean: ")); assert.deepEqual(all.calls, []);
+});
+
+test("--commit: in a linked worktree it is that worktree's repository and box", () => {
+  const { r, remote } = commitRepo(), linked = path.join(root, `linked-commit-${gitN}`);
+  git(r, "worktree", "add", "-q", "-b", "side", linked);
+  writeFileSync(path.join(linked, "side.txt"), "s"); git(linked, "add", "-A"); git(linked, "commit", "-q", "-m", "side");
+  writeFileSync(path.join(linked, "dirty.txt"), "d");
+  const run = sendFrom(linked, remote, "--commit", "HEAD");
+  assert.equal(run.code, 0, run.err);
+  const src = srcOf(linked, remote);
+  assert.equal(git(src, "rev-parse", "HEAD"), git(linked, "rev-parse", "HEAD"));
+  assert.ok(existsSync(path.join(src, "side.txt")) && !existsSync(path.join(src, "dirty.txt")));
+  assert.deepEqual(status(src), [""]);
+  assert.ok(!existsSync(srcOf(r, remote)), "the main worktree's box was not made");
+});
+
+test("--commit: the export is removed after a failing sync too, and the error is the usual one", () => {
+  const { r } = commitRepo(), t = scratch();
+  const run = runBox(["--commit", "HEAD", "true"], { cwd: r, env: { FAKE_REMOTE: "/dev/null/not-a-folder", TMPDIR: t } });
+  assert.notEqual(run.code, 0); assert.match(run.err, /box: sync failed \(rsync exit \d+\); nothing was started\n$/);
+  assert.equal(run.calls.filter((c) => c.startsWith("ssh ")).length, 0);
+  assert.deepEqual(readdirSync(t), []);
+});
+
+test("--commit: a signal while the sync runs removes the export", async () => {
+  const { r, remote } = commitRepo(), t = scratch(), blockBin = path.join(t, "block-bin"), fifo = path.join(t, "ready"), tmpDir = path.join(t, "tmp");
+  mkdirSync(blockBin); mkdirSync(tmpDir); execFileSync("mkfifo", [fifo]);
+  // a rsync that says it started and then never ends; only the signal ends it. (Dry runs are not made: --commit sends every tracked file.)
+  writeFileSync(path.join(blockBin, "rsync"), `#!/bin/sh\necho up > "${fifo}"\nexec sleep 3600\n`); chmodSync(path.join(blockBin, "rsync"), 0o755);
+  const child = spawn(process.execPath, [TOOL, "--commit", "HEAD", "true"], { cwd: r, detached: true, stdio: "ignore", env: { PATH: `${blockBin}:${bin}:${process.env.PATH ?? ""}`, HOME: home, BOXD_HOST: "test", BOXD_GC: "0", CALLS: log, FAKE_REMOTE: remote, TMPDIR: tmpDir } });
+  const closed = once(child, "close");
+  readFileSync(fifo);                                  // returns when the fake rsync has started: the export exists now
+  assert.ok(readdirSync(tmpDir).some((n) => n.startsWith("boxd-commit-")), "the export exists while the sync runs");
+  process.kill(-(child.pid as number), "SIGTERM");     // the terminal's way: the whole group
+  await closed;
+  assert.deepEqual(readdirSync(tmpDir), []);
+});
+
+test("--commit: a later call without it syncs the working folder again, and the repository stays at the commit until --git or --commit replaces it", () => {
+  const { r, remote, src } = commitRepo();
+  assert.equal(sendFrom(r, remote, "--commit", "HEAD").code, 0);
+  const sha = git(r, "rev-parse", "HEAD");
+  dirty(r);
+  assert.equal(sendFrom(r, remote).code, 0);
+  assert.equal(readFileSync(path.join(src, "a.txt"), "utf8"), "edited"); assert.ok(existsSync(path.join(src, "untracked.txt")));
+  assert.equal(git(src, "rev-parse", "HEAD"), sha);
+  assert.ok(status(src).includes("?? untracked.txt") && status(src).includes(" M a.txt"));
+  assert.equal(sendFrom(r, remote, "--commit", "HEAD").code, 0);
+  assert.equal(readFileSync(path.join(src, "a.txt"), "utf8"), "three"); assert.ok(!existsSync(path.join(src, "untracked.txt"))); assert.deepEqual(status(src), [""]);
+});
+
+test("--commit: a file of the commit that an ignore rule matches is sent (a clone has it), and a changed file of the same size and time is replaced", () => {
+  const { r, remote, src } = commitRepo();
+  writeFileSync(path.join(r, "forced.out"), "1"); writeFileSync(path.join(r, ".gitignore"), "out/\n*.out\n"); git(r, "add", "-f", "forced.out", ".gitignore"); git(r, "commit", "-q", "-m", "forced");
+  assert.equal(sendFrom(r, remote, "--commit", "HEAD").code, 0);
+  assert.equal(readFileSync(path.join(src, "forced.out"), "utf8"), "1");
+  const env = { GIT_COMMITTER_DATE: "2020-01-01T00:00:00Z", GIT_AUTHOR_DATE: "2020-01-01T00:00:00Z" };
+  for (const [i, c] of ["2", "3"].entries()) { writeFileSync(path.join(r, "forced.out"), c); execFileSync("git", ["-c", "user.name=x", "-c", "user.email=x@x", "commit", "-q", "-a", "-m", `same time ${i}`], { cwd: r, env: { PATH: process.env.PATH ?? "", HOME: home, ...env } }); assert.equal(sendFrom(r, remote, "--commit", "HEAD").code, 0); assert.equal(readFileSync(path.join(src, "forced.out"), "utf8"), c); }
+});
+
+test("--commit with --shards: the revision is resolved once and told once; each shard sends its own export of that commit", () => {
+  const f = shardsFixture(2);
+  writeFileSync(path.join(f.rp.cwd, "a.txt"), "x"); git(f.rp.cwd, "add", "-A"); git(f.rp.cwd, "commit", "-q", "-m", "c");
+  const r = f.run(["--shards", "2", "--commit", "HEAD", "--", "t", "{shard}"]);
+  assert.equal(r.code, 0, r.err);
+  assert.equal(r.err.split("\n").filter((l) => l.startsWith("box: source is commit ")).length, 1);
+  assert.equal(r.calls.filter((c) => /^rsync -a --delete --delete-excluded --checksum .*boxd-commit-/.test(c)).length, 2);
 });
 
 // ---- admission of container boxes (owner decision 2026-11-17): the host's box_room, its refusal text, and what the client does with them ----

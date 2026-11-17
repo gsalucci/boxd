@@ -1,5 +1,5 @@
 // box: runs a command in the calling worktree's own box on a boxd build server (see docs/pod-contract.md).
-//   box [--host <name>] [--pod <name>] [--image <ref> | --image-file <path>] [--vm|--container] [--size small|medium|large|xlarge] [--user] [--kvm] [--recreate] [--no-sync] [--snapshot | --git] [--detach] [--wait] [--pull <path>]... [--] <command...>
+//   box [--host <name>] [--pod <name>] [--image <ref> | --image-file <path>] [--vm|--container] [--size small|medium|large|xlarge] [--user] [--kvm] [--recreate] [--no-sync] [--snapshot | --git | --commit <rev>] [--detach] [--wait] [--pull <path>]... [--] <command...>
 //   box --shards <n> [--tail <n>] [the usual run options] -- <command with {shard} and {shards}...>
 //   box image push [--host <name>] [--vm|--container] <ref>
 //   box setup <host> [--hostname <name>] [--port <n>] [--user <name>] [--identity <file>] [--wake <mac>,<mac> --broadcast <addr>] [--default]
@@ -19,7 +19,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-export const VERSION = "0.4.29";
+export const VERSION = "0.4.30";
 const BOX = /^[a-z0-9][a-z0-9_.-]{0,62}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const MAC = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i;
@@ -135,6 +135,16 @@ container or, with --vm, a small virtual machine; the same box on every call) an
                    head, no remote, no hooks, no name or mail); git status there shows what differs between the synced
                    files and that commit, so uncommitted work stays uncommitted. It stays in the box until the next call
                    with --git replaces it. Not with --snapshot or --no-sync
+  --commit <rev>   run on what a fresh clone checked out at <rev> (a hash, branch, tag or HEAD) holds, not on your working folder:
+                   only that commit's tracked files (modes and symbolic links kept, a submodule an empty folder), none of your
+                   uncommitted edits, untracked or ignored files or build outputs, and /job/src is a git repository at that commit
+                   (as --git makes it, so git status there is clean). For a check before a release, or to reproduce a hosted run;
+                   use --git for everyday work on uncommitted changes. The box is the worktree's usual one (caches and /job/home stay)
+                   but its source folder is replaced: builds start from a clean tree, files that earlier calls left in /job/src are
+                   deleted (only /job/src changes; --pull still copies into your working folder). With --image-file the Containerfile
+                   is the one of the commit. A later call without --commit syncs the working folder again, and the repository stays
+                   until a --git or --commit call replaces it: mixing the two in one box alternates the source. Unknown <rev>: exit 2.
+                   Not with --git, --snapshot, --no-sync, --include or --clean
   --version        print the version of this client
   --help           this text`;
 export const SETUP_HELP = `usage: box setup <host> [options]
@@ -464,8 +474,8 @@ export function choose(hosts, req) {
 // the commit, so git status in the box lists exactly what differs from it. Made with an empty template (no hooks), no remote,
 // no reflog (it would carry this account's name and mail) and no FETCH_HEAD (it names this machine's path). Returns the reason
 // it failed. --checksum: HEAD, the index and shallow have the same size and, made within one second, the same time on a new commit. The files in the box are left alone: the sync's own filter keeps /.git, and this replaces the whole folder.
-function sendGit(toplevel, dest) {
-    const head = spawnSync("git", ["rev-parse", "--verify", "HEAD^{commit}"], { cwd: toplevel, encoding: "utf8" });
+function sendGit(toplevel, dest, rev = "HEAD") {
+    const head = spawnSync("git", ["rev-parse", "--verify", `${rev}^{commit}`], { cwd: toplevel, encoding: "utf8" });
     if (head.status !== 0)
         return "this worktree has no commit yet";
     const sha = head.stdout.trim(), tmp = mkdtempSync(path.join(tmpdir(), "boxd-git-"));
@@ -482,6 +492,25 @@ function sendGit(toplevel, dest) {
     finally {
         rmSync(tmp, { recursive: true, force: true });
     }
+}
+// --commit: the commit's files exactly as a fresh clone checks them out, in a new temporary folder (returned; the caller removes it).
+// git checkout-index from a temporary index (the user's own index is never read or written) because it writes what a checkout writes:
+// modes, symbolic links, an empty folder for a submodule, and the same line ending and filter rules, with nothing that only a working
+// folder has. git archive would honour export-ignore and export-subst, which a clone does not. core.sparseCheckout is off so a sparse
+// worktree does not thin the export. Cost: one pass over the commit's files, no history, no network, nothing in the repository.
+function exportCommit(toplevel, sha, env) {
+    const dir = mkdtempSync(path.join(tmpdir(), "boxd-commit-"));
+    const gitEnv = { ...env, GIT_INDEX_FILE: path.join(dir, "index") };
+    const src = path.join(dir, "src");
+    mkdirSync(src);
+    for (const a of [["read-tree", sha], ["checkout-index", "-a", `--prefix=${src}/`]]) {
+        const r = spawnSync("git", ["-c", "core.sparseCheckout=false", ...a], { cwd: toplevel, env: gitEnv, encoding: "utf8" });
+        if (r.status !== 0) {
+            rmSync(dir, { recursive: true, force: true });
+            return { error: `git ${a[0]} failed: ${r.stderr.trim().split("\n")[0]}` };
+        }
+    }
+    return { dir };
 }
 // What to try after a "no room" refusal, from the status lines the probe already returned (no new request): the largest size
 // below the one asked that fits on the host with the most room (`vm_fit_mb`; a host without it is not guessed at), and the
@@ -1398,7 +1427,7 @@ export function main(args, env = process.env, inner) {
     if (args[0] === "image")
         return args[1] === "push" ? imagePush(args.slice(2), env) : usage("box image: only \"box image push\" exists");
     const flags = [], pulls = [], includes = [];
-    let sync = true, clean = false, detach = inner !== undefined, wait = false, shards, tail, i = 0, hostFlag, psAfter = env.BOXD_PS_AFTER ?? "15";
+    let commit, sync = true, clean = false, detach = inner !== undefined, wait = false, shards, tail, i = 0, hostFlag, psAfter = env.BOXD_PS_AFTER ?? "15";
     for (; i < args.length; i++) {
         const a = args[i];
         if (a === "--") {
@@ -1437,13 +1466,15 @@ export function main(args, env = process.env, inner) {
                 return usage("box: --tail needs a whole number from 0 to 100000");
             tail = Number(v);
         }
-        else if (a === "--pod" || a === "--size" || a === "--image" || a === "--image-file" || a === "--pull" || a === "--host" || a === "--ps-after" || a === "--env" || a === "--include") {
+        else if (a === "--pod" || a === "--size" || a === "--image" || a === "--image-file" || a === "--pull" || a === "--host" || a === "--ps-after" || a === "--env" || a === "--include" || a === "--commit") {
             const v = args[++i];
             if (v === undefined)
                 return usage(`box: ${a} needs a value`);
             if (a === "--env" && env[v] === undefined)
                 return usage(`box: --env ${v}: not set in your environment`);
-            if (a === "--pull")
+            if (a === "--commit")
+                commit = v;
+            else if (a === "--pull")
                 pulls.push(v);
             else if (a === "--include")
                 includes.push(v);
@@ -1479,6 +1510,18 @@ export function main(args, env = process.env, inner) {
     if (git.status !== 0)
         return usage("box: not inside a git worktree");
     const [toplevel = "", gitDir = ""] = git.stdout.trim().split("\n");
+    if (commit !== undefined) {
+        const bad = [flags.includes("--git") && "--git", flags.includes("--snapshot") && "--snapshot", !sync && "--no-sync", includes.length > 0 && "--include", clean && "--clean"].filter(Boolean);
+        if (bad.length)
+            return usage(`box: --commit cannot go with ${bad.join(", ")}: it already sends the commit's own files and repository and makes the box's source folder exactly them`);
+        const rv = commit.startsWith("-") ? undefined : spawnSync("git", ["rev-parse", "--verify", `${commit}^{commit}`], { cwd: toplevel, encoding: "utf8" });
+        if (!rv || rv.status !== 0)
+            return usage(`box: --commit ${commit}: not a commit in this repository`);
+        if (!inner)
+            process.stderr.write(`box: source is commit ${rv.stdout.trim()} (${commit}), not the working folder\n`);
+        commit = rv.stdout.trim();
+        clean = true;
+    }
     if (shards !== undefined) {
         const bp = plan(toplevel, flags, argv);
         if ("error" in bp)
@@ -1490,6 +1533,10 @@ export function main(args, env = process.env, inner) {
         for (let j = 0; j < opts.length; j++) {
             if (["--shards", "--tail", "--pod"].includes(opts[j]))
                 j++;
+            else if (opts[j] === "--commit") {
+                keep.push("--commit", commit);
+                j++;
+            }
             else
                 keep.push(opts[j]);
         }
@@ -1540,33 +1587,56 @@ export function main(args, env = process.env, inner) {
     async function attempt(name) {
         const HOST = `boxd-${name}`;
         // Remote paths are relative: the server's dispatcher runs the sync inside its work area (see docs/pod-contract.md).
-        if (sync) {
-            const rules = gitExactRules(toplevel, includes);
-            const rulesFile = rules.length ? path.join(mkdtempSync(path.join(tmpdir(), "boxd-sync-")), "rules") : "";
-            if (rulesFile)
-                writeFileSync(rulesFile, `${rules.join("\n")}\n`);
-            // --clean: what the filter leaves out is deleted in the box too, except the history --snapshot keeps there.
-            const r = spawnSync("rsync", ["-a", "--delete", ...(clean ? ["--delete-excluded"] : []), "--mkpath", ...(clean ? ["--filter=P /.git"] : []), ...(rulesFile ? [`--filter=. ${rulesFile}`] : []), ...BASE_FILTER, `${toplevel}/`, `${HOST}:jobs/${box}/src/`], { stdio: ["inherit", "pipe", "inherit"], encoding: "utf8", maxBuffer: 1 << 28 });
-            if (rulesFile)
-                rmSync(path.dirname(rulesFile), { recursive: true, force: true });
-            // rsync prints "cannot delete non-empty directory" and exits 0 when a folder deleted here still holds ignored files
-            // on the server. That is a successful sync; said in the client's own words, because the raw line was read as a failure.
-            const kept = [];
-            process.stdout.write((r.stdout ?? "").split("\n").filter((l) => { const m = /^cannot delete non-empty directory: (.*)$/.exec(l); if (m)
-                kept.push(m[1]); return !m; }).join("\n"));
-            if (r.status !== 0) {
-                process.stderr.write(`box: sync failed (rsync exit ${r.status ?? "none"}); nothing was started\n`);
-                return { code: r.status ?? 1, err: "", stop: true };
-            }
-            if (kept.length)
-                process.stderr.write(`box: sync complete; ${kept.length} folder${kept.length > 1 ? "s" : ""} deleted here stay${kept.length > 1 ? "" : "s"} on the server because ${kept.length > 1 ? "they hold" : "it holds"} files git ignores: ${kept.slice(0, 5).join(", ")}${kept.length > 5 ? ", ..." : ""}\n`);
-        }
-        if (flags.includes("--git")) {
-            const bad = sendGit(toplevel, `${HOST}:jobs/${box}/src/.git/`);
-            if (bad) {
-                process.stderr.write(`box: --git: ${bad}; nothing was started\n`);
+        // --commit: the source is a temporary export, sent whole (no ignore rules: a clone has every tracked file), compared by content
+        // (--checksum: every file of the export has the commit's time, so size and time alone could keep a stale file), removed when the sync ends.
+        let exp;
+        const drop = () => { if (exp)
+            rmSync(exp, { recursive: true, force: true }); };
+        const onSignal = (s) => { drop(); process.kill(process.pid, s); };
+        if (commit) {
+            const e = exportCommit(toplevel, commit, env);
+            if ("error" in e) {
+                process.stderr.write(`box: --commit: ${e.error}; nothing was started\n`);
                 return { code: 1, err: "", stop: true };
             }
+            exp = e.dir;
+            for (const s of ["SIGINT", "SIGTERM", "SIGHUP"])
+                process.once(s, onSignal);
+        }
+        try {
+            if (sync) {
+                const rules = exp ? [] : gitExactRules(toplevel, includes);
+                const rulesFile = rules.length ? path.join(mkdtempSync(path.join(tmpdir(), "boxd-sync-")), "rules") : "";
+                if (rulesFile)
+                    writeFileSync(rulesFile, `${rules.join("\n")}\n`);
+                // --clean: what the filter leaves out is deleted in the box too, except the history --snapshot keeps there.
+                const r = spawnSync("rsync", ["-a", "--delete", ...(clean ? ["--delete-excluded"] : []), ...(exp ? ["--checksum"] : []), "--mkpath", ...(clean ? ["--filter=P /.git"] : []), ...(rulesFile ? [`--filter=. ${rulesFile}`] : []), ...(exp ? BASE_FILTER.filter((x) => !x.includes(".gitignore")) : BASE_FILTER), `${exp ? path.join(exp, "src") : toplevel}/`, `${HOST}:jobs/${box}/src/`], { stdio: ["inherit", "pipe", "inherit"], encoding: "utf8", maxBuffer: 1 << 28 });
+                if (rulesFile)
+                    rmSync(path.dirname(rulesFile), { recursive: true, force: true });
+                // rsync prints "cannot delete non-empty directory" and exits 0 when a folder deleted here still holds ignored files
+                // on the server. That is a successful sync; said in the client's own words, because the raw line was read as a failure.
+                const kept = [];
+                process.stdout.write((r.stdout ?? "").split("\n").filter((l) => { const m = /^cannot delete non-empty directory: (.*)$/.exec(l); if (m)
+                    kept.push(m[1]); return !m; }).join("\n"));
+                if (r.status !== 0) {
+                    process.stderr.write(`box: sync failed (rsync exit ${r.status ?? "none"}); nothing was started\n`);
+                    return { code: r.status ?? 1, err: "", stop: true };
+                }
+                if (kept.length)
+                    process.stderr.write(`box: sync complete; ${kept.length} folder${kept.length > 1 ? "s" : ""} deleted here stay${kept.length > 1 ? "" : "s"} on the server because ${kept.length > 1 ? "they hold" : "it holds"} files git ignores: ${kept.slice(0, 5).join(", ")}${kept.length > 5 ? ", ..." : ""}\n`);
+            }
+            if (flags.includes("--git") || commit) {
+                const bad = sendGit(toplevel, `${HOST}:jobs/${box}/src/.git/`, commit);
+                if (bad) {
+                    process.stderr.write(`box: --git: ${bad}; nothing was started\n`);
+                    return { code: 1, err: "", stop: true };
+                }
+            }
+        }
+        finally {
+            drop();
+            for (const s of ["SIGINT", "SIGTERM", "SIGHUP"])
+                process.removeListener(s, onSignal);
         }
         register(env, name, box, toplevel);
         if (tty)

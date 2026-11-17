@@ -34,7 +34,7 @@ test("every view renders from the fixture and shows a value only the fixture has
     ["box", "void-server-871234905", ["void-server-871234905", "no detached runs"]],
     ["calls", null, ["cargo clippy --workspace", "image not allowed", "30.0 s", "exit 75"]],
     ["images", null, ["toolbox.tar", "3.42 GiB", "localhost/toolbox:latest"]],
-    ["services", null, ["boxd-sshd", "0.2.0", "0.4.29"]],
+    ["services", null, ["boxd-sshd", "0.2.0", "0.4.30"]],
     ["alerts", null, ["Load on tower is above its 16 threads", "no room for another virtual machine (24100 MB", "homeserver does not answer"]],
     ["reset", null, ["boxd-reset work", "boxd-reset all", "tower"]],
   ];
@@ -78,7 +78,7 @@ test("the second poll replaces the data and keeps route, sorting, filters, view 
 test("the status bar reads version, time of the data and read only; a stale document says so", () => {
   const S = newState(doc());
   const c = chrome(S, NOW);
-  assert.match(c.status, /^boxd 0\.4\.29, data from \d\d:\d\d:\d\d, read only$/);
+  assert.match(c.status, /^boxd 0\.4\.30, data from \d\d:\d\d:\d\d, read only$/);
   S.fetchError = "the service did not answer";
   assert.match(chrome(S, NOW + 90000).status, /the service did not answer.*data from \d\d:\d\d:\d\d.*read only/);
 });

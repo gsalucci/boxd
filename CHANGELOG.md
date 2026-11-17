@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.30
+
+- **`--commit <rev>`: the box's source is exactly one commit, as a fresh clone and checkout gives it.** Tracked files
+  of that commit only, with their modes and links, submodule folders empty, as a repository at that commit (as `--git`
+  makes it: one commit, detached, nothing that names the user). Nothing from the working folder travels: no
+  uncommitted edit, no untracked file, no build output, and leftovers of earlier calls in the box's source folder are
+  removed. The client makes a temporary export with its own temporary index, so the working folder, the index and the
+  branches are never touched, and removes it at the end, also after a failure. It prints
+  `box: source is commit <hash> (<rev>), not the working folder`. Works with `--detach`, `--shards`, `--vm`, `--user`
+  and `--image-file` (the file of the commit); not with `--git`, `--snapshot`, `--no-sync`, `--include` or
+  `--clean`. A later call without it syncs the working folder again. `--git` copies the working folder, so a build
+  passed in a box and failed in the repository's own automation on stray files that only a fresh clone shows.
+
 ## 0.4.29
 
 - **`box --shards <n>`: several commands side by side from one worktree in one call.** It makes `<n>` boxes for the
