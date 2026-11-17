@@ -1,5 +1,5 @@
 // box: runs a command in the calling worktree's own box on a boxd build server (see docs/pod-contract.md).
-//   box [--host <name>] [--pod <name>] [--image <ref> | --image-file <path>] [--vm|--container] [--size small|medium|large|xlarge] [--user] [--kvm] [--recreate] [--no-sync] [--snapshot] [--detach] [--wait] [--pull <path>]... [--] <command...>
+//   box [--host <name>] [--pod <name>] [--image <ref> | --image-file <path>] [--vm|--container] [--size small|medium|large|xlarge] [--user] [--kvm] [--recreate] [--no-sync] [--snapshot | --git] [--detach] [--wait] [--pull <path>]... [--] <command...>
 //   box image push [--host <name>] [--vm|--container] <ref>
 //   box setup <host> [--hostname <name>] [--port <n>] [--user <name>] [--identity <file>] [--wake <mac>,<mac> --broadcast <addr>] [--default]
 //   box hosts
@@ -18,7 +18,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-export const VERSION = "0.4.22";
+export const VERSION = "0.4.23";
 const BOX = /^[a-z0-9][a-z0-9_.-]{0,62}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const MAC = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i;
@@ -110,7 +110,11 @@ container or, with --vm, a small virtual machine; the same box on every call) an
   --ps-after <min> when a foreground call prints nothing for this many minutes (default 15, $BOXD_PS_AFTER), print the
                    box ps table to stderr, every line prefixed "[box ps] ", and again while the silence lasts;
                    0 turns it off (for callers that parse stderr strictly). Not on a terminal you are watching.
-  --snapshot       commit the synced files to a git repository in the box first
+  --snapshot       commit the synced files to a git repository in the box first (a new commit named snapshot)
+  --git            make /job/src a git repository at this worktree's own commit (same hash, one commit, no history, detached
+                   head, no remote, no hooks, no name or mail); git status there shows what differs between the synced
+                   files and that commit, so uncommitted work stays uncommitted. It stays in the box until the next call
+                   with --git replaces it. Not with --snapshot or --no-sync
   --version        print the version of this client
   --help           this text`;
 
@@ -151,7 +155,7 @@ export type Plan = { box: string; remote: string } | { error: string; exit: 2 };
 
 // --env names: credentials only (the server checks the same pattern before putting the value in the engine's environment).
 export const SECRET = /^[A-Z][A-Z0-9_]{0,62}_(TOKEN|KEY|SECRET|PASSWORD)$/;
-// flags: --pod <name>, --image <ref>, --image-file <path>, --vm, --container, --size <word>, --user, --kvm, --env <name>, --recreate, --snapshot, --detach <run>; other flags are the client's own.
+// flags: --git (the client's own, never sent), --pod <name>, --image <ref>, --image-file <path>, --vm, --container, --size <word>, --user, --kvm, --env <name>, --recreate, --snapshot, --detach <run>; other flags are the client's own.
 export function plan(toplevel: string, flags: string[], argv: string[]): Plan {
   let pod: string | undefined, image: string | undefined, imageFile: string | undefined, run: string | undefined, recreate = false, snapshot = false, vm = false, container = false, user = false, kvm = false, size: string | undefined;
   const envs: string[] = [];
@@ -171,6 +175,7 @@ export function plan(toplevel: string, flags: string[], argv: string[]): Plan {
     else if (f === "--snapshot") snapshot = true;
   }
   const box = pod ?? boxFor(toplevel);
+  if (flags.includes("--git") && snapshot) return { error: "box: --git and --snapshot cannot go together", exit: 2 };
   if (!BOX.test(box)) return { error: `box: bad box name ${JSON.stringify(box)}`, exit: 2 };
   if (argv.length === 0 || argv.some((w) => w.includes("\0"))) return { error: "box: no command given", exit: 2 };
   if (flags.includes("--image") && !image) return { error: "box: --image needs a value", exit: 2 };
@@ -372,6 +377,41 @@ export function choose(hosts: HostState[], req: Request): Choice {
   if (host === undefined) return { refusal: hosts.map((h, i) => `${h.name}: ${why[i]}`), notes, wait: waitable };
   const first = hosts[0]?.name;
   return { host, reason: host === first ? "order" : room.some((r) => r.name === first) ? "spread" : "overflow", room: order, notes };
+}
+
+// --git: a repository at this worktree's own commit, made here and sent next to the synced files. A shallow fetch of exactly
+// that commit (git sends only what the one commit needs) into an empty temporary repository; HEAD is detached on it (no branch
+// name of this machine is carried over, and a branch checked out in another worktree cannot clash); the index is read from
+// the commit, so git status in the box lists exactly what differs from it. Made with an empty template (no hooks), no remote,
+// no reflog (it would carry this account's name and mail) and no FETCH_HEAD (it names this machine's path). Returns the reason
+// it failed. --checksum: HEAD, the index and shallow have the same size and, made within one second, the same time on a new commit. The files in the box are left alone: the sync's own filter keeps /.git, and this replaces the whole folder.
+function sendGit(toplevel: string, dest: string): string | undefined {
+  const head = spawnSync("git", ["rev-parse", "--verify", "HEAD^{commit}"], { cwd: toplevel, encoding: "utf8" });
+  if (head.status !== 0) return "this worktree has no commit yet";
+  const sha = head.stdout.trim(), tmp = mkdtempSync(path.join(tmpdir(), "boxd-git-"));
+  const git = (...a: string[]) => spawnSync("git", ["-C", tmp, "-c", "core.logAllRefUpdates=false", "-c", "gc.auto=0", "-c", "maintenance.auto=false", ...a], { encoding: "utf8" });
+  try {
+    for (const a of [["init", "-q", "--template="], ["fetch", "-q", "--depth=1", "--no-write-fetch-head", toplevel, sha], ["update-ref", "--no-deref", "HEAD", sha], ["read-tree", "HEAD"]]) {
+      const r = git(...a);
+      if (r.status !== 0) return `git ${a[0]} failed: ${r.stderr.trim().split("\n")[0]}`;
+    }
+    const r = spawnSync("rsync", ["-a", "--checksum", "--delete", `${tmp}/.git/`, dest], { stdio: ["inherit", "inherit", "inherit"] });
+    return r.status === 0 ? undefined : `rsync exit ${r.status ?? "none"}`;
+  } finally { rmSync(tmp, { recursive: true, force: true }); }
+}
+
+// What to try after a "no room" refusal, from the status lines the probe already returned (no new request): the largest size
+// below the one asked that fits on the host with the most room (`vm_fit_mb`; a host without it is not guessed at), and the
+// `--wait` line when the call was not made with it. A box keeps its size, so an existing box needs --recreate to take another.
+const SIZES = [["xlarge", SIZE_MB.xlarge], ["large", 8192], ["medium", SIZE_MB.medium], ["small", SIZE_MB.small]] as const;
+export function roomHint(hosts: HostState[], req: Request, waiting: boolean): string[] {
+  let best: { name: string; fit: number } | undefined;
+  for (const h of hosts) {
+    const s = h.state === "awake" && h.status !== undefined ? parseStatus(h.status) : undefined;
+    if (s && (s.engines ?? "").split(",").includes("vm") && /^\d+$/.test(s.vm_fit_mb ?? "") && (!best || Number(s.vm_fit_mb) > best.fit)) best = { name: h.name, fit: Number(s.vm_fit_mb) };
+  }
+  const asked = req.size ? SIZE_MB[req.size] : 8192, size = best && SIZES.find(([, mb]) => mb < asked && mb <= best!.fit);
+  return [...(size && best ? [`fits now: --size ${size[0]} on ${best.name} (${best.fit} MB free; a box that exists keeps its size, changing it needs --recreate)`] : []), ...(waiting ? [] : ["or wait for room: add --wait"])];
 }
 
 function answers(target: string, ms: number): Promise<boolean> {
@@ -835,7 +875,10 @@ async function dropCall(args: string[], env: Env): Promise<number> {
   const listed = await ask(host, "pod list");
   if (listed.code !== 0) return refuse(`${host}: pod list failed (exit ${listed.code}); nothing removed`);
   if (listed.out.split("\n").some((l) => l.split("\t")[0] === t.box && l.split("\t")[2] === "running")) {
-    const procs = await ask(host, `pod ps ${t.box}`);
+    // Busy is the server's own notion (a call or a detached run holds the box: `busy=` of its `pod report` line). An image's own
+    // daemons (dockerd, containerd in a machine) are processes but not work. A server that does not say keeps the process list.
+    const rep = await ask(host, "pod report"), row = rep.code === 0 ? rep.out.split("\n").filter((l) => l.startsWith("box\t")).map(parseStatus).find((k) => k.box === t.box && k.busy !== undefined) : undefined;
+    const procs = row ? { code: 0, out: row.busy === "yes" ? "busy" : "" } : await ask(host, `pod ps ${t.box}`);
     if (procs.code !== 0) return refuse(`${host}: pod ps failed (exit ${procs.code}); nothing removed`);
     if (procs.out.trim()) return refuse(`box ${t.box} on ${host} still has a command running in it; nothing removed`);
   }
@@ -971,7 +1014,7 @@ export function main(args: string[], env: Env = process.env): number | Promise<n
     else if (a === "--detach") detach = true;
     else if (a === "--wait") wait = true;
     else if (a === "--clean") clean = true;
-    else if (a === "--recreate" || a === "--snapshot" || a === "--vm" || a === "--container" || a === "--user" || a === "--kvm") flags.push(a);
+    else if (a === "--recreate" || a === "--snapshot" || a === "--git" || a === "--vm" || a === "--container" || a === "--user" || a === "--kvm") flags.push(a);
     else if (a === "--pod" || a === "--size" || a === "--image" || a === "--image-file" || a === "--pull" || a === "--host" || a === "--ps-after" || a === "--env" || a === "--include") {
       const v = args[++i];
       if (v === undefined) return usage(`box: ${a} needs a value`);
@@ -987,6 +1030,7 @@ export function main(args: string[], env: Env = process.env): number | Promise<n
   const git = spawnSync("git", ["rev-parse", "--show-toplevel", "--absolute-git-dir"], { encoding: "utf8" });
   if (git.status !== 0) return usage("box: not inside a git worktree");
   const [toplevel = "", gitDir = ""] = git.stdout.trim().split("\n");
+  if (!sync && flags.includes("--git")) return usage("box: --git needs the sync; drop --no-sync");
   if (!sync && (clean || includes.length)) return usage("box: --include and --clean need the sync; drop --no-sync");
   for (let j = 0; j < includes.length; j++) {
     const given = includes[j] as string, rel = path.relative(toplevel, path.resolve(toplevel, given));
@@ -1037,6 +1081,10 @@ export function main(args: string[], env: Env = process.env): number | Promise<n
       if (r.status !== 0) { process.stderr.write(`box: sync failed (rsync exit ${r.status ?? "none"}); nothing was started\n`); return { code: r.status ?? 1, err: "", stop: true }; }
       if (kept.length) process.stderr.write(`box: sync complete; ${kept.length} folder${kept.length > 1 ? "s" : ""} deleted here stay${kept.length > 1 ? "" : "s"} on the server because ${kept.length > 1 ? "they hold" : "it holds"} files git ignores: ${kept.slice(0, 5).join(", ")}${kept.length > 5 ? ", ..." : ""}\n`);
     }
+    if (flags.includes("--git")) {
+      const bad = sendGit(toplevel, `${HOST}:jobs/${box}/src/.git/`);
+      if (bad) { process.stderr.write(`box: --git: ${bad}; nothing was started\n`); return { code: 1, err: "", stop: true }; }
+    }
     register(env, name, box, toplevel);
     if (tty) return { code: spawnSync("ssh", ["-t", ...sendEnv, HOST, remote], { ...stdio, env: sshEnv }).status ?? 1, err: "" };
     // A foreground call ends with its starter (BOXD_ORPHAN_CHECK_MS is how often the client looks; a test hook).
@@ -1077,10 +1125,10 @@ export function main(args: string[], env: Env = process.env): number | Promise<n
     if (name === undefined) {
       fresh = false;
       if (placed !== undefined) rmSync(placedFile, { force: true }); // it names a host that is no longer registered
-      const c = choose(await Promise.all(order.map((n) => probe(n, env))), req);
+      const seen = await Promise.all(order.map((n) => probe(n, env))), c = choose(seen, req);
       if ("refusal" in c) {
         if (wait && c.wait) { if (await hold(c.refusal)) return 129; continue; }
-        process.stderr.write(`box: no build server has room for this call\n${c.refusal.map((l) => `  ${l}\n`).join("")}`);
+        process.stderr.write(`box: no build server has room for this call\n${[...c.refusal, ...(c.wait ? roomHint(seen, req, wait) : [])].map((l) => `  ${l}\n`).join("")}`);
         return NO_ROOM;
       }
       name = place(gitDir, c.host, true);
@@ -1107,7 +1155,7 @@ export function main(args: string[], env: Env = process.env): number | Promise<n
       const c = others.length ? choose(others, req) : undefined;
       const move = ["box", "--host", ...(c && "host" in c ? [c.host] : []), ...args.filter((a, j) => a !== "--host" && args[j - 1] !== "--host")].map(quote).join(" ");
       if (c && "host" in c) process.stderr.write(`box: ${name} has no room; hosts that do: ${c.room.join(", ")}. Move this worktree with: ${move}\n`);
-      else if (c) process.stderr.write(`box: no other build server has room\n${c.refusal.map((l) => `  ${l}\n`).join("")}`);
+      else if (c) process.stderr.write(`box: no other build server has room\n${[...c.refusal, ...(c.wait ? roomHint(others, req, wait) : [])].map((l) => `  ${l}\n`).join("")}`);
       return r.code;
     }
     const code = finish(r.code, name);

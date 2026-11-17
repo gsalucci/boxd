@@ -12,7 +12,7 @@ import { TSC, NO_TSC } from "./tsc-rs.mts";
 
 const REPO = path.resolve(import.meta.dirname, "..");
 const TOOL = path.join(REPO, "client/box.mjs");
-const { plan, gitExactRules, BASE_FILTER, psTable, duration, runAge, lastLine } = await import(TOOL);
+const { plan, gitExactRules, BASE_FILTER, psTable, duration, runAge, lastLine, roomHint } = await import(TOOL);
 
 const root = mkdtempSync(path.join(tmpdir(), "box-client-"));
 // The real rsync, found before the fakes go first on PATH: dry runs and the equality test use it.
@@ -617,7 +617,7 @@ test("scenario 4 all full: exit 75 at once with one reason per host, nothing syn
   const s = servers([{ name: "tower", status: FULL }, { name: "laptop", status: FULL }]), rp = newRepo();
   const r = go(rp, s, ["--vm", "true"]);
   assert.equal(r.code, NO_ROOM);
-  assert.match(r.err, /^box: no build server has room for this call\n  tower: 3 of 3 running\n  laptop: 3 of 3 running\n$/);
+  assert.match(r.err, /^box: no build server has room for this call\n  tower: 3 of 3 running\n  laptop: 3 of 3 running\n  or wait for room: add --wait\n$/);
   assert.deepEqual(rest(r.calls), []);
   assert.equal(rp.placed(), undefined);
   assert.equal(choices(s).length, 0);
@@ -1614,7 +1614,7 @@ test("room for the size asked, through the command: medium is placed on a vm_roo
   assert.ok(ok.calls.some((c) => c.includes("boxd-tower pod run") && c.includes("--size medium")), "the call ran on tower");
   const no = go(newRepo(), servers([{ name: "tower", status: fits("3000") }, { name: "laptop", status: fits("1000") }]), ["--no-sync", "--vm", "--size", "medium", "true"]);
   assert.equal(no.code, NO_ROOM);
-  assert.equal(no.err, "box: no build server has room for this call\n  tower: 3000 MB fit, 4096 MB asked\n  laptop: 1000 MB fit, 4096 MB asked\n");
+  assert.equal(no.err, "box: no build server has room for this call\n  tower: 3000 MB fit, 4096 MB asked\n  laptop: 1000 MB fit, 4096 MB asked\n  fits now: --size small on tower (3000 MB free; a box that exists keeps its size, changing it needs --recreate)\n  or wait for room: add --wait\n");
   const def = go(newRepo(), servers([{ name: "tower", status: fits("5000") }, { name: "laptop", status: fits("5000") }]), ["--no-sync", "--vm", "true"]);
   assert.equal(def.code, NO_ROOM, "default size is judged by vm_room");
 });
@@ -1771,3 +1771,176 @@ test("drop --pod: a box of another worktree that still exists, or one without a 
 });
 
 test("drop: bad words are a usage error", () => assert.equal(runBox(["drop", "--now"]).code, 2));
+
+// ---- the refusal for room says what would work now (roomHint: only the status lines the probe returned) ----------------------
+const fitLine = (size: string, host: string, mb: number) => `fits now: --size ${size} on ${host} (${mb} MB free; a box that exists keeps its size, changing it needs --recreate)`;
+const WAIT_LINE = "or wait for room: add --wait";
+const statusFit = (mb?: string) => `version=0.4.22\tengines=container,vm\tvm_room=no\t${mb === undefined ? "" : `vm_fit_mb=${mb}`}`;
+const awake = (name: string, mb?: string) => ({ name, state: "awake", status: statusFit(mb) });
+test("room hint: a smaller size fits on one host, on two the larger free one is named, nothing fits, no vm_fit_mb, called with --wait", () => {
+  const xl = { vm: true, size: "xlarge" };
+  assert.deepEqual(roomHint([awake("tower", "9824"), awake("laptop", "11400")], xl, false), [fitLine("large", "laptop", 11400), WAIT_LINE], "the real case: asked xlarge");
+  assert.deepEqual(roomHint([awake("tower", "9824"), awake("laptop", "3000")], xl, false), [fitLine("large", "tower", 9824), WAIT_LINE], "one host fits large");
+  assert.deepEqual(roomHint([awake("tower", "5000"), awake("laptop", "3000")], { vm: true }, false), [fitLine("medium", "tower", 5000), WAIT_LINE], "default size asked: the largest below it");
+  assert.deepEqual(roomHint([awake("tower", "1000"), awake("laptop", "500")], xl, false), [WAIT_LINE], "nothing smaller fits anywhere");
+  assert.deepEqual(roomHint([awake("tower", "9824")], { vm: true, size: "small" }, false), [WAIT_LINE], "nothing is smaller than small");
+  assert.deepEqual(roomHint([awake("tower"), awake("laptop", "-")], xl, false), [WAIT_LINE], "an older server or an unmeasured host: no size is guessed");
+  assert.deepEqual(roomHint([awake("tower", "9824")], xl, true), [fitLine("large", "tower", 9824)], "with --wait only the size line");
+  assert.deepEqual(roomHint([awake("tower")], xl, true), [], "with --wait and nothing to say: nothing");
+  assert.deepEqual(roomHint([{ name: "tower", state: "asleep" }, { name: "laptop", state: "unreachable" }], xl, false), [WAIT_LINE]);
+});
+
+test("room hint, through the command: the real case (asked xlarge, 9824 and 11400 MB fit) prints both lines after the reasons, exit 75, nothing on standard output", () => {
+  const no = go(newRepo(), servers([{ name: "tower", status: fits("9824") }, { name: "laptop", status: fits("11400") }]), ["--no-sync", "--vm", "--size", "xlarge", "true"]);
+  assert.equal(no.code, NO_ROOM);
+  assert.equal(no.err, `box: no build server has room for this call\n  tower: 9824 MB fit, 12288 MB asked\n  laptop: 11400 MB fit, 12288 MB asked\n  ${fitLine("large", "laptop", 11400)}\n  ${WAIT_LINE}\n`);
+  assert.equal(no.out, "");
+});
+
+test("room hint: a refusal that waiting cannot fix (no machines on any host) gets no hint", () => {
+  const plain = FREE.replace(/engines=[^\t]*/, "engines=container");
+  const none = go(newRepo(), servers([{ name: "tower", status: plain }, { name: "laptop", status: plain }]), ["--no-sync", "--vm", "true"]);
+  assert.equal(none.code, NO_ROOM);
+  assert.equal(none.err, "box: no build server has room for this call\n  tower: no virtual machines\n  laptop: no virtual machines\n");
+});
+
+test("room hint: a placed worktree whose host refuses and no other host has room gets the lines after the reasons", () => {
+  const s = servers([{ name: "tower", status: FREE, runExit: NO_ROOM, runErr: REFUSAL }, { name: "laptop", status: fits("5000") }]), rp = newRepo();
+  const r = go(rp, s, ["--vm", "true"]);
+  assert.equal(r.code, NO_ROOM);
+  assert.match(r.err, new RegExp(`box: no other build server has room\\n  laptop: [^\\n]*\\n  ${fitLine("medium", "laptop", 5000).replace(/[()]/g, "\\$&")}\\n  ${WAIT_LINE}\\n$`));
+});
+
+// ---- box drop asks the server whether the box is busy (a call or a detached run), not whether any process is in it --------------
+const BOXROW = (b: string, tail: string) => `box\tbox=${b}\tengine=vm\timage=toolbox\tstate=running\tlast_used=1\tuser=-\tsize=large\tmem_limit_mb=8192\tmem_mb=100\t${tail}\n`;
+const DAEMONS = "11\t900\t0\t/\tdockerd\n12\t899\t0\t/\tcontainerd --config /var/run/docker/containerd/containerd.toml\n";
+test("drop: a machine whose only processes are the image's own daemons and that is not busy is removed", () => {
+  const s = servers([{ name: "test", status: FREE }]), rp = newRepo();
+  hostFile(s, "test", "list", LINE(rp.box)); hostFile(s, "test", `ps.${rp.box}`, DAEMONS); hostFile(s, "test", "report", BOXROW(rp.box, "busy=no\truns=0")); putEntry(s, "test", rp.box, rp.top);
+  const r = go(rp, s, ["drop"], { BOXD_HOST: "test" });
+  assert.equal(r.code, 0, r.err);
+  assert.deepEqual(r.calls.filter((c) => !c.endsWith(" pod status")).map((c) => c.replace(/^.* boxd-/, "boxd-")), ["boxd-test pod list", "boxd-test pod report", `boxd-test pod drop ${rp.box}`]);
+  assert.equal(getEntry(s, "test", rp.box), undefined);
+});
+
+test("drop: a busy machine (a call or a detached run holds it) is refused with the same words, nothing removed", () => {
+  const s = servers([{ name: "test", status: FREE }]), rp = newRepo();
+  hostFile(s, "test", "list", LINE(rp.box)); hostFile(s, "test", `ps.${rp.box}`, DAEMONS); hostFile(s, "test", "report", BOXROW(rp.box, "busy=yes\truns=1")); putEntry(s, "test", rp.box, rp.top);
+  const r = go(rp, s, ["drop"], { BOXD_HOST: "test" });
+  assert.equal(r.code, 1);
+  assert.match(r.err, new RegExp(`box drop: box ${rp.box} on test still has a command running in it; nothing removed\n`));
+  assert.deepEqual(stops(r.calls), []);
+  assert.notEqual(getEntry(s, "test", rp.box), undefined);
+});
+
+test("drop: a report that does not say busy for this box (older server, other box, failed call) keeps today's rule: any process refuses", () => {
+  for (const report of [(b: string) => BOXROW(b, "runs=0"), () => BOXROW("other-1", "busy=no\truns=0"), () => ""]) {
+    const s = servers([{ name: "test", status: FREE }]), rp = newRepo();
+    hostFile(s, "test", "list", LINE(rp.box)); hostFile(s, "test", `ps.${rp.box}`, DAEMONS); hostFile(s, "test", "report", report(rp.box)); putEntry(s, "test", rp.box, rp.top);
+    const r = go(rp, s, ["drop"], { BOXD_HOST: "test" });
+    assert.equal(r.code, 1, report(rp.box));
+    assert.match(r.err, /still has a command running in it; nothing removed\n/);
+  }
+  const s = servers([{ name: "test", status: FREE }]), rp = newRepo();
+  hostFile(s, "test", "list", LINE(rp.box)); hostFile(s, "test", `ps.${rp.box}`, DAEMONS); hostFile(s, "test", "report.fail.1", ""); putEntry(s, "test", rp.box, rp.top);
+  assert.equal(go(rp, s, ["drop"], { BOXD_HOST: "test" }).code, 1, "pod report failing: the process list decides");
+});
+
+// ---- --git: the box folder becomes a repository at the worktree's own commit (real repositories, the fake ssh, the real rsync) ----
+const WHO = { GIT_AUTHOR_NAME: "Zed Secretname", GIT_AUTHOR_EMAIL: "zed@private.example", GIT_COMMITTER_NAME: "Zed Secretname", GIT_COMMITTER_EMAIL: "zed@private.example" };
+const git = (cwd: string, ...a: string[]) => execFileSync("git", a, { cwd, encoding: "utf8", env: { PATH: process.env.PATH ?? "", HOME: home, ...WHO } }).trimEnd();
+let gitN = 0;
+function gitRepo() {
+  const n = ++gitN, r = path.join(root, `git-repo-${n}`), remote = path.join(root, `git-remote-${n}`);
+  mkdirSync(r); git(r, "init", "-q", "-b", "main");
+  for (const [i, c] of ["one", "two", "three"].entries()) { writeFileSync(path.join(r, "a.txt"), c); writeFileSync(path.join(r, `f${i}.txt`), c); git(r, "add", "-A"); git(r, "commit", "-q", "-m", c); }
+  return { r, remote, src: srcOf(r, remote) };
+}
+const srcOf = (cwd: string, remote: string) => path.join(remote, "jobs", plan(git(cwd, "rev-parse", "--show-toplevel"), [], ["x"]).box, "src");
+const sendFrom = (cwd: string, remote: string, ...args: string[]) => runBox([...args, "true"], { cwd, env: { FAKE_REMOTE: remote } });
+const status = (src: string) => git(src, "status", "--porcelain").split("\n").sort();
+// every file of the box's repository, read as text: nothing of this machine or of its user may be in it
+const gitBytes = (src: string) => (readdirSync(path.join(src, ".git"), { recursive: true, withFileTypes: true }) as import("node:fs").Dirent[]).filter((e) => e.isFile()).map((e) => ({ f: path.join(e.parentPath, e.name), b: readFileSync(path.join(e.parentPath, e.name)).toString("latin1") }));
+
+test("--git: the box folder is a repository at the worktree's own commit, one commit, detached, uncommitted and untracked work shows as such, nothing of the user in it", () => {
+  const { r, remote, src } = gitRepo();
+  writeFileSync(path.join(r, "a.txt"), "edited"); writeFileSync(path.join(r, "new.txt"), "n"); git(r, "rm", "-q", "f0.txt");
+  const run = sendFrom(r, remote, "--git");
+  assert.equal(run.code, 0, run.err);
+  assert.equal(git(src, "rev-parse", "HEAD"), git(r, "rev-parse", "HEAD"));
+  assert.equal(git(src, "rev-list", "--count", "HEAD"), "1", "no history");
+  assert.equal(git(src, "rev-parse", "--is-shallow-repository"), "true");
+  assert.throws(() => git(src, "symbolic-ref", "-q", "HEAD"), "detached");
+  assert.deepEqual(status(src), [" M a.txt", " D f0.txt", "?? new.txt"].sort());
+  assert.equal(git(src, "remote"), "", "no remote");
+  assert.equal(git(src, "for-each-ref"), "", "no branches, no tags");
+  assert.ok(!existsSync(path.join(src, ".git", "hooks")), "no hooks");
+  for (const { f, b } of gitBytes(src)) for (const secret of ["Zed Secretname", "private.example", r]) assert.ok(!b.includes(secret), `${secret} found in ${f}`);
+  assert.ok(!readFileSync(path.join(src, ".git/config"), "utf8").includes("user"), "no user in the configuration");
+  assert.ok(!run.calls.some((c) => c.includes("--git")), "nothing of --git is sent to the pod");
+});
+
+test("--git: a clean worktree is clean in the box; the index is the commit, so staged work shows as unstaged there", () => {
+  const { r, remote, src } = gitRepo();
+  assert.equal(sendFrom(r, remote, "--git").code, 0);
+  assert.deepEqual(status(src), [""]);
+  writeFileSync(path.join(r, "a.txt"), "staged"); git(r, "add", "a.txt");
+  assert.equal(sendFrom(r, remote, "--git").code, 0);
+  assert.deepEqual(status(src), [" M a.txt"]);
+});
+
+test("--git: a linked worktree gets its own commit, whatever branch or detached head it is on", () => {
+  const { r, remote } = gitRepo(), linked = path.join(root, `linked-${gitN}`);
+  git(r, "worktree", "add", "-q", "-b", "side", linked);
+  writeFileSync(path.join(linked, "side.txt"), "s"); git(linked, "add", "-A"); git(linked, "commit", "-q", "-m", "side");
+  writeFileSync(path.join(linked, "dirty.txt"), "d");
+  const run = sendFrom(linked, remote, "--git");
+  assert.equal(run.code, 0, run.err);
+  const src = srcOf(linked, remote);
+  assert.equal(git(src, "rev-parse", "HEAD"), git(linked, "rev-parse", "HEAD"));
+  assert.notEqual(git(src, "rev-parse", "HEAD"), git(r, "rev-parse", "HEAD"));
+  assert.deepEqual(status(src), ["?? dirty.txt"]);
+  git(linked, "checkout", "-q", "--detach");
+  assert.equal(sendFrom(linked, remote, "--git").code, 0);
+  assert.equal(git(src, "rev-parse", "HEAD"), git(linked, "rev-parse", "HEAD"));
+});
+
+test("--git: a second call after a new commit moves HEAD; a later call without --git, also with --clean, leaves the repository alone", () => {
+  const { r, remote, src } = gitRepo();
+  assert.equal(sendFrom(r, remote, "--git").code, 0);
+  const first = git(src, "rev-parse", "HEAD");
+  writeFileSync(path.join(r, "b.txt"), "b"); git(r, "add", "-A"); git(r, "commit", "-q", "-m", "four");
+  assert.equal(sendFrom(r, remote).code, 0);
+  assert.equal(git(src, "rev-parse", "HEAD"), first, "without --git the repository stays as it was");
+  assert.deepEqual(status(src), ["?? b.txt"], "b.txt is synced and the old commit does not have it");
+  assert.equal(sendFrom(r, remote, "--clean").code, 0);
+  assert.equal(git(src, "rev-parse", "HEAD"), first, "--clean keeps it too");
+  assert.equal(sendFrom(r, remote, "--git").code, 0);
+  assert.equal(git(src, "rev-parse", "HEAD"), git(r, "rev-parse", "HEAD"));
+  assert.equal(git(src, "rev-list", "--count", "HEAD"), "1");
+  assert.deepEqual(status(src), [""]);
+});
+
+test("--git: a commit with a submodule that is not checked out is a clean, ordinary repository in the box", () => {
+  const { r, remote, src } = gitRepo();
+  git(r, "update-index", "--add", "--cacheinfo", `160000,${git(r, "rev-parse", "HEAD")},vendor/lib`);
+  git(r, "commit", "-q", "-m", "submodule"); mkdirSync(path.join(r, "vendor/lib"), { recursive: true });
+  const run = sendFrom(r, remote, "--git");
+  assert.equal(run.code, 0, run.err);
+  assert.equal(git(src, "rev-parse", "HEAD"), git(r, "rev-parse", "HEAD"));
+  assert.deepEqual(status(src), [""]);
+});
+
+test("--git: refused with --snapshot and with --no-sync, one line each, nothing sent; a worktree with no commit is refused before anything starts", () => {
+  const { r, remote } = gitRepo();
+  const a = sendFrom(r, remote, "--git", "--snapshot");
+  assert.equal(a.code, 2); assert.equal(a.err.split("\n")[0], "box: --git and --snapshot cannot go together"); assert.deepEqual(a.calls, []);
+  const b = sendFrom(r, remote, "--git", "--no-sync");
+  assert.equal(b.code, 2); assert.equal(b.err.split("\n")[0], "box: --git needs the sync; drop --no-sync"); assert.deepEqual(b.calls, []);
+  const empty = path.join(root, "git-empty"); mkdirSync(empty); git(empty, "init", "-q");
+  const c = sendFrom(empty, path.join(root, "git-empty-remote"), "--git");
+  assert.equal(c.code, 1); assert.equal(c.err, "box: --git: this worktree has no commit yet; nothing was started\n");
+  assert.ok(!c.calls.some((x) => x.startsWith("ssh ") && x.includes(" pod run ")), "no run");
+  const outside = path.join(root, "git-outside"); mkdirSync(outside);
+  assert.match(runBox(["--git", "true"], { cwd: outside }).err, /box: not inside a git worktree/);
+});

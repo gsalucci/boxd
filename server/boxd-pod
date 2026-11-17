@@ -19,7 +19,7 @@ CGROOT=${BOXD_CGROOT:-/sys/fs/cgroup}
 CGROUP=${BOXD_CGROUP:-$CGROOT/boxd}
 PROC=${BOXD_PROC:-/proc}   # test hook, like BOXD_MEMINFO: where `pod report` finds a box's process and its cgroup
 KVM=${BOXD_KVM:-/dev/kvm}   # test hook: the device a --kvm box gets
-VERSION=0.4.22
+VERSION=0.4.23
 # Keys that may only read, one "<type> <key> [comment]" per line (view_only below); and the largest answer of pod calls and pod log.
 VIEW_KEYS=${BOXD_VIEW_KEYS:-/etc/boxd/view_keys}
 READ_MAX=${BOXD_READ_MAX:-1048576}
@@ -132,8 +132,12 @@ vm_inspect() {
 # 1. Drop the guest's cached file-name lookups: rsync replaces files by renaming a new copy over the old one, and
 #    the guest kept resolving the old, deleted file through the shared folder (cat: No such file or directory).
 #    File contents stay cached. 2. A box with dockerd always has a daemon running.
+# safe.directory: the guest's root is not the owner of the synced files (the mirror of the build account's ids), and git refuses a
+# repository (--git, --snapshot) owned by another account; this trusts the one folder, inside the machine only (a container's
+# root or --user account owns the files there).
 DOCKER_START='echo 2 > /proc/sys/vm/drop_caches 2>/dev/null
 chmod 1777 /tmp 2>/dev/null
+command -v git >/dev/null 2>&1 && git config --system --replace-all safe.directory /job/src 2>/dev/null
 command -v dockerd >/dev/null 2>&1 || exit 0
 p=$(cat /var/run/docker.pid 2>/dev/null) && kill -0 "$p" 2>/dev/null && exit 0
 rm -f /var/run/docker.pid /var/run/docker.sock
@@ -1004,6 +1008,10 @@ pod_run() {
         if [ -n "$vm" ]; then printf %s "$size" >"$J/.vm-size"; else rm -f "$J/.vm-size"; fi
         if [ -n "$imgfile" ]; then printf %s "$newid" >"$J/.built-id"
         elif [ "$image" != "localhost/built-$box:latest" ]; then rm -f "$J/.built-id"; fi
+        # Said once, when the box is made: root in a box is not obvious, and a test failure caused by it was taken for a real one.
+        if [ -n "$vm" ]; then echo "boxd-pod: new machine box $box: commands run as root (--user does not apply to a machine)" >&2
+        elif [ -n "$user" ]; then echo "boxd-pod: new container box $box: commands run as an ordinary account (--user)" >&2
+        else echo "boxd-pod: new container box $box: commands run as root; an ordinary account needs --user at creation" >&2; fi
     fi
     exec 9>&-
 

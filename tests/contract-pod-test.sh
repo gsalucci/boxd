@@ -567,7 +567,7 @@ eq "a guest without dmesg: the kill line is read from the kernel's device, an ol
 GN=$GN_KEEP; unset BOXD_KMSG
 eq "a guest with neither dmesg nor a readable device: the command and its exit code, nothing added" "out|EXIT 7" "$(guestrun 20261116-100000-0006 "" "echo out; $ADD; exit 7" nodmesg)"
 setup; vmbox "$box"; pod "pod run $box --vm -- $B64"
-eq "a foreground machine call is not wrapped" 0 "$(grep '/job/src' "$FAKE_MSB_LOG" | grep -c ' sh -c ')"
+eq "a foreground machine call is not wrapped" 0 "$(grep -- '-w /job/src' "$FAKE_MSB_LOG" | grep -c ' sh -c ')"
 setup; pod "pod run $box --detach 20261116-100000-0007 -- $B64"
 until grep -q '^EXIT' "$W/jobs/$box/runs/20261116-100000-0007.log" 2>/dev/null; do sleep 0.05; done
 eq "a container box run is not wrapped" 0 "$(grep -c 'sh -c' "$FAKE_LOG")"
@@ -793,11 +793,23 @@ eq "a container box is created with a raised out-of-memory score" yes "$(grep -q
 ctrkill() {   # ctrkill <exit code> <oom kills before> <after>: exit code and standard error of a foreground call
     setup; mkdir -p "$BOXD_CGROOT/boxd"; printf 'oom_kill %s\n' "$2" > "$BOXD_CGROOT/boxd/memory.events"
     CASE_ENV=(FAKE_EXEC_EXIT="$1" FAKE_EXEC_CRASH="$3"); pod "pod run $box -- $B64"; CASE_ENV=()
-    echo "$rc $(cat "$T/e/err")"
+    echo "$rc $(grep -v "^boxd-pod: new " "$T/e/err")"
 }
 eq "container, killed by the out-of-memory killer: exit 137 and the line" "137 boxd: the command in box $box was killed (exit 137): the host's out-of-memory killer ended a process of the boxes meanwhile (kernel log: dmesg)" "$(ctrkill 137 3 4)"
 eq "container, exit 137 without a kill in the cgroup: no line" "137 " "$(ctrkill 137 3 3)"
 eq "container, another exit code while a kill happened: no line" "1 " "$(ctrkill 1 3 4)"
+# One line on standard error when a call makes the box, saying which account commands run as; none on a later call; nothing on standard output.
+setup; pod "pod run $box -- $B64"
+eq "a new container box says it runs commands as root" "boxd-pod: new container box $box: commands run as root; an ordinary account needs --user at creation" "$(grep '^boxd-pod: new ' "$T/e/err")"
+eq "the creation line is not on standard output" 0 "$(grep -c 'new container box' "$T/e/out")"
+pod "pod run $box -- $B64"
+eq "a later call into the same box says nothing about the account" 0 "$(grep -c '^boxd-pod: new ' "$T/e/err")"
+setup; pod "pod run $box --user -- $B64"
+eq "a new container box made with --user says so" "boxd-pod: new container box $box: commands run as an ordinary account (--user)" "$(grep '^boxd-pod: new ' "$T/e/err")"
+pod "pod run $box -- $B64"
+eq "a later call without --user keeps the account and says nothing" 0 "$(grep -c '^boxd-pod: new ' "$T/e/err")"
+setup; pod "pod run $box --vm -- $B64"
+eq "a new machine box says it runs commands as root and that --user does not apply" "boxd-pod: new machine box $box: commands run as root (--user does not apply to a machine)" "$(grep '^boxd-pod: new ' "$T/e/err")"
 setup; mkdir -p "$BOXD_CGROOT/boxd"; printf 'oom_kill 3\n' > "$BOXD_CGROOT/boxd/memory.events"
 export FAKE_EXEC_EXIT=137 FAKE_EXEC_CRASH=4 FAKE_BLOCK_EXEC=1
 pod "pod run $box --detach 20261115-140000-0001 -- $B64"; read -r _ <&3
@@ -825,10 +837,11 @@ eq "crashed vm box: started, then used" "yes" "$(grep -q '^start pod-' "$FAKE_MS
 # The guest kernel's process numbers (2026-11-16): pid_max is raised to 32768 in the guest, in the call that already sets the guest
 # up, at creation and at every start of a stopped machine, before the user's command; a running machine and a container box are left alone.
 # pidlines: the order of the msb calls that raise it ("P") and run the user's command ("U"), joined
-pidlines() { grep -E 'pid_max|/job/src' "$FAKE_MSB_LOG" | sed -E 's/.*pid_max.*/P/; s/.*\/job\/src.*/U/' | paste -sd' '; }
+pidlines() { grep -E 'pid_max|-w /job/src' "$FAKE_MSB_LOG" | sed -E 's/.*pid_max.*/P/; s/.*-w \/job\/src.*/U/' | paste -sd' '; }
 setup; pod "pod run $box --vm -- $B64"
 eq "machine created: pid_max is raised in the guest before the user's command" "P U" "$(pidlines)"
 eq "the raise is one write of 32768, in the call that also starts docker" 1 "$(grep -c 'exec -w / .*echo 32768 > /proc/sys/kernel/pid_max.*dockerd' "$FAKE_MSB_LOG")"
+eq "a machine trusts /job/src for git in the same call (the guest root does not own the synced files)" 1 "$(grep -c 'exec -w / .*git config --system --replace-all safe.directory /job/src.*dockerd' "$FAKE_MSB_LOG")"
 setup; vmbox "$box" stopped; pod "pod run $box --vm -- $B64"
 eq "stopped machine started again: the raise runs again, before the command" "P U" "$(pidlines)"
 setup; vmbox "$box"; pod "pod run $box --vm -- $B64"

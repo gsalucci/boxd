@@ -11,7 +11,7 @@ files in `/job/src`. A server that sleeps when idle is woken by `box` itself (ab
 With several servers set up, the first call of a worktree picks the one with room that has the most free memory (ties: `box hosts`
 order; a sleeping one counts as empty) and the worktree stays on it; you do nothing. `box --host <name> ...` moves the worktree to that server (and keeps it there). When the server a
 worktree is on has no room, the call exits 75 and prints the exact `box --host <name> ...` command that moves it: run it. When no
-server has room the call exits 75 at once with one reason per server; stop a machine you no longer need, or add `--wait`: the call then asks
+server has room the call exits 75 at once with one reason per server; the refusal then lists what fits now (`fits now: --size <size> on <host>`: use that size, with `--recreate` when the box already exists with another one) and `or wait for room: add --wait`; stop a machine you no longer need, or add `--wait`: the call then asks
 again every 30 seconds and goes on when room appears (it holds nothing meanwhile and gives no order among several waiting callers; a refusal
 waiting cannot fix, like a missing image, still exits at once).
 
@@ -39,7 +39,7 @@ waiting cannot fix, like a missing image, still exits at once).
   the command, in both engines, foreground and `--detach`. Only names ending in `_TOKEN`, `_KEY`, `_SECRET` or `_PASSWORD`. The value
   never appears on a command line, in a synced file or in a log; never put a credential in the command text or in the worktree instead: the server's call log keeps the first 200 characters of every command, so a credential in the command text is written to disk there (the dashboard shows it).
 - Unprivileged user: `--user` (container boxes only, not with `--vm`) runs every command as a user that owns the synced files, with
-  `HOME=/job/home`; for tools that refuse to run as root. A box keeps it once made with it; adding it to a root box needs `--recreate`.
+  `HOME=/job/home`; for tools that refuse to run as root. A container box runs commands as root without it, and a machine always does: the first call that makes a box prints one line on stderr (`boxd-pod: new container box <box>: commands run as ...`) saying which, so a test failure that only root causes is not taken for a real one. A box keeps it once made with it; adding it to a root box needs `--recreate`.
 - QEMU on KVM inside a box: `--kvm` (container boxes only, not with `--vm`) gives the box the server's `/dev/kvm`. Only when the
   work runs virtual machines itself (an operating system image, a test harness). A box keeps it once made with it; adding it needs `--recreate`.
 - Long runs: `--detach`. It prints a run id and returns at once; read the log with `box log <id>` (`--follow` keeps
@@ -60,7 +60,7 @@ waiting cannot fix, like a missing image, still exits at once).
 - **A foreground call ends with the process that started it** (exit 129, the command inside the box is ended too). Work that
   must outlive you (a server, a long build you will read later) needs `--detach`; `BOXD_KEEP_ORPHAN=1` is only for a wrapper
   that exits on purpose.
-- After you delete a worktree yourself, run `box drop` first, from inside it: the box is found from the worktree. It removes the box, its files on the server and its record at once, refuses while a command still runs in the box, and does not wake a sleeping server (the collector then does it later).
+- After you delete a worktree yourself, run `box drop` first, from inside it: the box is found from the worktree. It removes the box, its files on the server and its record at once, refuses while the box is busy (a call or a detached run; the image's own daemons do not count), and does not wake a sleeping server (the collector then does it later).
 - `box gc` (`--dry-run` to only look) removes the boxes and server files of worktrees that were deleted (found missing by two passes 15 minutes
   apart), lists boxes nobody here owns and reports commands running over 6 hours; it also runs by itself after ordinary calls
   (`BOXD_GC=0` turns that off). You never need to stop a box by hand.
@@ -77,7 +77,8 @@ waiting cannot fix, like a missing image, still exits at once).
   hung yourself (`box sh -c 'kill <pid>'`). A process with no processor time that is hours old is waiting on something.
 - Results: `--pull <path>` copies a file or folder from the box back into your worktree after the run. Repeat for more.
 - Tests that need a git repository: `--snapshot`. A synced tree has no git data otherwise (`.git` is not sent): a build that embeds
-  `git describe` says `unknown`; pass `--snapshot` when the build needs it.
+  `git describe` says `unknown`; pass `--snapshot` when the build needs it (it makes a new commit named snapshot).
+- Tools that need the worktree's real commit (`git rev-parse HEAD`, git status): `--git` makes `/job/src` a repository at the same commit hash, one commit, detached; uncommitted work shows as changes. It stays until the next `--git` call. Not with `--snapshot` or `--no-sync`.
 - The clock inside a box is coordinated universal time (UTC); the servers' own clocks and the times `box` prints (run ids, `box runs`) are local time.
 - Memory and out-of-memory kills inside a virtual machine box: `box --no-sync -- sh -c 'free -m; grep oom_kill /proc/vmstat'`
   (a count above 0 means the kernel in the box ended a process for lack of memory).

@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.4.23
+
+- **`--git`: the box gets a git repository at the worktree's real commit.** With it, `/job/src` in the box is a shallow
+  repository whose `HEAD` is the commit the worktree is on (the same hash, that one commit, no history, detached, no
+  branch names, no hooks, no remote, nothing that names the user), and `git status` there shows exactly what differs
+  between the synced files and that commit. The repository stays on later calls until a call with `--git` refreshes it.
+  `--snapshot` is unchanged (a repository with one new commit); the two together, or `--git` with `--no-sync`, are
+  refused. A machine box now trusts `/job/src` for git inside the guest, where root is not the owner of the synced files.
+  Asked for by a user whose tools record their own commit at the start of a run and whose tests need a repository.
+- **A new box says which account its commands run as.** Once, on standard error, when a call creates the box:
+  `boxd-pod: new container box <box>: commands run as root; an ordinary account needs --user at creation`, the same
+  for a box made with `--user`, and for a machine box. Tests that fail only as root were taken for real failures.
+- **`box drop` removes a box whose image runs its own services.** It refused a machine made from the toolbox image with
+  "still has a command running in it", because the image's own `dockerd` and `containerd` were counted. It now asks the
+  server whether a call or a detached run is going in the box (`busy=` of `pod report`) and refuses only then. A server
+  too old to say keeps the old rule.
+- **The "no room" refusal says what fits now.** After the lines per host it names the largest smaller size that fits and
+  where (`fits now: --size large on laptop (11400 MB free; ...)`) and, unless the call already waits,
+  `or wait for room: add --wait`. Computed from what the hosts already answered; exit code and the other lines unchanged.
+
 ## 0.4.22
 
 - **A fourth machine size: `--size xlarge`, 8 processors and 12 GB.** For work that needs more than the 8 GB of `large` in
