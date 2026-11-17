@@ -79,6 +79,21 @@ container or microsandbox sandbox), so a box name means one box whatever the eng
 `/work/jobs/<box>`, its `.lock`, `.last-used` and `.running`, `--snapshot`, the detach wrapper, boxd-keepawake and
 the reaper are shared.
 
+**The folder remembers the kind of a box.** A box that is gone (`pod stop`, `box stop`, the idle time limit) while its folder stays
+used to come back as a plain container box running as root, whatever it was. At creation, and at the next call of a box made by an
+older server, the server writes `/work/jobs/<box>/.kind`: one small file of `key=value` lines, `engine=vm|container`, `user=1` (made with
+`--user`), `kvm=1` (container boxes made with `--kvm`) and `image=<ref>` (only an image that is not `BOXD_IMAGE` and not the folder's own
+build; the build has `.built-id`). One file, not one per property: the lines are written together in one rename, so a reader never sees half
+of them, and a box gets all its properties from one read. `.vm-size` and `.vm-user` stay as they are and still decide the size and the
+machine's account. A creation writes the file anew, so `--recreate` rewrites it exactly as the properties themselves change (the account and
+`--kvm` stay through it, the engine and the image are the ones the call gives). When **no box of that name exists on either engine** and the
+folder has the file, the call is judged as if the box still stood: a call naming no engine makes the box again on the recorded engine, with
+the recorded account, `--kvm` and image (a machine takes its recorded size as before); a call naming the other engine, `--user` for a record
+without it, or `--kvm` for a record without it is refused with the same words as for a box that exists (exit 125, `add --recreate`), and
+`--recreate` goes past those refusals as it does for a box. A named `--image` decides the image. A value in the file that is not one of
+the above (a box's own processes can write in its folder) is ignored: the engine must be `vm` or `container`, the image must pass the
+registry rule. A folder without the file (made by an older server) behaves as before.
+
 **`--user`.** The box runs every command as an unprivileged user whose id owns the synced
 files: the build account's own id. A new box is made with `--userns=keep-id` (inside, the build account's uid and
 gid equal its host ones, so files under `/job` stay its own), `--label boxd.user=1` and `-e HOME=/job/home`
@@ -685,10 +700,43 @@ The host cannot see what a machine really needs: its guest fills spare memory wi
 - **The size of a machine made again with no `--size`**: when `pod run` creates a machine for a box whose folder holds a recorded need, the size is the smallest of `small`, `medium` and `large` (the host's default, never `xlarge`, never above the default) whose megabytes are at least 1.25 times the need (`size * 4 >= need * 5`, whole numbers), recorded in `.vm-size` as for any size and counted by admission as that size. Standard error gets, next to the creation line: `boxd-pod: machine box <box>: size <name> chosen from its past need of <peak> MB (give --size to choose yourself)`. With no need, with `--size`, with `--recreate`, for a stopped machine that is only started, or when not even the default holds the need with that margin (the box then keeps its recorded size, `large` when there is none; an `xlarge` box that is made again stays `xlarge`), nothing changes. The client sends `--size` only when the user gave one, and its host choice judges a call without it as the default size; the server may then fit a smaller machine than the client assumed, which is safe.
 - **Compatibility.** A new client against an older server: the answer of `pod drop` has no need words and the line is as before; the machine has no loop (the file never appears), so nothing else is seen. An older client against a new server: it reads the ending `, <n> MB freed` of the answer and ignores the need words, so it prints the line as before; it reads `pod report` by key, so the new last word changes nothing; it never sends `--size` unasked, so it gets the size from the need like any client. Limit: the file's owner and readability for the host are those of what the guest root writes under `/job` (mirrored ids); UNVERIFIED on a real host until `mem_peak_mb` shows a number there.
 
+## Several commands side by side (`box --shards <n>`)
+
+`box --shards <n> [--tail <n>] [the usual run options] -- <command...>` (client only; `<n>` from 2 to 32) runs one command in `<n>` boxes of
+the worktree and waits for all of them. It uses verbs every server has: `pod run` with `--detach`, `pod report`, `pod log`, `pod list` and
+`pod stop`; no server change.
+
+- **Boxes.** The worktree's own box name (or the name given with `--pod`) with `-s1` to `-s<n>` appended; a name that would pass 63
+  characters with it is refused (exit 2) before anything is made. Each is an ordinary box of this worktree: its own call with the same
+  options (`--vm`, `--size`, `--user`, `--git`, `--image`, `--image-file`, `--env`, `--wait`, `--host`, `--include`, `--clean`, `--recreate`,
+  `--kvm`), the sync of the worktree into its own folder, its own record on this machine (the collector and `box drop --pod` know it), and the
+  admission of any box. The syncs and starts run one after another, shard 1 first, so the admission of each sees the runs before it.
+- **Placeholders.** In every word of the command, `{shard}` becomes the box's number and `{shards}` becomes `<n>`. A command with neither is
+  refused (exit 2): `box: --shards 5: a command with neither {shard} nor {shards} would run the same thing 5 times; give each box its part, for example: box --shards 5 -- npx vitest --shard={shard}/{shards}`.
+- **Waiting.** After the last start it follows exactly its `<n>` runs with the code of `box runs --follow` (one `pod report` per host every
+  `BOXD_RUNS_POLL_MS`, default 30000; ends with 129 when the process that started it is gone, the runs go on). As each ends it prints on standard output
+  `shard <i>/<n>  <host>  <box>  run <id>  exit=<code>  <seconds> s` (two spaces between the fields; `exit=-` when the server knows no code;
+  `<seconds>` is the `seconds=` word of the header of `pod log`, a dash when the server sends none).
+- **Tails.** Then, for each run that did not end with 0, `--- shard <i> (exit <code>), last lines of its log:` and the last 20 lines of its
+  log (`box log --tail`). `--tail <n>` (0 to 100000) replaces the 20; with `--tail` given the tails are printed for every shard, and `--tail 0`
+  prints none.
+- **End.** It stops the `<n>` boxes as `box stop` does (memory freed, files and caches kept for the next time; a box that cannot be stopped
+  is named by `box stop`'s own line and does not change the result) and exits 0 only when every run ended with 0, else 1.
+- **No room.** A start refused for room without `--wait`, or any other start that fails, ends the call with that start's exit code; the runs already
+  started are left running, nothing is followed or stopped, and one line says so: `box: shard <i>/<n> did not start (exit <code>); the <k> runs already
+  started keep running. Follow them with: box runs --follow --pod '<base>-s*'` and, for a refusal for room, `; add --wait to queue for room instead`.
+- **Refused together with** `--detach`, `--pull`, `--no-sync` and `--snapshot` (one line naming those given) and with `forward` and `vnc` (exit 2).
+  A terminal session is not refused: every shard's start is detached and never takes the terminal.
+- **Compatibility.** Client only, against the verbs `box --detach`, `box runs --follow` and `box stop` already use (`pod run --detach`, the `run` lines of
+  `pod report`, `pod log`, `pod list`, `pod stop`): a server that has them all works, and one that lacks one answers 125 for it, which ends the call at the
+  first start (nothing runs) or, for the stop at the end, is named by `box stop`'s own line while the result stays. The stop is the code of `box stop`
+  (added to the client in 0.4.26 on top of the older `pod stop`): against a server older than 0.4.26 the stop works and a machine box prints the engine's own line.
+- **`box runs --follow --tail <n>`** prints the last `<n>` lines of each followed run's log when it ends, for every run, under `--- <host>  <box>  run <id> (exit <code>), last lines of its log:`. `--tail` without `--follow` is a usage error (exit 2).
+
 ## Client (`box` on the agents' machine)
 
 `box [--host <name>] [--pod <name>] [--image <ref> | --image-file <path>] [--vm|--container] [--size small|medium|large|xlarge] [--user] [--kvm] [--env <NAME>]... [--recreate] [--no-sync] [--snapshot | --git] [--detach] [--wait] [--pull <path>]... [--ps-after <minutes>] [--] <command...>`
-run from inside a worktree (git toplevel of the current directory):
+run from inside a worktree (git toplevel of the current directory; `--shards <n> [--tail <n>]` runs it in several boxes side by side, see "Several commands side by side"):
 
 1. Sync (skipped with `--no-sync`), the recipe of `remote-cargo.sh`:
    `rsync -a --delete --mkpath [--filter='. <rules file>'] --safe-links --exclude=/.git --filter=':- .gitignore' <toplevel>/ boxd-<host>:jobs/<box>/src/` (relative: the host's dispatcher runs the sync inside the work area).

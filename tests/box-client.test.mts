@@ -40,10 +40,34 @@ fi
 // With FAKE_HOSTS set (a folder), the fake ssh plays several build servers, one set of files per ssh alias:
 // <alias>.status is what `pod status` prints (absent: the host is unreachable, exit 255), <alias>.run.exit and
 // <alias>.run.err are the exit code and the stderr of `pod run`.
+// With FAKE_SHARDS set (a folder), box --shards runs against a fake host that works out its answers from the calls so far (the run ids are made by the
+// client): `pod report` lists every detached run started on that host, ended with the exit code in <box>.exit (default 0) and the log size of <box>.log,
+// or still running while the number of reports is below the number in <box>.until; `pod log` answers the header of an ended run (seconds in <box>.seconds,
+// default 7) and, from offset 0, the text of <box>.log; the <n>th `pod run` is refused for room when the file refuse_at says n.
+const shardsFake = `if [ -n "\${FAKE_SHARDS:-}" ]; then
+  for a; do case $a in boxd-*) h=$a; break;; esac; done
+  case "$*" in
+    *" pod report") echo x >> "$FAKE_SHARDS/$h.reports"; n=$(wc -l < "$FAKE_SHARDS/$h.reports" | tr -d ' ')
+      sed -n "s/^ssh .*$h pod run \\([^ ]*\\) .*--detach \\([^ ]*\\) .*/\\1 \\2/p" "$CALLS" | while read -r b id; do
+        u=$(cat "$FAKE_SHARDS/$b.until" 2>/dev/null || echo 0)
+        if [ "$n" -lt "$u" ]; then printf 'run\\tbox=%s\\tid=%s\\tstate=running\\texit=-\\tbytes=9\\n' "$b" "$id"
+        else printf 'run\\tbox=%s\\tid=%s\\tstate=ended\\texit=%s\\tbytes=%s\\n' "$b" "$id" "$(cat "$FAKE_SHARDS/$b.exit" 2>/dev/null || echo 0)" "$(wc -c < "$FAKE_SHARDS/$b.log" 2>/dev/null || echo 0)"; fi
+      done; exit 0;;
+    *" pod log "*) w="$*"; off=\${w##* }; r=\${w% *}; r=\${r% *}; b=\${r##* }
+      sz=$(wc -c < "$FAKE_SHARDS/$b.log" 2>/dev/null || echo 0)
+      printf 'log\\tsize=%s\\tfrom=0\\tnext=%s\\tstate=ended\\texit=%s\\tended=100\\tseconds=%s\\n' "$sz" "$sz" "$(cat "$FAKE_SHARDS/$b.exit" 2>/dev/null || echo 0)" "$(cat "$FAKE_SHARDS/$b.seconds" 2>/dev/null || echo 7)"
+      [ "$off" != 0 ] || cat "$FAKE_SHARDS/$b.log" 2>/dev/null; exit 0;;
+    *" pod run "*) echo x >> "$FAKE_SHARDS/$h.runs"
+      if [ "$(wc -l < "$FAKE_SHARDS/$h.runs" | tr -d ' ')" = "$(cat "$FAKE_SHARDS/refuse_at" 2>/dev/null)" ]; then
+        echo "boxd-pod: no room for another busy box (6000 MB in use); wait for one to end" >&2; exit 75
+      fi;;
+  esac
+fi
+`;
 const hostFake = `if [ -n "\${FAKE_LOGDIR:-}" ]; then
   case "$*" in *" pod log "*) echo x >> "$FAKE_LOGDIR/count"; cat "$FAKE_LOGDIR/$(wc -l < "$FAKE_LOGDIR/count" | tr -d ' ')"; exit "$(cat "$FAKE_LOGDIR/exit" 2>/dev/null || echo 0)";; esac
 fi
-if [ -n "\${FAKE_BLOCK_DIR:-}" ]; then
+${shardsFake}if [ -n "\${FAKE_BLOCK_DIR:-}" ]; then
   case "$*" in *" pod run "*)
     (read -r _ < "$FAKE_BLOCK_DIR/hold") & held=$!
     trap 'kill $held 2>/dev/null; echo term > "$FAKE_BLOCK_DIR/term"; exit 143' TERM
@@ -2217,4 +2241,136 @@ test("after a move that is refused at once (the new host lost the race) the plac
   const r = go(rp, s, ["--no-sync", "--vm", "true"]);
   assert.equal(r.code, NO_ROOM);
   assert.equal(rp.placed(), undefined, "no box was made on the new host: the worktree is unplaced, the next call chooses again");
+});
+
+// ---- box --shards: the command in several boxes of this worktree side by side; box runs --follow --tail ----------------------------------------
+
+// One host "test"; every shard box of the worktree is listed running (so the final stop reaches it). Files of the fake host (see shardsFake):
+// <box>.exit, <box>.log, <box>.until, <box>.seconds, refuse_at.
+function shardsFixture(n: number, base?: string) {
+  const s = servers([{ name: "test", status: FREE }]), rp = newRepo(), dir = path.join(s.fake, "shards"), b = base ?? rp.box;
+  mkdirSync(dir);
+  hostFile(s, "test", "list", Array.from({ length: n }, (_, i) => LINE(`${b}-s${i + 1}`)).join(""));
+  const set = (shard: number, ext: string, text: string) => writeFileSync(path.join(dir, `${b}-s${shard}.${ext}`), text);
+  for (let i = 1; i <= n; i++) set(i, "log", `ok ${i}\n`);
+  return { s, rp, set, b, dir, run: (args: string[]) => go(rp, s, args, { FAKE_SHARDS: dir, BOXD_RUNS_POLL_MS: "1" }) };
+}
+// The run id of each start, in order: `ssh boxd-test pod run <box> --detach <id> -- <command>`.
+const starts = (calls: string[]) => calls.flatMap((c) => { const m = /^ssh (?:-o \S+ )*boxd-test pod run (\S+) (?:.* )?--detach (\S+) -- (\S+)$/.exec(c); return m ? [{ box: m[1] as string, id: m[2] as string, words: Buffer.from(m[3] as string, "base64").toString().split("\0") }] : []; });
+const logCalls = (calls: string[]) => calls.filter((c) => c.includes(" pod log "));
+
+test("box --shards: n boxes named after the worktree's box, each synced and started detached in order, {shard} and {shards} replaced in every word, one line as each ends, boxes stopped, exit 0", () => {
+  const f = shardsFixture(3);
+  const r = f.run(["--shards", "3", "--", "npx", "vitest", "--shard={shard}/{shards}", "--note={shard}-{shard}"]);
+  assert.equal(r.code, 0, r.err);
+  const st = starts(r.calls);
+  assert.deepEqual(st.map((x) => x.box), [1, 2, 3].map((i) => `${f.b}-s${i}`));
+  assert.deepEqual(st.map((x) => x.words), [1, 2, 3].map((i) => ["npx", "vitest", `--shard=${i}/3`, `--note=${i}-${i}`]));
+  // one after the other: the sync of a shard, its start, then the next shard's sync
+  const order = r.calls.filter((c) => c.startsWith("rsync ") || c.includes(" pod run "));
+  assert.deepEqual(order.map((c) => c.replace(/--detach \S+ /, "").replace(/ -- \S+$/, "")), [1, 2, 3].flatMap((i) => [
+    `rsync -a --delete --mkpath --safe-links --exclude=/.git --filter=:- .gitignore ${f.rp.top}/ boxd-test:jobs/${f.b}-s${i}/src/`, `ssh boxd-test pod run ${f.b}-s${i}`]));
+  // each is a box of this worktree the collector and `box drop --pod` know
+  for (let i = 1; i <= 3; i++) assert.deepEqual(getEntry(f.s, "test", `${f.b}-s${i}`), { box: `${f.b}-s${i}`, host: "test", worktree: f.rp.top });
+  const ended = r.out.split("\n").filter((l) => l.startsWith("shard "));
+  assert.deepEqual(ended, st.map((x, i) => `shard ${i + 1}/3  test  ${x.box}  run ${x.id}  exit=0  7 s`));
+  assert.ok(!r.out.includes("--- shard"), "no tail for a run that ended with 0");
+  assert.ok(!logCalls(r.calls).some((c) => c.endsWith(" 0")), "no log text was read");
+  // stopped at the end, after the last report, once each
+  assert.deepEqual(stops(r.calls).map((c) => c.replace(/^.* boxd-/, "boxd-")), [1, 2, 3].map((i) => `boxd-test pod stop ${f.b}-s${i}`));
+  const firstReport = r.calls.findIndex((c) => c.endsWith(" pod report"));
+  assert.ok(firstReport > r.calls.findLastIndex((c) => c.includes(" pod run ")) && firstReport < r.calls.findIndex((c) => c.includes(" pod stop ")), "all started, then followed, then stopped");
+  assert.equal(r.out.split("\n").filter((l) => l.startsWith("box stop: stopped test box ")).length, 3);
+});
+
+test("box --shards: the tail of a failed run (20 lines by default) under its own line, the exit code is 1, the boxes are stopped all the same", () => {
+  const f = shardsFixture(3);
+  f.set(2, "exit", "1\n"); f.set(2, "log", Array.from({ length: 30 }, (_, i) => `line ${i + 1}\n`).join("")); f.set(3, "until", "3\n");
+  const r = f.run(["--shards", "3", "--", "t", "{shard}"]);
+  assert.equal(r.code, 1, r.err);
+  const lines = r.out.split("\n"), at = lines.indexOf("--- shard 2 (exit 1), last lines of its log:");
+  assert.ok(at > 0, r.out);
+  assert.deepEqual(lines.slice(at + 1, at + 22), [...Array.from({ length: 20 }, (_, i) => `line ${i + 11}`), "box stop: stopped test box " + f.b + "-s1; its files are kept"]);
+  assert.ok(!r.out.includes("--- shard 1") && !r.out.includes("--- shard 3"));
+  assert.ok(lines.findIndex((l) => l.startsWith("shard 3/3")) > lines.findIndex((l) => l.startsWith("shard 1/3")), "shard 3 was still running at the first report");
+  assert.equal(stops(r.calls).length, 3);
+});
+
+test("box --shards --tail <n>: n lines for every shard, 0 for none even for a failed one", () => {
+  const f = shardsFixture(2);
+  f.set(1, "log", "a\nb\nc\n"); f.set(2, "log", "d\ne\nf\n"); f.set(2, "exit", "5\n");
+  const r = f.run(["--shards", "2", "--tail", "2", "--", "t", "{shard}"]);
+  assert.equal(r.code, 1);
+  assert.ok(r.out.includes("--- shard 1 (exit 0), last lines of its log:\nb\nc\n--- shard 2 (exit 5), last lines of its log:\ne\nf\n"), r.out);
+  const none = f.run(["--shards", "2", "--tail", "0", "--", "t", "{shard}"]);
+  assert.equal(none.code, 1);
+  assert.ok(!none.out.includes("---"), none.out);
+});
+
+test("box --shards: --pod <name> is the base name; a name too long to add -s<n> is refused before anything is made", () => {
+  const f = shardsFixture(2, "mine");
+  const r = f.run(["--shards", "2", "--pod", "mine", "--", "t", "{shard}"]);
+  assert.equal(r.code, 0, r.err);
+  assert.deepEqual(starts(r.calls).map((x) => x.box), ["mine-s1", "mine-s2"]);
+  const long = "a".repeat(61), bad = f.run(["--shards", "2", "--pod", long, "--", "t", "{shard}"]);
+  assert.equal(bad.code, 2);
+  assert.match(bad.err, new RegExp(`box: --shards: the box name ${long} is too long to add -s2\n`));
+  assert.deepEqual(bad.calls, []);
+});
+
+test("box --shards: the usual options go to every shard's own call", () => {
+  const f = shardsFixture(2);
+  const r = f.run(["--shards", "2", "--vm", "--size", "small", "--user", "--env", "SHARD_TOKEN", "--image", "rust:1.83", "--", "t", "{shard}"].map((x) => x));
+  assert.equal(r.code, 2, "--env needs the variable set: refused like any call");
+  const ok = go(f.rp, f.s, ["--shards", "2", "--vm", "--size", "small", "--user", "--env", "SHARD_TOKEN", "--image", "rust:1.83", "--", "t", "{shard}"], { FAKE_SHARDS: f.dir, BOXD_RUNS_POLL_MS: "1", SHARD_TOKEN: "x" });
+  assert.equal(ok.code, 0, ok.err);
+  for (const i of [1, 2]) assert.ok(ok.calls.includes(`ssh -o SendEnv=BOXD_SECRET_SHARD_TOKEN boxd-test pod run ${f.b}-s${i} --image rust:1.83 --vm --size small --user --env SHARD_TOKEN --detach ${starts(ok.calls)[i - 1]?.id} -- ${b64("t", String(i))}`), ok.calls.join("\n"));
+});
+
+test("box --shards: a command with neither {shard} nor {shards} is refused with one line and an example, nothing is started", () => {
+  const f = shardsFixture(2);
+  const r = f.run(["--shards", "5", "--", "npx", "vitest"]);
+  assert.equal(r.code, 2);
+  assert.equal(r.err.split("\n")[0], "box: --shards 5: a command with neither {shard} nor {shards} would run the same thing 5 times; give each box its part, for example: box --shards 5 -- npx vitest --shard={shard}/{shards}");
+  assert.deepEqual(r.calls, []);
+});
+
+test("box --shards: --detach, --pull, --no-sync, --snapshot, forward and vnc are refused with one line each, a bad count or --tail alone too", () => {
+  const f = shardsFixture(2), c = ["--", "t", "{shard}"];
+  const refuse = (args: string[]) => { const r = f.run(args); assert.equal(r.code, 2, args.join(" ")); assert.deepEqual(r.calls, []); return r.err.split("\n")[0]; };
+  assert.equal(refuse(["--shards", "2", "--detach", ...c]), "box: --shards cannot go with --detach: it syncs, starts detached runs, follows them and stops the boxes itself");
+  assert.equal(refuse(["--shards", "2", "--pull", "out", "--snapshot", ...c]), "box: --shards cannot go with --pull, --snapshot: it syncs, starts detached runs, follows them and stops the boxes itself");
+  assert.equal(refuse(["--shards", "2", "--no-sync", ...c]), "box: --shards cannot go with --no-sync: it syncs, starts detached runs, follows them and stops the boxes itself");
+  assert.equal(refuse(["--shards", "2", "forward", "{shard}", "80"]), "box: --shards runs a command in several boxes; it is not for forward");
+  assert.equal(refuse(["--shards", "2", "vnc", "{shard}"]), "box: --shards runs a command in several boxes; it is not for vnc");
+  assert.equal(refuse(["forward", "--shards", "2", "80", "80"]), "box forward: unknown option --shards");
+  for (const n of ["1", "33", "x", "007"]) assert.equal(refuse(["--shards", n, ...c]), "box: --shards needs a whole number from 2 to 32");
+  assert.equal(refuse(["--tail", "5", "t"]), "box: --tail goes with --shards (or with box runs --follow and box log)");
+});
+
+test("box --shards: a start refused for room ends the call, the earlier runs stay running (nothing stopped, nothing followed) and the message says how to follow them and queue", () => {
+  const f = shardsFixture(4);
+  writeFileSync(path.join(f.dir, "refuse_at"), "3\n");
+  const r = f.run(["--shards", "4", "--", "t", "{shard}"]);
+  assert.equal(r.code, NO_ROOM);
+  assert.ok(r.err.includes(`box: shard 3/4 did not start (exit 75); the 2 runs already started keep running. Follow them with: box runs --follow --pod '${f.b}-s*'; add --wait to queue for room instead\n`), r.err);
+  assert.equal(starts(r.calls).length, 3, "the third was refused by the host, the fourth never asked");
+  assert.equal(r.calls.filter((c) => c.includes(" pod run ")).length, 3);
+  assert.deepEqual(stops(r.calls), []);
+  assert.ok(!r.calls.some((c) => c.endsWith(" pod report")), "nothing followed");
+  assert.equal(r.out.includes("shard 1/4  test"), false);
+});
+
+test("box runs --follow --tail <n>: the last n lines of each run's log under a line naming it, as each ends, for every run; --tail without --follow is refused", () => {
+  const s = followFixture();
+  hostFile(s, "tower", "report", runLn("w-1", RUN_A, "running", "-") + runLn("w-2", RUN_B, "running", "-"));
+  hostFile(s, "tower", "report.2", runLn("w-1", RUN_A, "ended", "0") + runLn("w-2", RUN_B, "ended", "3"));
+  hostFile(s, "laptop", "report", "host\tversion=0.4.11\n");
+  hostFile(s, "tower", `log.${RUN_A}`, `${head(6, 0, 6, "ended", "0")}x\ny\nz\n`);
+  hostFile(s, "tower", `log.${RUN_B}`, `${head(6, 0, 6, "ended", "3")}p\nq\nr\n`);
+  const r = go(newRepo(), s, ["runs", "--follow", "--tail", "2"], { BOXD_RUNS_POLL_MS: "1" });
+  assert.equal(r.code, 1, r.err);
+  assert.equal(r.out, `tower\tw-1\t${RUN_A}\texit=0\n--- tower  w-1  run ${RUN_A} (exit 0), last lines of its log:\ny\nz\ntower\tw-2\t${RUN_B}\texit=3\n--- tower  w-2  run ${RUN_B} (exit 3), last lines of its log:\nq\nr\n`);
+  assert.equal(go(newRepo(), s, ["runs", "--tail", "2"]).code, 2);
+  assert.equal(go(newRepo(), s, ["runs", "--follow", "--tail", "x"]).code, 2);
 });

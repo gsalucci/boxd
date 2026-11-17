@@ -148,6 +148,7 @@ box log <run> --state                                # still running, or ended: 
 box log <run> --follow                               # wait for the end, exit with the run's code
 box --pull target/out make                           # copy results back
 box --git cargo test                                 # /job/src is a git repository at this worktree's own commit
+box --shards 5 -- npx vitest --shard={shard}/{shards}   # five boxes side by side, one line as each ends, tails of the failures
 box forward 5901 5900                                # reach a port inside the box from your machine
 box ps                                               # what runs in this box
 box hosts                                            # every build server: asleep, awake with its load, unreachable

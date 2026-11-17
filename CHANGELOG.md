@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.4.29
+
+- **`box --shards <n>`: several commands side by side from one worktree in one call.** It makes `<n>` boxes for the
+  worktree (its box name with `-s1` to `-s<n>`), starts the command in each with `{shard}` and `{shards}` filled in
+  (`box --shards 5 -- npx vitest --shard={shard}/{shards}`), waits for all, prints one line as each ends
+  (`shard 2/5  <host>  <box>  run <id>  exit=0  118 s`), then the last 20 lines of the log of every run that failed
+  (`--tail <n>` for another count or for all), stops the boxes (files and caches kept) and exits 0 only when every
+  run ended with 0. Each box is admitted like any other; a start refused for room ends the call, leaves the earlier
+  runs going and says how to follow them. `box runs --follow` takes `--tail <n>` too. Asked for by a user who started
+  the five parts of a test suite by hand and wrote a waiting loop each time.
+- **The box's folder remembers what kind of box it was.** After `box stop` or the idle removal of a box, a call that
+  named no engine made a plain container running as root on the same folder, although the box had been a machine
+  with an ordinary account (seen on a real host). The server now records engine, account, `--kvm` and a named image
+  in the folder (`.kind`) and makes the box again as it was when the call names none of them; a call that names
+  another engine, or `--user` or `--kvm` against the record, gets the usual refusal and needs `--recreate`. A box that
+  stands gets its record at its next call; a folder left by an older server without one behaves as before.
+
 ## 0.4.28
 
 - **A `--user` machine box gets its files and the shared caches through the mounts, not through a walk before each

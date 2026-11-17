@@ -19,7 +19,7 @@ CGROOT=${BOXD_CGROOT:-/sys/fs/cgroup}
 CGROUP=${BOXD_CGROUP:-$CGROOT/boxd}
 PROC=${BOXD_PROC:-/proc}   # test hook, like BOXD_MEMINFO: where `pod report` finds a box's process and its cgroup
 KVM=${BOXD_KVM:-/dev/kvm}   # test hook: the device a --kvm box gets
-VERSION=0.4.28
+VERSION=0.4.29
 # Keys that may only read, one "<type> <key> [comment]" per line (view_only below); and the largest answer of pod calls and pod log.
 VIEW_KEYS=${BOXD_VIEW_KEYS:-/etc/boxd/view_keys}
 READ_MAX=${BOXD_READ_MAX:-1048576}
@@ -924,7 +924,7 @@ pod_run() {
     local box=${1:-} image="" imgfile="" vm="" container="" user="" cuser="" kvm="" ckvm="" ulabels="" recreate="" snapshot="" run="" b64="" tty="" name J out rc
     local -a envs=()
     local size="" have="" lim="" asked="" pk pick chosen="" used_mb=0 cap_mb=0 max="" box_fit_mb box_why
-    local newid="" changed="" rebuilt="" full engine=container pc="" vc="" cimg="" cst="" vimg="" vst="" other mine cur st create="" start="" n
+    local kengine="" kuser="" kkvm="" kimage="" gmine="" gother="" k v2 newid="" changed="" rebuilt="" full engine=container pc="" vc="" cimg="" cst="" vimg="" vst="" other mine cur st create="" start="" n
     shift
     CALL_T0=${EPOCHREALTIME//[!0-9]/} CALL_BOX=$box CALL_ENGINE=container
     [[ $box =~ $BOX_RE ]] || die "bad box name"
@@ -1004,6 +1004,25 @@ pod_run() {
         [[ $ulabels == *boxd.kvm:1* ]] && ckvm=1
     fi
     if have_msb && out=$(vm_inspect "$name"); then vc=1 vimg=${out% *} vst=${out##* }; fi
+    # A box that is gone (stopped, or removed by the idle time limit) while its folder stays: the folder's record (.kind, written at
+    # creation) says what kind it was. A call that names no engine makes it again as it was; a call that names the other engine is
+    # refused below as if the box still stood. Every value is checked again here: the box's own processes can write in the folder.
+    if [ -z "$pc$vc" ] && [ -f "$J/.kind" ]; then
+        while IFS== read -r k v2; do
+            case $k in
+                engine) case $v2 in vm|container) kengine=$v2 ;; esac ;;
+                user) [ "$v2" != 1 ] || kuser=1 ;;
+                kvm) [ "$v2" != 1 ] || kkvm=1 ;;
+                image) kimage=$(norm_image "$v2") || kimage= ;;
+            esac
+        done <"$J/.kind"
+        if [ -n "$kengine" ]; then
+            [ -n "$vm" ] || [ -n "$container" ] || [ "$kengine" != vm ] || vm=1
+            if [ "$kengine" = vm ] && [ -n "$vm" ]; then gmine=1
+            elif [ "$kengine" = container ] && [ -z "$vm" ]; then gmine=1
+            else gother=1; fi
+        fi
+    fi
     # Sticky boxes: an existing box keeps its engine and image unless the call names them; a new box gets the
     # defaults (container, BOXD_IMAGE). Only a named engine or image that differs needs --recreate.
     if [ -z "$vm" ] && [ -z "$container" ] && [ -n "$vc" ] && [ -z "$pc" ]; then vm=1; fi
@@ -1012,6 +1031,7 @@ pod_run() {
     # --user is sticky like the engine and the image: a box made with it keeps it, also through --recreate.
     # A machine has no label: its record is the file .vm-user in the box folder, next to .vm-size.
     if [ -n "$vm" ]; then cuser=; [ ! -e "$J/.vm-user" ] || cuser=1; fi
+    [ -z "$gmine" ] || [ -n "$vm" ] || { cuser=$kuser; ckvm=$kkvm; }   # a container has its labels only while it exists
     [ -z "$cuser" ] || user=1
     # --kvm is sticky the same way, and for container boxes only (a virtual machine box has no nested virtualization:
     # no /dev/kvm, no vmx or svm flag inside, checked on the tower 2026-11-14).
@@ -1023,17 +1043,18 @@ pod_run() {
     if [ -n "$vm" ]; then mine=$vc other=$pc cur=$vimg st=$vst; else mine=$pc other=$vc cur=$cimg st=$cst; fi
     # A box once built from a Containerfile comes back on that build after the reaper removed it (.built-id stays).
     local dflt=$DEFAULT_IMAGE
+    [ -z "$gmine" ] || [ -z "$kimage" ] || dflt=$kimage   # an image named at creation comes back too
     [ ! -s "$J/.built-id" ] || dflt=localhost/built-$box:latest
     [ -n "$image" ] || image=${cur:-${vimg:-${cimg:-$dflt}}}
     if [ -z "$recreate" ]; then
         # Found on both engines (only after a crash) counts as found on the other one.
-        if [ -n "$other" ]; then
+        if [ -n "$other$gother" ]; then
             [ -n "$vm" ] && die "box $box is a container, asked for a virtual machine; add --recreate"
             die "box $box is a virtual machine, asked for a container; add --recreate"
         fi
         [ -z "$mine" ] || [ "$cur" = "$image" ] || [ -n "$imgfile" ] || die "box $box runs $cur, asked for $image; add --recreate"
-        [ -z "$mine" ] || [ -z "$user" ] || [ -n "$cuser" ] || die "box $box was made without --user, asked for --user; add --recreate"
-        [ -z "$mine" ] || [ -z "$kvm" ] || [ -n "$ckvm" ] || die "box $box was made without --kvm, asked for --kvm; add --recreate"
+        [ -z "$mine$gmine" ] || [ -z "$user" ] || [ -n "$cuser" ] || die "box $box was made without --user, asked for --user; add --recreate"
+        [ -z "$mine$gmine" ] || [ -z "$kvm" ] || [ -n "$ckvm" ] || die "box $box was made without --kvm, asked for --kvm; add --recreate"
         [ -z "$mine" ] || [ -z "$size" ] || [ "$size" = "$have" ] || die "box $box is $have, asked for $size; add --recreate"
     fi
     asked=$size
@@ -1160,6 +1181,14 @@ pod_run() {
         if [ -n "$vm" ] && [ -n "$user" ]; then : >"$J/.vm-user"; else rm -f "$J/.vm-user"; fi
         if [ -n "$imgfile" ]; then printf %s "$newid" >"$J/.built-id"
         elif [ "$image" != "localhost/built-$box:latest" ]; then rm -f "$J/.built-id"; fi
+    fi
+    # What the folder remembers of the box's kind (read above when the box is gone): written at creation, and once for a box
+    # made by an older server that has no record yet. The image only when it is not the default or the folder's own build.
+    if [ -n "$create" ] || [ ! -e "$J/.kind" ]; then
+        {
+            echo "engine=$engine"; [ -z "$user" ] || echo user=1; [ -z "$kvm" ] || echo kvm=1
+            [ "$image" = "$DEFAULT_IMAGE" ] || [ "$image" = "localhost/built-$box:latest" ] || echo "image=$image"
+        } >"$J/.kind.new" && mv -f "$J/.kind.new" "$J/.kind"
     fi
     exec 9>&-
 

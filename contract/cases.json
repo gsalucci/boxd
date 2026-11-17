@@ -3209,7 +3209,7 @@
       "command": "pod status",
       "msb": false,
       "exit": 0,
-      "stdout_re": "^version=0\\.4\\.28\tengines=container\tcpus=8\tload1=[0-9]+\\.[0-9]+\tvm_used=0\tvm_max=3\tvm_room=no\tboxes=0\tdisk_pct=37\tmem_free_mb=unknown\timages=\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=-\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096$"
+      "stdout_re": "^version=0\\.4\\.29\tengines=container\tcpus=8\tload1=[0-9]+\\.[0-9]+\tvm_used=0\tvm_max=3\tvm_room=no\tboxes=0\tdisk_pct=37\tmem_free_mb=unknown\timages=\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=-\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096$"
     },
     {
       "name": "pod status: one of three machines running, room for another; boxes counts both engines",
@@ -3231,7 +3231,7 @@
           "state": "stopped"
         }
       },
-      "stdout_re": "^version=0\\.4\\.28\tengines=container,vm\tcpus=8\tload1=[0-9]+\\.[0-9]+\tvm_used=1\tvm_max=3\tvm_room=yes\tboxes=3\tdisk_pct=37\tmem_free_mb=unknown\timages=\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=-\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096$"
+      "stdout_re": "^version=0\\.4\\.29\tengines=container,vm\tcpus=8\tload1=[0-9]+\\.[0-9]+\tvm_used=1\tvm_max=3\tvm_room=yes\tboxes=3\tdisk_pct=37\tmem_free_mb=unknown\timages=\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=-\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096$"
     },
     {
       "name": "pod status: all machines used, no room (vm_room is the server's own answer)",
@@ -3795,7 +3795,7 @@
         "jobs/a/.mem-peak": "700",
         "jobs/b/.vm-user": ""
       },
-      "stdout_re": "^host\tversion=0\\.4\\.28\tengines=container,vm\tcpus=8\tload1=[0-9]+\\.[0-9]+\tload5=[0-9]+\\.[0-9]+\tload15=[0-9]+\\.[0-9]+\tboot=[0-9]+\tmem_total_mb=32000\tmem_avail_mb=9000\tswap_total_mb=8000\tswap_used_mb=1200\tgroup_mem_max_mb=32768\tgroup_mem_used_mb=1024\tpressure_some10=2\\.31\tpressure_some60=1\\.12\tpressure_full10=0\\.40\tpressure_full60=0\\.18\toom_kills=1\tvm_used=0\tvm_max=none\tvm_room=yes\tvm_mem_mb=8192\tbox_mem_mb=12288\tdisk_pct=37\tdisk_total_mb=976562\tdisk_used_mb=361328\tttl=1800\tpower=on\tidle_checks=20\tidle_count=7\tidle_last=idle\treset_at=85\tkeepawake=free\nbox\tbox=a\tengine=container\timage=docker\\.io/library/rust:1\tstate=running\tlast_used=0\tuser=no\tsize=-\tmem_limit_mb=12288\tmem_mb=(-|[0-9]+)\tbusy=no\truns=1\tmem_peak_mb=-\nbox\tbox=b\tengine=vm\timage=localhost/toolbox:latest\tstate=stopped\tlast_used=0\tuser=yes\tsize=small\tmem_limit_mb=2048\tmem_mb=-\tbusy=no\truns=0\tmem_peak_mb=2900\nrun\tbox=a\tid=r1\tstate=ended\texit=3\tbytes=11\tchanged=[0-9]+\nrun\tbox=a\tid=r2\tstate=running\texit=-\tbytes=4\tchanged=[0-9]+\nimage\tname=toolbox\tbytes=0\tbuilt=[0-9]+$",
+      "stdout_re": "^host\tversion=0\\.4\\.29\tengines=container,vm\tcpus=8\tload1=[0-9]+\\.[0-9]+\tload5=[0-9]+\\.[0-9]+\tload15=[0-9]+\\.[0-9]+\tboot=[0-9]+\tmem_total_mb=32000\tmem_avail_mb=9000\tswap_total_mb=8000\tswap_used_mb=1200\tgroup_mem_max_mb=32768\tgroup_mem_used_mb=1024\tpressure_some10=2\\.31\tpressure_some60=1\\.12\tpressure_full10=0\\.40\tpressure_full60=0\\.18\toom_kills=1\tvm_used=0\tvm_max=none\tvm_room=yes\tvm_mem_mb=8192\tbox_mem_mb=12288\tdisk_pct=37\tdisk_total_mb=976562\tdisk_used_mb=361328\tttl=1800\tpower=on\tidle_checks=20\tidle_count=7\tidle_last=idle\treset_at=85\tkeepawake=free\nbox\tbox=a\tengine=container\timage=docker\\.io/library/rust:1\tstate=running\tlast_used=0\tuser=no\tsize=-\tmem_limit_mb=12288\tmem_mb=(-|[0-9]+)\tbusy=no\truns=1\tmem_peak_mb=-\nbox\tbox=b\tengine=vm\timage=localhost/toolbox:latest\tstate=stopped\tlast_used=0\tuser=yes\tsize=small\tmem_limit_mb=2048\tmem_mb=-\tbusy=no\truns=0\tmem_peak_mb=2900\nrun\tbox=a\tid=r1\tstate=ended\texit=3\tbytes=11\tchanged=[0-9]+\nrun\tbox=a\tid=r2\tstate=running\texit=-\tbytes=4\tchanged=[0-9]+\nimage\tname=toolbox\tbytes=0\tbuilt=[0-9]+$",
       "podman_calls_absent": [
         "^run",
         "^start",
@@ -3828,7 +3828,7 @@
         "BOXD_KEEPAWAKE_LOCK": "/work/no-lock",
         "BOXD_IDLE_STATE": "/work/no-idle"
       },
-      "stdout_re": "^host\tversion=0\\.4\\.28\tengines=container\tcpus=8\t.*\tgroup_mem_max_mb=-\tgroup_mem_used_mb=-\tpressure_some10=-\tpressure_some60=-\tpressure_full10=-\tpressure_full60=-\toom_kills=-\tvm_used=0\tvm_max=3\tvm_room=no\tvm_mem_mb=8192\tbox_mem_mb=12288\tdisk_pct=37\tdisk_total_mb=976562\tdisk_used_mb=361328\tttl=1800\tpower=off\tidle_checks=-\tidle_count=-\tidle_last=-\treset_at=-\tkeepawake=none$"
+      "stdout_re": "^host\tversion=0\\.4\\.29\tengines=container\tcpus=8\t.*\tgroup_mem_max_mb=-\tgroup_mem_used_mb=-\tpressure_some10=-\tpressure_some60=-\tpressure_full10=-\tpressure_full60=-\toom_kills=-\tvm_used=0\tvm_max=3\tvm_room=no\tvm_mem_mb=8192\tbox_mem_mb=12288\tdisk_pct=37\tdisk_total_mb=976562\tdisk_used_mb=361328\tttl=1800\tpower=off\tidle_checks=-\tidle_count=-\tidle_last=-\treset_at=-\tkeepawake=none$"
     },
     {
       "name": "pod report lists every running run and, of the ended ones, the three with the greatest ids per box",
@@ -5074,6 +5074,263 @@
         "^exec -w /job/src",
         "^exec -t"
       ]
+    },
+    {
+      "name": "a machine made with --user and stopped (its folder keeps the record): a call with no engine and no account makes the same machine with the account again",
+      "command": "pod run boxd-2889387319  -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "containers": {},
+      "sandboxes": {},
+      "job_files": {
+        ".kind": "engine=vm\nuser=1\n",
+        ".vm-user": "",
+        ".vm-size": "small"
+      },
+      "exit": 0,
+      "stderr": "boxd-pod: new machine box boxd-2889387319: commands run as an ordinary account (--user)",
+      "msb_calls": [
+        "^create --name pod-boxd-2889387319 --mount-dir /work/jobs/boxd-2889387319:/job:host-perms=mirror,uid=1000,gid=1000 ",
+        "^exec -w / pod-boxd-2889387319 -- sh -c : boxd-user-setup ",
+        "^exec --stream -u box -e HOME=/job/home "
+      ],
+      "podman_calls_absent": [
+        "^run"
+      ],
+      "files_match": {
+        "/work/jobs/boxd-2889387319/.kind": "^engine=vm[[:space:]]user=1$"
+      },
+      "files": [
+        "/work/jobs/boxd-2889387319/.vm-user"
+      ]
+    },
+    {
+      "name": "a container box made with --user and stopped: a call with no flags makes it again with the account",
+      "command": "pod run boxd-2889387319  -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "containers": {},
+      "job_files": {
+        ".kind": "engine=container\nuser=1\n"
+      },
+      "exec_exit": 0,
+      "exit": 0,
+      "stderr": "boxd-pod: new container box boxd-2889387319: commands run as an ordinary account (--user)",
+      "podman_calls": [
+        "^run -d --init --name pod-boxd-2889387319 .*--userns=keep-id --label boxd.user=1 "
+      ],
+      "msb_calls_absent": [
+        "^create"
+      ],
+      "files_match": {
+        "/work/jobs/boxd-2889387319/.kind": "^engine=container[[:space:]]user=1$"
+      }
+    },
+    {
+      "name": "a container box made with --kvm and stopped: a call with no flags gets the device and the label again",
+      "command": "pod run boxd-2889387319  -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "env": {
+        "BOXD_KVM": "/work/kvm"
+      },
+      "work_files": {
+        "kvm": ""
+      },
+      "containers": {},
+      "job_files": {
+        ".kind": "engine=container\nkvm=1\n"
+      },
+      "exec_exit": 0,
+      "exit": 0,
+      "podman_calls": [
+        "^run -d --init --name pod-boxd-2889387319 .*--device /work/kvm --label boxd.kvm=1 "
+      ],
+      "files_match": {
+        "/work/jobs/boxd-2889387319/.kind": "^engine=container[[:space:]]kvm=1$"
+      }
+    },
+    {
+      "name": "a container box made with --image and stopped: a call with no flags comes back on that image, not the default",
+      "command": "pod run boxd-2889387319  -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "containers": {},
+      "job_files": {
+        ".kind": "engine=container\nimage=docker.io/library/rust:1.83\n"
+      },
+      "exec_exit": 0,
+      "exit": 0,
+      "podman_calls": [
+        "^run -d .* docker\\.io/library/rust:1\\.83 sleep infinity$"
+      ],
+      "files_match": {
+        "/work/jobs/boxd-2889387319/.kind": "^engine=container[[:space:]]image=docker.io/library/rust:1.83$"
+      }
+    },
+    {
+      "name": "a call that names the other engine than the folder's record is refused as if the box stood: a machine record, --container",
+      "command": "pod run boxd-2889387319 --container -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "containers": {},
+      "sandboxes": {},
+      "job_files": {
+        ".kind": "engine=vm\n"
+      },
+      "exit": 125,
+      "stderr": "boxd-pod: box boxd-2889387319 is a virtual machine, asked for a container; add --recreate",
+      "podman_calls_absent": [
+        "^run"
+      ],
+      "msb_calls_absent": [
+        "^create"
+      ]
+    },
+    {
+      "name": "a call that names the other engine than the folder's record is refused as if the box stood: a container record, --vm",
+      "command": "pod run boxd-2889387319 --vm -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "containers": {},
+      "sandboxes": {},
+      "job_files": {
+        ".kind": "engine=container\n"
+      },
+      "exit": 125,
+      "stderr": "boxd-pod: box boxd-2889387319 is a container, asked for a virtual machine; add --recreate",
+      "podman_calls_absent": [
+        "^run"
+      ],
+      "msb_calls_absent": [
+        "^create"
+      ]
+    },
+    {
+      "name": "the other engine with --recreate on a folder's record makes that engine and rewrites the record without the account",
+      "command": "pod run boxd-2889387319 --vm --recreate -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "containers": {},
+      "sandboxes": {},
+      "job_files": {
+        ".kind": "engine=container\nuser=1\n"
+      },
+      "exit": 0,
+      "msb_calls": [
+        "^create "
+      ],
+      "files_match": {
+        "/work/jobs/boxd-2889387319/.kind": "^engine=vm$"
+      },
+      "files_absent": [
+        "/work/jobs/boxd-2889387319/.vm-user"
+      ]
+    },
+    {
+      "name": "--user on a folder whose record has no account is refused as if the box stood",
+      "command": "pod run boxd-2889387319 --user -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "containers": {},
+      "job_files": {
+        ".kind": "engine=container\n"
+      },
+      "exit": 125,
+      "stderr": "boxd-pod: box boxd-2889387319 was made without --user, asked for --user; add --recreate",
+      "podman_calls_absent": [
+        "^run"
+      ]
+    },
+    {
+      "name": "--kvm on a folder whose record has no --kvm is refused as if the box stood",
+      "command": "pod run boxd-2889387319 --kvm -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "env": {
+        "BOXD_KVM": "/work/kvm"
+      },
+      "work_files": {
+        "kvm": ""
+      },
+      "containers": {},
+      "job_files": {
+        ".kind": "engine=container\n"
+      },
+      "exit": 125,
+      "stderr": "boxd-pod: box boxd-2889387319 was made without --kvm, asked for --kvm; add --recreate",
+      "podman_calls_absent": [
+        "^run"
+      ]
+    },
+    {
+      "name": "--user on a machine's folder whose record has no account is refused as if the box stood",
+      "command": "pod run boxd-2889387319 --user -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "containers": {},
+      "sandboxes": {},
+      "job_files": {
+        ".kind": "engine=vm\n"
+      },
+      "exit": 125,
+      "stderr": "boxd-pod: box boxd-2889387319 was made without --user, asked for --user; add --recreate",
+      "msb_calls_absent": [
+        "^create"
+      ]
+    },
+    {
+      "name": "a folder without a record (made by an older server): a call with no flags makes a plain container as root, as before",
+      "command": "pod run boxd-2889387319  -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "containers": {},
+      "sandboxes": {},
+      "job_files": {
+        ".vm-user": "",
+        ".vm-size": "small"
+      },
+      "exec_exit": 0,
+      "exit": 0,
+      "stderr": "boxd-pod: new container box boxd-2889387319: commands run as root; an ordinary account needs --user at creation",
+      "podman_calls": [
+        "^run -d --init --name pod-boxd-2889387319 "
+      ],
+      "msb_calls_absent": [
+        "^create"
+      ],
+      "files_match": {
+        "/work/jobs/boxd-2889387319/.kind": "^engine=container$"
+      }
+    },
+    {
+      "name": "--recreate with other properties rewrites the record: the account stays, --kvm is added, the image is the one named",
+      "command": "pod run boxd-2889387319 --recreate --kvm --image rust:1.83 -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "env": {
+        "BOXD_KVM": "/work/kvm"
+      },
+      "work_files": {
+        "kvm": ""
+      },
+      "containers": {
+        "pod-boxd-2889387319": {
+          "image": "docker.io/library/debian:stable-slim",
+          "state": "running",
+          "user": true
+        }
+      },
+      "job_files": {
+        ".kind": "engine=container\nuser=1\n"
+      },
+      "exec_exit": 0,
+      "exit": 0,
+      "files_match": {
+        "/work/jobs/boxd-2889387319/.kind": "^engine=container[[:space:]]user=1[[:space:]]kvm=1[[:space:]]image=docker.io/library/rust:1.83$"
+      }
+    },
+    {
+      "name": "a new container box with --image records the image, and a new one with the default image records none",
+      "command": "pod run boxd-2889387319 --image rust:1.83 -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "containers": {},
+      "exec_exit": 0,
+      "exit": 0,
+      "files_match": {
+        "/work/jobs/boxd-2889387319/.kind": "^engine=container[[:space:]]image=docker.io/library/rust:1.83$"
+      }
+    },
+    {
+      "name": "a box made by an older server (no record) gets its record at its next call",
+      "command": "pod run boxd-2889387319  -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "containers": {
+        "pod-boxd-2889387319": {
+          "image": "docker.io/library/rust:1.83",
+          "state": "running",
+          "user": true
+        }
+      },
+      "exec_exit": 0,
+      "exit": 0,
+      "files_match": {
+        "/work/jobs/boxd-2889387319/.kind": "^engine=container[[:space:]]user=1[[:space:]]image=docker.io/library/rust:1.83$"
+      }
     }
   ],
   "choose": [

@@ -54,6 +54,15 @@ waiting cannot fix, like a missing image, still exits at once).
   `box runs --follow` blocks until all of the runs running at that moment have ended, printing `host`, `box`, run id and `exit=<code>` for each as it ends
   (`exit=-`: no code known); it exits 0 when every one ended with 0, otherwise 1; runs started later are not followed. Ask `box --version` for the client's version.
   `--pod '<pattern>'` (repeatable; `*` any characters, `?` one, the rest literal, over the whole box name as the box column shows it) keeps only your own boxes' runs, for the list and for the exit code of `--follow`; react to each end with `box runs --follow --pod 'rf-*' | while IFS=$'\t' read -r host box run code; do ...; done` (`code` is `exit=<n>`).
+- Several commands side by side from one worktree, in one call: `box --shards <n> -- <command with {shard} and {shards}>` (`<n>` 2 to 32), for example
+  `box --shards 5 -- npx vitest --shard={shard}/{shards}`. It makes `<n>` boxes of this worktree (your box name with `-s1` to `-s<n>`), syncs and starts the
+  command detached in each one after the other, replaces `{shard}` by the box's number and `{shards}` by `<n>` in every word, then waits for all of them and
+  prints one line as each ends (`shard <i>/<n>  <host>  <box>  run <id>  exit=<code>  <seconds> s`), the last 20 lines of the log of each run that did not end with 0
+  (`--tail <n>` changes it; 0 for none; with it every shard's tail is printed), stops the boxes (files and caches stay) and exits 0 only when every run ended with 0.
+  Each shard is an ordinary box: it is admitted like any box (the room rules apply to each start; `--wait` queues) and it has its own folder, so **its own dependencies
+  must be installed there** (a `node_modules` made in your box is not in the others; install inside the command, or use `--image-file`). A command with neither placeholder is refused.
+  A start refused for room ends the call with the runs already started left running; the message names `box runs --follow --pod '<base>-s*'` to follow them. Not with `--detach`, `--pull`, `--no-sync`, `--snapshot`.
+  `box runs --follow --tail <n>` likewise prints the last lines of each followed run when it ends.
 - **Started or not: only the exit code and the `run <id>` line say.** Exit 0 with `run <id>` on standard output: the run started, whatever
   else was printed. Any other exit code: nothing started (`box: sync failed ...; nothing was started`, or a refusal). Never relaunch on a
   message alone; a second launch runs beside the first in the same box. `box: sync complete; ... stays on the server` is a note, not an error.

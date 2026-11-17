@@ -1,9 +1,10 @@
 // box: runs a command in the calling worktree's own box on a boxd build server (see docs/pod-contract.md).
 //   box [--host <name>] [--pod <name>] [--image <ref> | --image-file <path>] [--vm|--container] [--size small|medium|large|xlarge] [--user] [--kvm] [--recreate] [--no-sync] [--snapshot | --git] [--detach] [--wait] [--pull <path>]... [--] <command...>
+//   box --shards <n> [--tail <n>] [the usual run options] -- <command with {shard} and {shards}...>
 //   box image push [--host <name>] [--vm|--container] <ref>
 //   box setup <host> [--hostname <name>] [--port <n>] [--user <name>] [--identity <file>] [--wake <mac>,<mac> --broadcast <addr>] [--default]
 //   box hosts
-//   box runs [--follow] [--pod <pattern>]...
+//   box runs [--follow [--tail <n>]] [--pod <pattern>]...
 //   box --version
 //   box log <run> [--pod <name>] [--host <name>] [--follow] [--tail <n>] [--state]
 //   box forward [--host <name>] [--pod <name>] <local-port> <box-port>
@@ -19,12 +20,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-export const VERSION = "0.4.28";
+export const VERSION = "0.4.29";
 const BOX = /^[a-z0-9][a-z0-9_.-]{0,62}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const MAC = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i;
 
 export const HELP = `usage: box [options] [--] <command...>
+       box --shards <n> [--tail <n>] [options] -- <command...>   (the command in <n> boxes side by side; see --shards below)
        box setup <host> [options]      (once per build server; box setup --help)
        box hosts                       the registered build servers in order: asleep, awake (with its \`pod status\` line) or unreachable
        box image push [--host <name>] [--vm|--container] <ref>
@@ -37,10 +39,11 @@ export const HELP = `usage: box [options] [--] <command...>
                                        run id, age, worktree and the last line of the output, tab separated; a sleeping server is
                                        not woken, only named; changes nothing
        box runs --pod <pattern>        only the runs of boxes whose name matches <pattern> (\`*\` any characters, \`?\` one, the rest literal; repeatable)
-       box runs --follow               the same, then waits until all of those runs have ended and prints one line for each as it
+       box runs --follow [--tail <n>]  the same, then waits until all of those runs have ended and prints one line for each as it
                                        ends: host, box, run id and exit=<code> (exit=- when the server knows none), tab separated;
                                        exits 0 when every one ended with 0, else 1 (with --pod only the matching runs count); asks every 30 s ($BOXD_RUNS_POLL_MS in ms);
-                                       runs that start later are not followed; ends (exit 129) with the process that started it
+                                       runs that start later are not followed; ends (exit 129) with the process that started it;
+                                       --tail <n> (0 to 100000) also prints the last <n> lines of each run's log when it ends, under a line naming the run
        box ps [--pod <name>] [--host <name>]   processes running in this worktree's box, oldest first, with their
                                        age, processor time and working folder: spots a hung command; changes nothing
        box log <run> [--pod <name>] [--host <name>] [--follow] [--tail <n>] [--state]
@@ -94,6 +97,16 @@ container or, with --vm, a small virtual machine; the same box on every call) an
                    with it. Files outside /job go when the idle box is removed: keep results under /job/src. Only a detached
                    run outlives its starter: a foreground call ends with the process that started it (it ends when that
                    process is gone, exit 129; $BOXD_KEEP_ORPHAN=1 turns that off)
+  --shards <n>     (2 to 32) run the command in <n> boxes of this worktree side by side and wait for all of them: boxes named like this
+                   worktree's box with -s1 to -s<n> appended (with --pod <name>: <name>-s1 ...), each synced and started detached one
+                   after the other, every {shard} in the command's words replaced by the box's number and every {shards} by <n> (a command
+                   with neither is refused: box --shards 5 -- npx vitest --shard={shard}/{shards}). It then follows the runs, prints
+                   one line as each ends (shard, host, box, run, exit code, seconds), then the last 20 lines of the log of each run that did not
+                   end with 0 (--tail <n> changes the 20: 0 for none, and with --tail the tails are printed for every shard), stops the <n>
+                   boxes (files and caches stay) and exits 0 only when every run ended with 0. Each shard is an ordinary box: admitted like
+                   any box and with its own installed dependencies. A start refused for room ends the call and leaves the runs already
+                   started running (follow them with box runs --follow --pod '<name>-s*'; --wait queues instead). Not with --detach, --pull,
+                   --no-sync, --snapshot, forward or vnc
   --wait           when no build server has room (for a machine, or memory for another busy container box), wait and ask
                    again every 30 seconds ($BOXD_WAIT_MS) until the call can be placed, instead of exit 75 at once; a
                    worktree whose server is full moves first when it can; holds nothing meanwhile and gives no order
@@ -981,13 +994,15 @@ async function readRuns(env: Env, all: ReturnType<typeof entries>, names: string
 // each ends; exit 0 when all ended with 0, else 1. A run gone from a report that was read (its box removed) ended with exit=-.
 async function runsCall(args: string[], env: Env): Promise<number> {
   if (args.includes("--help") || args.includes("-h")) { process.stdout.write(`${HELP}\n`); return 0; }
-  let follow = false;
+  let follow = false, tail: number | undefined;
   const pats: RegExp[] = [];   // shell-style glob over the whole box name, escaped into a regular expression
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--follow" && !follow) follow = true;
+    else if (args[i] === "--tail") { const v = args[++i]; if (!/^\d{1,6}$/.test(v ?? "") || Number(v) > 100000) return usage("box runs: --tail needs a whole number from 0 to 100000"); tail = Number(v); }
     else if (args[i] === "--pod" && args[i + 1] !== undefined) pats.push(new RegExp(`^${args[++i]!.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".")}$`, "s"));
-    else return usage(args[i] === "--pod" ? "box runs: --pod needs a pattern" : "box runs: takes no arguments except --follow and --pod <pattern>");
+    else return usage(args[i] === "--pod" ? "box runs: --pod needs a pattern" : "box runs: takes no arguments except --follow, --tail <n> and --pod <pattern>");
   }
+  if (tail !== undefined && !follow) return usage("box runs: --tail goes with --follow");
   const all = entries(env), names = [...new Set([...hostOrder(env), ...all.map((e) => e.host)])];
   if (!names.length) return usage("box runs: no build server is set up; run box setup <host>");
   const now = Number(env.BOXD_NOW) || Date.now(), out: string[] = [], pending = new Set<string>();
@@ -1004,11 +1019,24 @@ async function runsCall(args: string[], env: Env): Promise<number> {
   if (follow && pending.size) process.stderr.write(out.map((l) => `${l}\n`).join(""));
   else process.stdout.write(`${out.some((l) => l.includes("\t")) ? "" : "no detached run is running\n"}${out.map((l) => `${l}\n`).join("")}`);
   if (!follow || !pending.size) return 0;
-  const starter = process.ppid, poll = Number(env.BOXD_RUNS_POLL_MS ?? 30_000), silent = new Set<string>();
   let failed = false;
+  const orphaned = await followRuns(env, all, names, pending, async (key, code) => {
+    if (code !== "0") failed = true;
+    process.stdout.write(`${key}\texit=${code}\n`);
+    const [host, box, id] = key.split("\t") as [string, string, string];
+    if (tail !== undefined) await printTail(env, host, box, id, tail, `--- ${host}  ${box}  run ${id} (exit ${code}), last lines of its log:`);
+  });
+  return orphaned ? 129 : failed ? 1 : 0;
+}
+
+// The one waiting loop of box runs --follow and box --shards: asks every BOXD_RUNS_POLL_MS (default 30000) until every key in
+// `pending` ("host<tab>box<tab>run") has ended (or its box is gone: exit "-"), calls `ended` once for each as it ends, and answers true
+// when the process that started the call is gone (nothing more is waited for).
+async function followRuns(env: Env, all: ReturnType<typeof entries>, names: string[], pending: Set<string>, ended: (key: string, code: string, row?: RunRow) => Promise<void>): Promise<boolean> {
+  const starter = process.ppid, poll = Number(env.BOXD_RUNS_POLL_MS ?? 30_000), silent = new Set<string>();
   while (pending.size) {
     await new Promise((res) => setTimeout(res, poll));
-    if (env.BOXD_KEEP_ORPHAN !== "1" && process.ppid !== starter) { process.stderr.write("box: the process that started this call is gone; no longer following\n"); return 129; }
+    if (env.BOXD_KEEP_ORPHAN !== "1" && process.ppid !== starter) { process.stderr.write("box: the process that started this call is gone; no longer following\n"); return true; }
     for (const h of await readRuns(env, all, names)) {
       if (!h.runs) { if (h.note && !silent.has(h.host) && [...pending].some((k) => k.startsWith(`${h.host}\t`))) { silent.add(h.host); process.stderr.write(`box runs: ${h.host} does not answer; still waiting for its runs\n`); } continue; }
       silent.delete(h.host);
@@ -1016,16 +1044,60 @@ async function runsCall(args: string[], env: Env): Promise<number> {
         const r = h.runs.find((x) => key === [h.host, x.box, x.id].join("\t"));
         if (r?.running) continue;
         pending.delete(key);
-        const code = r?.exit ?? "-";
-        if (code !== "0") failed = true;
-        process.stdout.write(`${key}\texit=${code}\n`);
+        await ended(key, r?.exit ?? "-", r);
       }
     }
   }
-  return failed ? 1 : 0;
+  return false;
 }
 
-export function main(args: string[], env: Env = process.env): number | Promise<number> {
+// The last `n` lines of an ended run's log (box log --tail, read from the server) under the line `title`; nothing for n = 0.
+async function printTail(env: Env, host: string, box: string, id: string, n: number, title: string): Promise<void> {
+  if (n === 0) return;
+  process.stdout.write(`${title}\n`);
+  await logCall(["--host", host, "--pod", box, id, "--tail", String(n)], env);
+}
+
+// How long an ended run took, as the server measured it (`seconds=` in the header of `pod log`, read at the end of the log); "-" when it says none.
+async function runSeconds(host: string, box: string, id: string, bytes: string | undefined): Promise<string> {
+  const r = bytes === undefined ? undefined : await ask(host, `pod log ${box} ${id} ${bytes}`);
+  return /^log\t.*\tseconds=(\d{1,9})(\t|$)/.exec(r?.out.split("\n")[0] ?? "")?.[1] ?? "-";
+}
+
+// box --shards <n>: `keep` are the options of the call without --shards, --tail and --pod, `words` the command. Each box is made by an ordinary
+// call of this program (sync, then the detached start), one after the other, so the admission of each sees the runs before it.
+async function shardsCall(keep: string[], words: string[], base: string, n: number, tail: number | undefined, env: Env): Promise<number> {
+  const started: { i: number; host: string; box: string; run: string }[] = [];
+  for (let i = 1; i <= n; i++) {
+    const box = `${base}-s${i}`, run = newRunId(), inner: { run: string; host?: string } = { run };
+    const code = await main([...keep, "--pod", box, "--", ...words.map((w) => w.replaceAll("{shards}", String(n)).replaceAll("{shard}", String(i)))], env, inner);
+    if (code !== 0 || !inner.host) {
+      const many = started.length > 1;
+      if (started.length) process.stderr.write(`box: shard ${i}/${n} did not start (exit ${code}); the ${started.length} run${many ? "s" : ""} already started keep${many ? "" : "s"} running. Follow ${many ? "them" : "it"} with: box runs --follow --pod '${base}-s*'${code === NO_ROOM ? "; add --wait to queue for room instead" : ""}\n`);
+      return code || 1;
+    }
+    started.push({ i, host: inner.host, box, run });
+    process.stderr.write(`box: shard ${i}/${n} started on ${inner.host} as box ${box}, run ${run}\n`);
+  }
+  const all = entries(env), names = [...new Set([...hostOrder(env), ...all.map((e) => e.host)])];
+  const key = (s: (typeof started)[number]) => [s.host, s.box, s.run].join("\t"), codes = new Map<string, string>();
+  const orphaned = await followRuns(env, all, names, new Set(started.map(key)), async (k, code, row) => {
+    const s = started.find((x) => key(x) === k) as (typeof started)[number];
+    codes.set(k, code);
+    process.stdout.write(`shard ${s.i}/${n}  ${s.host}  ${s.box}  run ${s.run}  exit=${code}  ${await runSeconds(s.host, s.box, s.run, row?.bytes)} s\n`);
+  });
+  if (orphaned) return 129;
+  for (const s of started) {
+    const code = codes.get(key(s)) ?? "-";
+    if (code !== "0" || tail !== undefined) await printTail(env, s.host, s.box, s.run, tail ?? 20, `--- shard ${s.i} (exit ${code}), last lines of its log:`);
+  }
+  for (const s of started) await dropCall(["--pod", s.box, "--host", s.host], env, "stop");
+  return started.every((s) => codes.get(key(s)) === "0") ? 0 : 1;
+}
+
+// `inner`: set by box --shards for each of its own calls: the call is detached with this run id, is never on a terminal, prints no run lines
+// and says the host it ran on.
+export function main(args: string[], env: Env = process.env, inner?: { run: string; host?: string }): number | Promise<number> {
   if (args[0] === "setup") return setup(args.slice(1), env);
   if (args[0] === "runs") return runsCall(args.slice(1), env);
   if (args[0] === "ps") return ps(args.slice(1), env);
@@ -1036,7 +1108,7 @@ export function main(args: string[], env: Env = process.env): number | Promise<n
   if (args[0] === "gc") return gcCall(args.slice(1), env);
   if (args[0] === "image") return args[1] === "push" ? imagePush(args.slice(2), env) : usage("box image: only \"box image push\" exists");
   const flags: string[] = [], pulls: string[] = [], includes: string[] = [];
-  let sync = true, clean = false, detach = false, wait = false, i = 0, hostFlag: string | undefined, psAfter = env.BOXD_PS_AFTER ?? "15";
+  let sync = true, clean = false, detach = inner !== undefined, wait = false, shards: number | undefined, tail: number | undefined, i = 0, hostFlag: string | undefined, psAfter = env.BOXD_PS_AFTER ?? "15";
   for (; i < args.length; i++) {
     const a = args[i] as string;
     if (a === "--") { i++; break; }
@@ -1048,7 +1120,15 @@ export function main(args: string[], env: Env = process.env): number | Promise<n
     else if (a === "--wait") wait = true;
     else if (a === "--clean") clean = true;
     else if (a === "--recreate" || a === "--snapshot" || a === "--git" || a === "--vm" || a === "--container" || a === "--user" || a === "--kvm") flags.push(a);
-    else if (a === "--pod" || a === "--size" || a === "--image" || a === "--image-file" || a === "--pull" || a === "--host" || a === "--ps-after" || a === "--env" || a === "--include") {
+    else if (a === "--shards") {
+      const v = args[++i];
+      if (!/^\d{1,2}$/.test(v ?? "") || Number(v) < 2 || Number(v) > 32) return usage("box: --shards needs a whole number from 2 to 32");
+      shards = Number(v);
+    } else if (a === "--tail") {
+      const v = args[++i];
+      if (!/^\d{1,6}$/.test(v ?? "") || Number(v) > 100000) return usage("box: --tail needs a whole number from 0 to 100000");
+      tail = Number(v);
+    } else if (a === "--pod" || a === "--size" || a === "--image" || a === "--image-file" || a === "--pull" || a === "--host" || a === "--ps-after" || a === "--env" || a === "--include") {
       const v = args[++i];
       if (v === undefined) return usage(`box: ${a} needs a value`);
       if (a === "--env" && env[v] === undefined) return usage(`box: --env ${v}: not set in your environment`);
@@ -1056,6 +1136,13 @@ export function main(args: string[], env: Env = process.env): number | Promise<n
     } else return usage(`box: unknown option ${a}`);
   }
   const argv = args.slice(i);
+  if (tail !== undefined && shards === undefined) return usage("box: --tail goes with --shards (or with box runs --follow and box log)");
+  if (shards !== undefined) {
+    const bad = [detach && "--detach", pulls.length > 0 && "--pull", !sync && "--no-sync", flags.includes("--snapshot") && "--snapshot"].filter(Boolean);
+    if (bad.length) return usage(`box: --shards cannot go with ${bad.join(", ")}: it syncs, starts detached runs, follows them and stops the boxes itself`);
+    if (argv[0] === "forward" || argv[0] === "vnc") return usage(`box: --shards runs a command in several boxes; it is not for ${argv[0]}`);
+    if (!argv.some((w) => w.includes("{shard}") || w.includes("{shards}"))) return usage(`box: --shards ${shards}: a command with neither {shard} nor {shards} would run the same thing ${shards} times; give each box its part, for example: box --shards 5 -- npx vitest --shard={shard}/{shards}`);
+  }
   // Without an explicit --, a box option after the command is part of the command; say so once (people wrote `box sh -c '...' --pull x`).
   const late = args[i - 1] === "--" ? undefined : argv.find((w) => ["--pull", "--include", "--env", "--detach", "--host", "--pod", "--no-sync", "--wait"].includes(w));
   if (late) process.stderr.write(`box: ${late} after the command is handed to the command, not to box; put box options before the command (or write -- before the command to silence this)\n`);
@@ -1063,6 +1150,15 @@ export function main(args: string[], env: Env = process.env): number | Promise<n
   const git = spawnSync("git", ["rev-parse", "--show-toplevel", "--absolute-git-dir"], { encoding: "utf8" });
   if (git.status !== 0) return usage("box: not inside a git worktree");
   const [toplevel = "", gitDir = ""] = git.stdout.trim().split("\n");
+  if (shards !== undefined) {
+    const bp = plan(toplevel, flags, argv);
+    if ("error" in bp) return usage(bp.error);
+    if (!BOX.test(`${bp.box}-s${shards}`)) return usage(`box: --shards: the box name ${bp.box} is too long to add -s${shards}`);
+    // The options of this call for each shard's own call: everything but --shards, --tail and --pod (each shard has its own name).
+    const keep: string[] = [], opts = args.slice(0, args[i - 1] === "--" ? i - 1 : i);
+    for (let j = 0; j < opts.length; j++) { if (["--shards", "--tail", "--pod"].includes(opts[j] as string)) j++; else keep.push(opts[j] as string); }
+    return shardsCall(keep, argv, bp.box, shards, tail, env);
+  }
   if (!sync && flags.includes("--git")) return usage("box: --git needs the sync; drop --no-sync");
   if (!sync && (clean || includes.length)) return usage("box: --include and --clean need the sync; drop --no-sync");
   for (let j = 0; j < includes.length; j++) {
@@ -1078,13 +1174,13 @@ export function main(args: string[], env: Env = process.env): number | Promise<n
   // One server (or none registered through box setup): no choosing, no placement file, as before.
   const fixed = src.how !== "choose" ? src.host : order.length < 2 ? hostAlias(undefined, env)?.slice("boxd-".length) : undefined;
   if (src.how !== "choose" || order.length < 2) { if (!fixed || !NAME.test(fixed)) return usage(NOHOST); }
-  const run = detach ? newRunId() : undefined;
+  const run = detach ? inner?.run ?? newRunId() : undefined;
   const p = plan(toplevel, run ? [...flags, "--detach", run] : flags, argv);
   if ("error" in p) return usage(p.error);
   // A detached call returns before the command ends, so nothing is there to pull yet (finish() never reaches the pulls).
   if (run && pulls.length) process.stderr.write("box: --pull is ignored with --detach (the run has not ended when box returns); fetch later with: box --no-sync --pull <path> true\n");
   const stdio = { stdio: "inherit" } as const;
-  const tty = process.stdin.isTTY && process.stdout.isTTY;
+  const tty = !inner && process.stdin.isTTY && process.stdout.isTTY;
   const minutes = Number(psAfter), { box, remote } = p;
   const image = flags[flags.indexOf("--image") + 1];
   const sz = flags[flags.indexOf("--size") + 1];
@@ -1210,6 +1306,7 @@ export function main(args: string[], env: Env = process.env): number | Promise<n
       else if (c) process.stderr.write(`box: no other build server has room\n${[...c.refusal, ...(c.wait ? roomHint(others, req, wait) : [])].map((l) => `  ${l}\n`).join("")}`);
       return r.code;
     }
+    if (inner && r.code === 0) { inner.host = name; return 0; }
     const code = finish(r.code, name);
     if (r.code !== 255) await collectInPassing(env, Number(env.BOXD_NOW) || Date.now()); // 255: ssh itself failed, the host was not reached
     return code;
