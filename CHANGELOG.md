@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.32
+
+- **`--history`: the repository in the box carries the full history and the tags.** With `--git --history` or
+  `--commit <rev> --history` the box gets every commit reachable from that commit and exactly the tags that point into
+  that history (annotated and lightweight), still detached, with no branches, no remote, no hooks and no reflog. The
+  repository is built new at each call, so a tag deleted or moved in the source is gone or moved in the box at the next
+  call. The history carries the authors' names and mail addresses of its commits. Without the option nothing changes:
+  one commit, no tags. Asked for by a user whose hosted jobs check out the full history and whose tests read tags.
+- **`box runs` takes `--host <name>`**: only the runs on that host are listed and followed; the other hosts are not
+  asked. An unknown host and an unknown option each get one line and exit 2 (`box runs --follow --host <name>` used to
+  print the whole help and return).
+- The toolbox image recipe makes the folder of the TypeScript interface before it installs into it: the image build of
+  0.4.26 to 0.4.31 failed at that step on a host (`canonicalizing the --dir argument`). The recipe was built for real
+  under a throwaway name before this release.
+
 ## 0.4.31
 
 - **The home of a `--user` machine box is writable.** In a machine made with `--vm --user` (0.4.28 to 0.4.30)

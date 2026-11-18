@@ -1,10 +1,10 @@
 // box: runs a command in the calling worktree's own box on a boxd build server (see docs/pod-contract.md).
-//   box [--host <name>] [--pod <name>] [--image <ref> | --image-file <path>] [--vm|--container] [--size small|medium|large|xlarge] [--user] [--kvm] [--recreate] [--no-sync] [--snapshot | --git | --commit <rev>] [--detach] [--wait] [--pull <path>]... [--] <command...>
+//   box [--host <name>] [--pod <name>] [--image <ref> | --image-file <path>] [--vm|--container] [--size small|medium|large|xlarge] [--user] [--kvm] [--recreate] [--no-sync] [--snapshot | --git | --commit <rev>] [--history] [--detach] [--wait] [--pull <path>]... [--] <command...>
 //   box --shards <n> [--tail <n>] [the usual run options] -- <command with {shard} and {shards}...>
 //   box image push [--host <name>] [--vm|--container] <ref>
 //   box setup <host> [--hostname <name>] [--port <n>] [--user <name>] [--identity <file>] [--wake <mac>,<mac> --broadcast <addr>] [--default]
 //   box hosts
-//   box runs [--follow [--tail <n>]] [--pod <pattern>]...
+//   box runs [--follow [--tail <n>]] [--pod <pattern>]... [--host <name>]
 //   box --version
 //   box log <run> [--pod <name>] [--host <name>] [--follow] [--tail <n>] [--state]
 //   box forward [--host <name>] [--pod <name>] <local-port> <box-port>
@@ -19,7 +19,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-export const VERSION = "0.4.31";
+export const VERSION = "0.4.32";
 const BOX = /^[a-z0-9][a-z0-9_.-]{0,62}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const MAC = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i;
@@ -36,6 +36,7 @@ export const HELP = `usage: box [options] [--] <command...>
        box runs                        the detached runs still running on the build servers (those of this machine's boxes): host, box,
                                        run id, age, worktree and the last line of the output, tab separated; a sleeping server is
                                        not woken, only named; changes nothing
+       box runs --host <name>          only the runs on that build server (not woken if asleep); combines with --pod, --follow and --tail
        box runs --pod <pattern>        only the runs of boxes whose name matches <pattern> (\`*\` any characters, \`?\` one, the rest literal; repeatable)
        box runs --follow [--tail <n>]  the same, then waits until all of those runs have ended and prints one line for each as it
                                        ends: host, box, run id and exit=<code> (exit=- when the server knows none), tab separated;
@@ -145,6 +146,11 @@ container or, with --vm, a small virtual machine; the same box on every call) an
                    is the one of the commit. A later call without --commit syncs the working folder again, and the repository stays
                    until a --git or --commit call replaces it: mixing the two in one box alternates the source. Unknown <rev>: exit 2.
                    Not with --git, --snapshot, --no-sync, --include or --clean
+  --history        with --git or --commit <rev>: the repository in the box holds every commit reachable from that commit (not one) and
+                   every tag of your repository that points inside that history (annotated ones as tag objects), exactly as they are
+                   at this call: a tag deleted or moved since the last call is gone or moved there. Still detached, no branches, no
+                   remote, no hooks, no reflog. The history carries the names and mail addresses of its commits' authors: that is
+                   in the commits, and sending them is your choice. For tests that run git describe, git tag or git log over several commits
   --version        print the version of this client
   --help           this text`;
 export const SETUP_HELP = `usage: box setup <host> [options]
@@ -474,14 +480,27 @@ export function choose(hosts, req) {
 // the commit, so git status in the box lists exactly what differs from it. Made with an empty template (no hooks), no remote,
 // no reflog (it would carry this account's name and mail) and no FETCH_HEAD (it names this machine's path). Returns the reason
 // it failed. --checksum: HEAD, the index and shallow have the same size and, made within one second, the same time on a new commit. The files in the box are left alone: the sync's own filter keeps /.git, and this replaces the whole folder.
-function sendGit(toplevel, dest, rev = "HEAD") {
+// --history: the same fetch without --depth (every commit reachable from the commit; a shallow source sends what it has) plus exactly
+// the tags of the worktree's repository that point into that history (`git tag --merged`; annotated ones as tag objects), named in the
+// one fetch with --no-tags. The repository is made new at every call, so it holds only the tags that exist now, at the commits they
+// have now: a tag deleted or moved since the last call is gone or moved, because rsync --delete replaces the box's whole .git (loose
+// references and packed-refs alike). Cost: a new pack of the whole history per call, and git names a pack by its content, which differs
+// between two fetches of the same history, so each call sends the whole pack (measured: 141 commits, 1.2 MB).
+function sendGit(toplevel, dest, rev = "HEAD", history = false) {
     const head = spawnSync("git", ["rev-parse", "--verify", `${rev}^{commit}`], { cwd: toplevel, encoding: "utf8" });
     if (head.status !== 0)
         return "this worktree has no commit yet";
     const sha = head.stdout.trim(), tmp = mkdtempSync(path.join(tmpdir(), "boxd-git-"));
     const git = (...a) => spawnSync("git", ["-C", tmp, "-c", "core.logAllRefUpdates=false", "-c", "gc.auto=0", "-c", "maintenance.auto=false", ...a], { encoding: "utf8" });
     try {
-        for (const a of [["init", "-q", "--template="], ["fetch", "-q", "--depth=1", "--no-write-fetch-head", toplevel, sha], ["update-ref", "--no-deref", "HEAD", sha], ["read-tree", "HEAD"]]) {
+        let fetch = ["fetch", "-q", "--depth=1", "--no-write-fetch-head", toplevel, sha];
+        if (history) {
+            const t = spawnSync("git", ["tag", "--merged", sha], { cwd: toplevel, encoding: "utf8" });
+            if (t.status !== 0)
+                return `git tag failed: ${t.stderr.trim().split("\n")[0]}`;
+            fetch = ["fetch", "-q", "--no-tags", "--update-shallow", "--no-write-fetch-head", toplevel, sha, ...t.stdout.split("\n").filter(Boolean).map((n) => `refs/tags/${n}:refs/tags/${n}`)];
+        }
+        for (const a of [["init", "-q", "--template="], fetch, ["update-ref", "--no-deref", "HEAD", sha], ["read-tree", "HEAD"]]) {
             const r = git(...a);
             if (r.status !== 0)
                 return `git ${a[0]} failed: ${r.stderr.trim().split("\n")[0]}`;
@@ -1274,7 +1293,7 @@ async function runsCall(args, env) {
         process.stdout.write(`${HELP}\n`);
         return 0;
     }
-    let follow = false, tail;
+    let follow = false, tail, hostFlag;
     const pats = []; // shell-style glob over the whole box name, escaped into a regular expression
     for (let i = 0; i < args.length; i++) {
         if (args[i] === "--follow" && !follow)
@@ -1287,14 +1306,25 @@ async function runsCall(args, env) {
         }
         else if (args[i] === "--pod" && args[i + 1] !== undefined)
             pats.push(new RegExp(`^${args[++i].replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".")}$`, "s"));
-        else
-            return usage(args[i] === "--pod" ? "box runs: --pod needs a pattern" : "box runs: takes no arguments except --follow, --tail <n> and --pod <pattern>");
+        else if (args[i] === "--host" && args[i + 1] !== undefined && hostFlag === undefined)
+            hostFlag = args[++i];
+        else if (args[i] === "--pod" || args[i] === "--host")
+            return usage(`box runs: ${args[i]} needs ${args[i] === "--pod" ? "a pattern" : "a host name"}`);
+        else {
+            process.stderr.write(`box runs: unknown option ${args[i]}; valid: --follow, --tail <n>, --pod <pattern>, --host <name>\n`);
+            return 2;
+        }
     }
     if (tail !== undefined && !follow)
         return usage("box runs: --tail goes with --follow");
-    const all = entries(env), names = [...new Set([...hostOrder(env), ...all.map((e) => e.host)])];
-    if (!names.length)
+    const all = entries(env), known = [...new Set([...hostOrder(env), ...all.map((e) => e.host)])];
+    if (!known.length)
         return usage("box runs: no build server is set up; run box setup <host>");
+    if (hostFlag !== undefined && !known.includes(hostFlag)) {
+        process.stderr.write(`box runs: --host ${hostFlag}: no such build server; box hosts lists them\n`);
+        return 2;
+    }
+    const names = hostFlag === undefined ? known : [hostFlag];
     const now = Number(env.BOXD_NOW) || Date.now(), out = [], pending = new Set();
     for (const h of await readRuns(env, all, names)) {
         if (h.note)
@@ -1427,7 +1457,7 @@ export function main(args, env = process.env, inner) {
     if (args[0] === "image")
         return args[1] === "push" ? imagePush(args.slice(2), env) : usage("box image: only \"box image push\" exists");
     const flags = [], pulls = [], includes = [];
-    let commit, sync = true, clean = false, detach = inner !== undefined, wait = false, shards, tail, i = 0, hostFlag, psAfter = env.BOXD_PS_AFTER ?? "15";
+    let commit, history = false, sync = true, clean = false, detach = inner !== undefined, wait = false, shards, tail, i = 0, hostFlag, psAfter = env.BOXD_PS_AFTER ?? "15";
     for (; i < args.length; i++) {
         const a = args[i];
         if (a === "--") {
@@ -1452,6 +1482,8 @@ export function main(args, env = process.env, inner) {
             wait = true;
         else if (a === "--clean")
             clean = true;
+        else if (a === "--history")
+            history = true;
         else if (a === "--recreate" || a === "--snapshot" || a === "--git" || a === "--vm" || a === "--container" || a === "--user" || a === "--kvm")
             flags.push(a);
         else if (a === "--shards") {
@@ -1510,6 +1542,8 @@ export function main(args, env = process.env, inner) {
     if (git.status !== 0)
         return usage("box: not inside a git worktree");
     const [toplevel = "", gitDir = ""] = git.stdout.trim().split("\n");
+    if (history && commit === undefined && !flags.includes("--git"))
+        return usage("box: --history goes with --git or --commit <rev>");
     if (commit !== undefined) {
         const bad = [flags.includes("--git") && "--git", flags.includes("--snapshot") && "--snapshot", !sync && "--no-sync", includes.length > 0 && "--include", clean && "--clean"].filter(Boolean);
         if (bad.length)
@@ -1626,7 +1660,7 @@ export function main(args, env = process.env, inner) {
                     process.stderr.write(`box: sync complete; ${kept.length} folder${kept.length > 1 ? "s" : ""} deleted here stay${kept.length > 1 ? "" : "s"} on the server because ${kept.length > 1 ? "they hold" : "it holds"} files git ignores: ${kept.slice(0, 5).join(", ")}${kept.length > 5 ? ", ..." : ""}\n`);
             }
             if (flags.includes("--git") || commit) {
-                const bad = sendGit(toplevel, `${HOST}:jobs/${box}/src/.git/`, commit);
+                const bad = sendGit(toplevel, `${HOST}:jobs/${box}/src/.git/`, commit, history);
                 if (bad) {
                     process.stderr.write(`box: --git: ${bad}; nothing was started\n`);
                     return { code: 1, err: "", stop: true };

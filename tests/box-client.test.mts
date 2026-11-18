@@ -2575,3 +2575,99 @@ test("box runs --follow --tail <n>: the last n lines of each run's log under a l
   assert.equal(go(newRepo(), s, ["runs", "--tail", "2"]).code, 2);
   assert.equal(go(newRepo(), s, ["runs", "--follow", "--tail", "x"]).code, 2);
 });
+
+// ---- box runs --host: only the runs of that host are listed and followed; an unknown option is one line ----
+test("box runs --host: lists and follows only that host's runs, combines with --pod and --tail, never asks the other host; an unknown host or option is one line, exit 2", () => {
+  const s = followFixture();
+  hostFile(s, "tower", "report", runLn("w-1", RUN_A, "running", "-"));
+  hostFile(s, "tower", "report.2", runLn("w-1", RUN_A, "ended", "0"));
+  hostFile(s, "laptop", "report", runLn("w-3", RUN_C, "running", "-"));
+  hostFile(s, "tower", `log.${RUN_A}`, head(9, 0, 9, "running")); hostFile(s, "laptop", `log.${RUN_C}`, head(9, 0, 9, "running"));
+  const l = runsOf(s, "--host", "laptop");
+  assert.deepEqual([l.code, l.out.split("\t").slice(0, 3)], [0, ["laptop", "w-3", RUN_C]]);
+  assert.ok(!l.calls.some((c) => c.includes("boxd-tower")), "the other host is not asked");
+  assert.equal(runsOf(s, "--host", "tower", "--pod", "zzz*").out, "no detached run is running\n");
+  // the fake host counts rounds across calls, so every follow gets a fixture of its own
+  const fixture = () => { const t = followFixture(); hostFile(t, "tower", "report", runLn("w-1", RUN_A, "running", "-")); hostFile(t, "tower", "report.2", runLn("w-1", RUN_A, "ended", "0")); hostFile(t, "laptop", "report", runLn("w-3", RUN_C, "running", "-")); return t; };
+  const f = runsOf(fixture(), "--follow", "--host", "tower");
+  assert.deepEqual([f.code, f.out], [0, `tower\tw-1\t${RUN_A}\texit=0\n`]);
+  assert.ok(!f.calls.some((c) => c.includes("boxd-laptop")), "the other host, whose run never ends, is not waited for");
+  assert.equal(runsOf(fixture(), "--pod", "w-*", "--host", "tower", "--follow", "--tail", "0").out, `tower\tw-1\t${RUN_A}\texit=0\n`);
+  const bad = runsOf(s, "--host", "nowhere");
+  assert.deepEqual([bad.code, bad.err, bad.calls], [2, "box runs: --host nowhere: no such build server; box hosts lists them\n", []]);
+  const opt = runsOf(s, "--follow", "--frobnicate");
+  assert.deepEqual([opt.code, opt.err], [2, "box runs: unknown option --frobnicate; valid: --follow, --tail <n>, --pod <pattern>, --host <name>\n"]);
+  assert.equal(runsOf(s, "--host").code, 2);
+});
+
+// ---- --history: every commit reachable and the tags inside it ----
+function historyRepo() {
+  const g = gitRepo();   // three commits on main
+  const [c1, c2] = git(g.r, "rev-list", "--reverse", "HEAD").split("\n") as [string, string];
+  git(g.r, "tag", "light", c1); git(g.r, "tag", "-a", "-m", "annotated", "ann", c2);
+  git(g.r, "switch", "-q", "-c", "other"); writeFileSync(path.join(g.r, "o.txt"), "o"); git(g.r, "add", "-A"); git(g.r, "commit", "-q", "-m", "other"); git(g.r, "tag", "elsewhere");
+  git(g.r, "switch", "-q", "main");
+  return { ...g, c1, c2 };
+}
+const tags = (src: string) => git(src, "tag").split("\n").filter(Boolean);
+
+test("--git --history: every commit, exactly the tags inside the history (annotated and lightweight), detached, nothing of the user, nothing else", () => {
+  const { r, remote, src } = historyRepo();
+  const run = sendFrom(r, remote, "--git", "--history");
+  assert.equal(run.code, 0, run.err);
+  assert.equal(git(src, "log", "--oneline").split("\n").length, 3);
+  assert.deepEqual(tags(src), ["ann", "light"], "the tag of the other branch stays home");
+  assert.equal(git(src, "cat-file", "-t", "ann"), "tag", "annotated: a tag object");
+  assert.equal(git(src, "cat-file", "-t", "light"), "commit", "lightweight: a plain reference");
+  assert.match(git(src, "describe", "--tags"), /^ann-1-g[0-9a-f]+$/);
+  assert.equal(git(src, "rev-parse", "HEAD"), git(r, "rev-parse", "HEAD"));
+  assert.throws(() => git(src, "symbolic-ref", "-q", "HEAD"), "detached");
+  assert.equal(git(src, "for-each-ref", "--format=%(refname)").split("\n").filter((x) => !x.startsWith("refs/tags/")).join(""), "", "no branches");
+  assert.equal(git(src, "remote"), "", "no remote");
+  assert.ok(!existsSync(path.join(src, ".git", "hooks")) && !existsSync(path.join(src, ".git", "FETCH_HEAD")) && !existsSync(path.join(src, ".git", "logs")));
+  assert.ok(!readFileSync(path.join(src, ".git/config"), "utf8").includes("user"));
+  for (const { f, b } of gitBytes(src)) if (!f.includes(`${path.sep}objects${path.sep}`)) for (const secret of ["private.example", r]) assert.ok(!b.includes(secret), `${secret} found in ${f}`);
+  assert.ok(!run.calls.some((c) => c.includes("--history")), "nothing of --history is sent to the pod");
+});
+
+test("--commit <older> --history: only the history up to it and the tags inside it; a second call after a new commit moves HEAD and adds it", () => {
+  const { r, remote, src, c2 } = historyRepo();
+  assert.equal(sendFrom(r, remote, "--commit", c2, "--history").code, 0);
+  assert.equal(git(src, "log", "--oneline").split("\n").length, 2);
+  assert.deepEqual(tags(src), ["ann", "light"]);
+  assert.equal(git(src, "rev-parse", "HEAD"), c2);
+  assert.equal(sendFrom(r, remote, "--commit", c2.slice(0, 7) + "", "--history").code, 0);
+  git(r, "tag", "-d", "ann"); assert.equal(sendFrom(r, remote, "--commit", git(r, "rev-list", "--max-parents=0", "HEAD"), "--history").code, 0);
+  assert.equal(git(src, "log", "--oneline").split("\n").length, 1);
+  assert.deepEqual(tags(src), ["light"]);
+  writeFileSync(path.join(r, "b.txt"), "b"); git(r, "add", "-A"); git(r, "commit", "-q", "-m", "four");
+  assert.equal(sendFrom(r, remote, "--git", "--history").code, 0);
+  assert.equal(git(src, "rev-parse", "HEAD"), git(r, "rev-parse", "HEAD"));
+  assert.equal(git(src, "log", "--oneline").split("\n").length, 4);
+});
+
+test("--history: a tag deleted locally is gone from the box at the next call, a tag moved points at the new commit", () => {
+  const { r, remote, src, c1, c2 } = historyRepo();
+  assert.equal(sendFrom(r, remote, "--git", "--history").code, 0);
+  assert.deepEqual(tags(src), ["ann", "light"]);
+  assert.equal(git(src, "rev-parse", "light"), c1);
+  git(r, "tag", "-d", "ann"); git(r, "tag", "-f", "light", c2);
+  assert.equal(sendFrom(r, remote, "--git", "--history").code, 0);
+  assert.deepEqual(tags(src), ["light"]);
+  assert.equal(git(src, "rev-parse", "light"), c2);
+  assert.equal(git(src, "pack-refs", "--all") + git(src, "for-each-ref", "--format=%(refname)"), "refs/tags/light", "packed and loose references alike");
+});
+
+test("--history alone is refused in one line, nothing sent; a shallow source sends what it has", () => {
+  const { r, remote, src } = historyRepo();
+  const a = sendFrom(r, remote, "--history");
+  assert.deepEqual([a.code, a.err.split("\n")[0], a.calls], [2, "box: --history goes with --git or --commit <rev>", []]);
+  const shallow = path.join(root, `git-shallow-${gitN}`);
+  git(root, "clone", "-q", "--depth=2", `file://${r}`, shallow);
+  const run = sendFrom(shallow, remote, "--git", "--history");
+  assert.equal(run.code, 0, run.err);
+  const s2 = srcOf(shallow, remote);
+  assert.equal(git(s2, "log", "--oneline").split("\n").length, 2);
+  assert.equal(git(s2, "rev-parse", "HEAD"), git(shallow, "rev-parse", "HEAD"));
+  void src;
+});
