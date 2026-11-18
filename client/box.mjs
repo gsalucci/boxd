@@ -19,7 +19,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-export const VERSION = "0.4.35";
+export const VERSION = "0.4.36";
 const BOX = /^[a-z0-9][a-z0-9_.-]{0,62}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const MAC = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i;
@@ -507,6 +507,12 @@ function sendGit(toplevel, dest, rev = "HEAD", history = false) {
             if (r.status !== 0)
                 return `git ${a[0]} failed: ${r.stderr.trim().split("\n")[0]}`;
         }
+        // One fixed time for everything under .git (the commit's committer time), so a call that sends the same commit leaves every
+        // time in the box as it was: rsync -a keeps an equal file (--checksum) and sets the same time anyway. Build scripts that watch
+        // .git/HEAD, the index or a reference (cargo:rerun-if-changed) then do not rerun.
+        const when = Number(spawnSync("git", ["show", "-s", "--format=%ct", sha], { cwd: toplevel, encoding: "utf8" }).stdout.trim());
+        for (const e of [".", ...readdirSync(path.join(tmp, ".git"), { recursive: true })])
+            utimesSync(path.join(tmp, ".git", e), when, when);
         const r = spawnSync("rsync", ["-a", "--checksum", "--delete", `${tmp}/.git/`, dest], { stdio: ["inherit", "inherit", "inherit"] });
         return r.status === 0 ? undefined : `rsync exit ${r.status ?? "none"}`;
     }

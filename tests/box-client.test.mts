@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync, execFileSync } from "node:child_process";
-import { chmodSync, closeSync, constants, openSync, mkdtempSync, mkdirSync, readdirSync, symlinkSync, lstatSync, readlinkSync, readFileSync, rmSync, writeFileSync, existsSync, statSync } from "node:fs";
+import { chmodSync, closeSync, constants, openSync, mkdtempSync, mkdirSync, readdirSync, symlinkSync, lstatSync, readlinkSync, readFileSync, rmSync, writeFileSync, existsSync, statSync, utimesSync } from "node:fs";
 import { once } from "node:events";
 import net from "node:net";
 import { tmpdir } from "node:os";
@@ -2062,6 +2062,87 @@ test("--git: refused with --snapshot and with --no-sync, one line each, nothing 
   assert.ok(!c.calls.some((x) => x.startsWith("ssh ") && x.includes(" pod run ")), "no run");
   const outside = path.join(root, "git-outside"); mkdirSync(outside);
   assert.match(runBox(["--git", "true"], { cwd: outside }).err, /box: not inside a git worktree/);
+});
+
+// ---- the repository's times: a call that sends the same commit leaves every time under .git in the box as it was ----
+// The fixed time is the commit's committer time, so the tests assert that absolute value (an old date of the test's own choosing):
+// no sleep, and the old code (which stamps the time of the call) cannot produce it.
+const OLD = 1_000_000_000;
+const gitAt = (cwd: string, when: number, ...a: string[]) => execFileSync("git", a, { cwd, encoding: "utf8", env: { PATH: process.env.PATH ?? "", HOME: home, ...WHO, GIT_COMMITTER_DATE: `${when} +0000`, GIT_AUTHOR_DATE: `${when} +0000` } }).trimEnd();
+function oldRepo(when = OLD) {
+  const n = ++gitN, r = path.join(root, `git-repo-${n}`), remote = path.join(root, `git-remote-${n}`);
+  mkdirSync(r); gitAt(r, when, "init", "-q", "-b", "main");
+  writeFileSync(path.join(r, "a.txt"), "one"); gitAt(r, when, "add", "-A"); gitAt(r, when, "commit", "-q", "-m", "one");
+  return { r, remote, src: srcOf(r, remote) };
+}
+const ms = (src: string, f: string) => statSync(path.join(src, ".git", f)).mtimeMs;
+const WATCHED = ["HEAD", "index", "shallow", "config", "refs", "objects", "."];
+for (const [name, args] of [["--git", ["--git"]], ["--commit HEAD", ["--commit", "HEAD"]], ["--git --history with a tag", ["--git", "--history"]], ["--commit HEAD --history with a tag", ["--commit", "HEAD", "--history"]]] as const) {
+  test(`${name}: a second call on the same commit leaves every time under .git in the box as it was, and it is the commit's committer time`, () => {
+    const { r, remote, src } = oldRepo();
+    const history = args.includes("--history");
+    if (history) gitAt(r, OLD, "tag", "v1");
+    assert.equal(sendFrom(r, remote, ...args).code, 0);
+    const files = [...WATCHED.filter((f) => !history || f !== "shallow"), ...(history ? ["refs/tags/v1"] : [])];
+    const first = files.map((f) => ms(src, f));
+    assert.deepEqual(first, files.map(() => OLD * 1000), "the commit's time, not the time of the call");
+    assert.equal(sendFrom(r, remote, ...args).code, 0);
+    assert.deepEqual(files.map((f) => ms(src, f)), first);
+    // every file and folder under .git, not only the ones named above
+    for (const e of readdirSync(path.join(src, ".git"), { recursive: true }) as string[]) assert.equal(ms(src, e), OLD * 1000, e);
+  });
+}
+
+test("--git: a new commit changes what differs: HEAD has the new hash and the new time; two commits with the same committer date still change HEAD", () => {
+  const { r, remote, src } = oldRepo();
+  assert.equal(sendFrom(r, remote, "--git").code, 0);
+  const first = git(src, "rev-parse", "HEAD");
+  writeFileSync(path.join(r, "b.txt"), "b"); gitAt(r, OLD + 100, "add", "-A"); gitAt(r, OLD + 100, "commit", "-q", "-m", "two");
+  assert.equal(sendFrom(r, remote, "--git").code, 0);
+  const second = git(src, "rev-parse", "HEAD");
+  assert.notEqual(second, first); assert.equal(second, git(r, "rev-parse", "HEAD"));
+  assert.equal(ms(src, "HEAD"), (OLD + 100) * 1000);
+  assert.equal(ms(src, "."), (OLD + 100) * 1000);
+  // a third commit in the same second as the second: HEAD has the same size and time, only its content differs
+  writeFileSync(path.join(r, "c.txt"), "c"); gitAt(r, OLD + 100, "add", "-A"); gitAt(r, OLD + 100, "commit", "-q", "-m", "three");
+  assert.equal(sendFrom(r, remote, "--git").code, 0);
+  assert.equal(git(src, "rev-parse", "HEAD"), git(r, "rev-parse", "HEAD"));
+  assert.notEqual(git(src, "rev-parse", "HEAD"), second);
+  assert.equal(readFileSync(path.join(src, ".git/HEAD"), "utf8").trim(), git(r, "rev-parse", "HEAD"));
+  assert.deepEqual(status(src), [""]);
+});
+
+test("--history: other tags change what arrives, the same tags change nothing", () => {
+  const { r, remote, src } = oldRepo();
+  gitAt(r, OLD, "tag", "v1");
+  assert.equal(sendFrom(r, remote, "--git", "--history").code, 0);
+  const before = ms(src, "refs/tags/v1");
+  gitAt(r, OLD, "tag", "v2");
+  assert.equal(sendFrom(r, remote, "--git", "--history").code, 0);
+  assert.equal(git(src, "tag"), "v1\nv2");
+  assert.equal(ms(src, "refs/tags/v1"), before);
+  gitAt(r, OLD, "tag", "-d", "v1");
+  assert.equal(sendFrom(r, remote, "--git", "--history").code, 0);
+  assert.equal(git(src, "tag"), "v2");
+});
+
+test("--git: with the index and every file of .git dated by the commit, git in the box still answers: clean is clean, a changed file shows in status and diff, also a same-size change made in the box", () => {
+  const { r, remote, src } = oldRepo();
+  assert.equal(sendFrom(r, remote, "--git").code, 0);
+  assert.equal(ms(src, "index"), OLD * 1000);
+  assert.deepEqual(status(src), [""]);
+  assert.equal(git(src, "diff"), "");
+  writeFileSync(path.join(r, "a.txt"), "ONE!"); // newer than the index
+  assert.equal(sendFrom(r, remote, "--git").code, 0);
+  assert.deepEqual(status(src), [" M a.txt"]);
+  assert.match(git(src, "diff"), /^-one$[^+]*^\+ONE!$/m);
+  writeFileSync(path.join(r, "a.txt"), "one");
+  assert.equal(sendFrom(r, remote, "--git").code, 0);
+  assert.deepEqual(status(src), [""]);
+  // a change made in the box after the call, with the file's time older than the index's
+  writeFileSync(path.join(src, "a.txt"), "two");
+  utimesSync(path.join(src, "a.txt"), OLD - 10, OLD - 10);
+  assert.deepEqual(status(src), [" M a.txt"]);
 });
 
 // ---- --commit: the box's source is what a fresh clone at that commit holds (real repositories, the fake ssh, the real rsync) ----

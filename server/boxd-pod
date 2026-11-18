@@ -19,7 +19,7 @@ CGROOT=${BOXD_CGROOT:-/sys/fs/cgroup}
 CGROUP=${BOXD_CGROUP:-$CGROOT/boxd}
 PROC=${BOXD_PROC:-/proc}   # test hook, like BOXD_MEMINFO: where `pod report` finds a box's process and its cgroup
 KVM=${BOXD_KVM:-/dev/kvm}   # test hook: the device a --kvm box gets
-VERSION=0.4.35
+VERSION=0.4.36
 # Keys that may only read, one "<type> <key> [comment]" per line (view_only below); and the largest answer of pod calls and pod log.
 VIEW_KEYS=${BOXD_VIEW_KEYS:-/etc/boxd/view_keys}
 READ_MAX=${BOXD_READ_MAX:-1048576}

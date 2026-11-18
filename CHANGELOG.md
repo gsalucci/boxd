@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.36
+
+- **The files of the repository in the box keep their times between calls on the same commit.** With `--git` or
+  `--commit` the client builds the box's small repository new at every call, and every file under `/job/src/.git`
+  got the time of that call. A build script that watches `.git/HEAD` or `.git/index` (the usual way to embed a
+  version) therefore ran again at every call on an unchanged worktree, and what depends on it was rebuilt. Everything
+  under `.git` now carries the committer time of the commit that is sent, so a second call on the same commit changes
+  nothing there; a new commit, or a tag added or removed with `--history`, changes what really differs. git in the box
+  answers as before (`git status`, `git diff`). Found by a user whose Rust build recompiled one crate at every run.
+
 ## 0.4.35
 
 - **An option before one of box's own words is refused instead of run.** The words of `box` (`drop`, `stop`, `ps`,
