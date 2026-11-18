@@ -85,4 +85,37 @@ printf '{"box":"b","host":"tower","worktree":"%s/gone","missingSince":%s}\n' "$T
 has "worktree gone, host awake" "gone for 3 hours and its box is still recorded (tower.b)" "$(BOXD_STATE=$T/state $W stranded $NOW ' laptop tower')"
 [ -z "$(BOXD_STATE=$T/state $W stranded $NOW ' laptop')" ] && ok "worktree gone, host asleep: not a finding" || bad "asleep host's record is a finding"
 
+# The stall counters: two samples through `sample` with a fake `box` and `ssh`; the second sample's progress line and findings.
+mkdir -p "$T/bin"
+printf '#!/bin/sh\nprintf "tower\\tsleeps\\tawake\\n"\n' > "$T/bin/box"
+printf '#!/bin/sh\ncat "$FAKE_REPORT"\n' > "$T/bin/ssh"
+chmod +x "$T/bin/box" "$T/bin/ssh"
+sample() { # <report file>: one sample of the fake host, summary line then findings
+  FAKE_REPORT=$1 PATH=$T/bin:$PATH HOST_WATCH_DIR=$T/w BOXD_STATE=$T/nostate $W
+  cat "$T/w/state/summary.new"; rm -f "$T/w/state/summary.new"
+}
+words() { host 9000 2 none 28 0 held | sed "s/\$/$1/" | sed 's/boot=5/boot='"${2:-5}"'/'; } # <extra words> [boot]
+words '\tpressure_some_ms=9\tpressure_full_ms=1000\tnet_tx_timeouts=3\tnet_link_changes=7' > "$T/s1"
+words '\tpressure_some_ms=9\tpressure_full_ms=1750\tnet_tx_timeouts=3\tnet_link_changes=8' > "$T/s2"
+words '\tpressure_some_ms=9\tpressure_full_ms=1800\tnet_tx_timeouts=5\tnet_link_changes=8' > "$T/s3"
+words '\tpressure_some_ms=9\tpressure_full_ms=10\tnet_tx_timeouts=9\tnet_link_changes=1' 6 > "$T/s4"
+host 9000 2 none 28 0 held > "$T/old"
+out=$(sample "$T/s1")
+has "first sample: no stall time, the counts as received" "stall_ms=- tx_timeouts=3 link_changes=7 " "$out"
+hasnot "first sample: no transmit finding" "network card" "$out"
+out=$(sample "$T/s2")
+has "stall time is the rise of pressure_full_ms since the previous sample" "stall_ms=750 tx_timeouts=3 link_changes=8 " "$out"
+hasnot "same transmit count: no finding" "network card" "$out"
+out=$(sample "$T/s3")
+has "a rise of transmit timeouts is a warning" "WARN	tower: the network card stalled while sending (transmit timeouts 5, were 3)" "$out"
+has "the stall time still counts on that sample" "stall_ms=50 tx_timeouts=5 " "$out"
+out=$(sample "$T/s4")
+has "after a restart: no stall time" "stall_ms=- tx_timeouts=9 link_changes=1 " "$out"
+hasnot "after a restart: no transmit finding" "network card" "$out"
+has "after a restart: the restart is the finding" "restarted since the last sample" "$out"
+out=$(sample "$T/old")
+has "a report without the new words: dashes" "stall_ms=- tx_timeouts=- link_changes=- " "$out"
+out=$(sample "$T/old")
+has "and again, on the same boot" "stall_ms=- tx_timeouts=- link_changes=- " "$out"
+
 [ "$fails" = 0 ] && echo "ALL OK" || { echo "$fails FAILED"; exit 1; }

@@ -19,7 +19,9 @@ CGROOT=${BOXD_CGROOT:-/sys/fs/cgroup}
 CGROUP=${BOXD_CGROUP:-$CGROOT/boxd}
 PROC=${BOXD_PROC:-/proc}   # test hook, like BOXD_MEMINFO: where `pod report` finds a box's process and its cgroup
 KVM=${BOXD_KVM:-/dev/kvm}   # test hook: the device a --kvm box gets
-VERSION=0.4.37
+ROUTE=${BOXD_ROUTE:-/proc/net/route}   # test hooks: the routing table and the network interface folder `pod report` reads
+NETDIR=${BOXD_NET:-/sys/class/net}
+VERSION=0.4.38
 # Keys that may only read, one "<type> <key> [comment]" per line (view_only below); and the largest answer of pod calls and pod log.
 VIEW_KEYS=${BOXD_VIEW_KEYS:-/etc/boxd/view_keys}
 READ_MAX=${BOXD_READ_MAX:-1048576}
@@ -828,13 +830,32 @@ run_lines() {
     [ -z "$out" ] || printf '%s\n' "$out"
 }
 
+# Counters that only grow, so a later report minus an earlier one says what happened in between: milliseconds memory
+# stalled some then all of the boxes, then the transmit timeouts and the link changes of the card of the default route.
+stall_counters() {
+    local nic q t s=0 n=0 c
+    awk '$1 == "some" || $1 == "full" { for (i = 2; i <= NF; i++) { split($i, a, "="); if (a[1] == "total") v[$1] = int(a[2] / 1000) } }
+         END { printf "%s %s ", (v["some"] == "" ? "-" : v["some"]), (v["full"] == "" ? "-" : v["full"]) }' "$CGROUP/memory.pressure" 2>/dev/null || printf '%s ' - -
+    nic=$(awk '$2 == "00000000" { print $1; exit }' "$ROUTE" 2>/dev/null)
+    if [ -n "$nic" ]; then
+        set +f   # the script runs without globbing; the queues are found by pattern
+        for q in "$NETDIR/$nic"/queues/tx-*/tx_timeout; do
+            t=$(cat "$q" 2>/dev/null); [[ $t =~ ^[0-9]+$ ]] && { s=$((s + t)); n=$((n + 1)); } || { n=0; break; }
+        done
+        set -f
+        c=$(cat "$NETDIR/$nic/carrier_changes" 2>/dev/null)
+    fi
+    [[ ${c:-} =~ ^[0-9]+$ ]] || c="-"
+    [ "$n" -gt 0 ] && printf '%s %s\n' "$s" "$c" || printf '%s %s\n' - "$c"
+}
+
 # The facts of the host, its boxes, their detached runs and the local images, in one answer (docs/pod-contract.md): tab
 # separated words, the first says what the line is, the others are key=value. What cannot be read is a dash. The words
 # `pod status` also has come from it, so the two always agree.
 pod_report() {
     local st k v box image state engine bl mem user size lim j rl busy l5 l15 boot mt ma sw su gmax gcur oom dt du f
     local mpk power=${BOXD_POWER:-off} ic="-" cnt="-" last="-" rat="-" ka=none lock=${BOXD_KEEPAWAKE_LOCK:-/run/boxd-keepawake.lock}
-    local ist=${BOXD_IDLE_STATE:-/run/boxd-idle} vmrows="" runs="" rows used_mb cap_mb
+    local ist=${BOXD_IDLE_STATE:-/run/boxd-idle} vmrows="" runs="" rows used_mb cap_mb psome pfull ntx nlc
     local -a pr
     local -A S
     st=$(pod_status) || exit 125
@@ -846,6 +867,7 @@ pod_report() {
     # memory.pressure: "some avg10=.. avg60=.." then "full ..." -> some10 some60 full10 full60
     read -r -a pr < <(awk '$1 == "some" || $1 == "full" { for (i = 2; i <= NF; i++) { split($i, a, "="); if (a[1] == "avg10") x = a[2]; if (a[1] == "avg60") y = a[2] } printf "%s %s ", x, y } END { print "" }' "$CGROUP/memory.pressure" 2>/dev/null)
     oom=$(awk '$1 == "oom_kill" { print $2 }' "$CGROUP/memory.events" 2>/dev/null)
+    read -r psome pfull ntx nlc < <(stall_counters)
     read -r dt du < <(df --output=size,used "$WORK" 2>/dev/null | tail -n 1)
     [[ ${dt:-} =~ ^[0-9]+$ && ${du:-} =~ ^[0-9]+$ ]] && { dt=$((dt / 1024)); du=$((du / 1024)); } || { dt="-"; du="-"; }
     [ "$power" = on ] || power=off
@@ -856,8 +878,8 @@ pod_report() {
     if [ -e "$lock" ]; then flock -n -x "$lock" true 2>/dev/null && ka=free || ka=held; fi
     printf 'host\tversion=%s\tengines=%s\tcpus=%s\tload1=%s\tload5=%s\tload15=%s\tboot=%s\tmem_total_mb=%s\tmem_avail_mb=%s\tswap_total_mb=%s\tswap_used_mb=%s' \
         "${S[version]}" "${S[engines]}" "${S[cpus]}" "${S[load1]}" "$l5" "$l15" "${boot:--}" "${mt:--}" "${ma:--}" "${sw:--}" "${su:--}"
-    printf '\tgroup_mem_max_mb=%s\tgroup_mem_used_mb=%s\tpressure_some10=%s\tpressure_some60=%s\tpressure_full10=%s\tpressure_full60=%s\toom_kills=%s' \
-        "$gmax" "$gcur" "${pr[0]:--}" "${pr[1]:--}" "${pr[2]:--}" "${pr[3]:--}" "${oom:--}"
+    printf '\tgroup_mem_max_mb=%s\tgroup_mem_used_mb=%s\tpressure_some10=%s\tpressure_some60=%s\tpressure_full10=%s\tpressure_full60=%s\toom_kills=%s\tpressure_some_ms=%s\tpressure_full_ms=%s\tnet_tx_timeouts=%s\tnet_link_changes=%s' \
+        "$gmax" "$gcur" "${pr[0]:--}" "${pr[1]:--}" "${pr[2]:--}" "${pr[3]:--}" "${oom:--}" "$psome" "$pfull" "$ntx" "$nlc"
     printf '\tvm_used=%s\tvm_max=%s\tvm_room=%s\tvm_mem_mb=%s\tbox_mem_mb=%s\tdisk_pct=%s\tdisk_total_mb=%s\tdisk_used_mb=%s\tttl=%s' \
         "${S[vm_used]}" "${S[vm_max]}" "${S[vm_room]}" "$(lim_mb "$VM_LIMITS")" "$(ctr_limit_mb)" "${S[disk_pct]}" "$dt" "$du" "$TTL"
     printf '\tpower=%s\tidle_checks=%s\tidle_count=%s\tidle_last=%s\treset_at=%s\tkeepawake=%s\n' "$power" "$ic" "${cnt:--}" "${last:--}" "$rat" "$ka"

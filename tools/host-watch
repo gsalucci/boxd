@@ -16,7 +16,8 @@
 # What is checked ("Memory budget", "Activity, cleanup and reset", "Host choice", "The collector" of the contract):
 #   distribution  the sizes of the running machines fit the group's cap; no more machines than the ceiling; a placement
 #                 went to the first host in order that had room
-#   memory        the kernel killed a process of the boxes; the group is at its cap; memory pressure
+#   memory        the kernel killed a process of the boxes; the group is at its cap; memory pressure; the network card
+#                 timed out sending (its stall time and link changes are only counted in the progress line)
 #   cleanup       an idle box older than the time limit is still there; a run is "running" in a box that is not;
 #                 the work area is above the eviction level; a host stays awake without work; a box whose worktree
 #                 is gone for hours is still recorded
@@ -105,7 +106,7 @@ settle() { # <counts file>
 
 # One sample of every registered host. Prints the settled findings.
 sample() {
-  local now host kind state rest f prev boot oom versions="" line awake=""
+  local now host kind state rest f prev boot oom versions="" line awake="" pb pp pt pf tx lc stall
   now=$(date +%s); mkdir -p "$D/state"
   {
     while IFS=$'\t' read -r host kind state rest; do
@@ -130,7 +131,15 @@ sample() {
         printf '1\tWARN\t%s:event:boot:%s\t%s: restarted since the last sample\n' "$host" "$boot" "$host"
       fi
       echo "$boot $oom" > "$D/state/$host.oom"
-      printf '%s\t%s\n' "$host" "$(tr '\t' '\n' <<<"$line" | grep -E '^(vm_used|vm_max|group_mem_used_mb|group_mem_max_mb|mem_avail_mb|swap_used_mb|disk_pct|oom_kills|keepawake)=' | tr '\n' ' ')$(grep -c '^box' "$f") boxes, $(grep -c $'^run\t.*state=running' "$f") runs" >> "$D/state/summary.new"
+      pf=$(sed -n 's/^pressure_full_ms=//p' <<<"$line"); tx=$(sed -n 's/^net_tx_timeouts=//p' <<<"$line"); lc=$(sed -n 's/^net_link_changes=//p' <<<"$line")
+      { read -r prev < "$D/state/$host.stall"; } 2>/dev/null || prev=
+      read -r pb pp pt _ <<<"$prev"; stall=-
+      if [ "$pb" = "$boot" ]; then   # the counters start again at a restart, so only the same boot compares
+        [ "$pf" -ge "$pp" ] 2>/dev/null && stall=$((pf - pp))
+        [ "$tx" -gt "$pt" ] 2>/dev/null && printf '1\tWARN\t%s:event:txtimeout:%s\t%s: the network card stalled while sending (transmit timeouts %s, were %s)\n' "$host" "$tx" "$host" "$tx" "$pt"
+      fi
+      echo "$boot ${pf:--} ${tx:--} ${lc:--}" > "$D/state/$host.stall"
+      printf '%s\t%s\n' "$host" "$(tr '\t' '\n' <<<"$line" | grep -E '^(vm_used|vm_max|group_mem_used_mb|group_mem_max_mb|mem_avail_mb|swap_used_mb|disk_pct|oom_kills|keepawake)=' | tr '\n' ' ')stall_ms=$stall tx_timeouts=${tx:--} link_changes=${lc:--} $(grep -c '^box' "$f") boxes, $(grep -c $'^run\t.*state=running' "$f") runs" >> "$D/state/summary.new"
     done < <(box hosts 2>/dev/null)
     # shellcheck disable=SC2086
     [ "$(printf '%s\n' $versions | sort -u | wc -l)" -gt 1 ] && printf '1\tWARN\tversions\tthe hosts run different versions:%s\n' "$versions"

@@ -3362,7 +3362,7 @@
       "command": "pod status",
       "msb": false,
       "exit": 0,
-      "stdout_re": "^version=0\\.4\\.37\tengines=container\tcpus=8\tload1=[0-9]+\\.[0-9]+\tvm_used=0\tvm_max=3\tvm_room=no\tboxes=0\tdisk_pct=37\tmem_free_mb=unknown\timages=\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=-\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096$"
+      "stdout_re": "^version=0\\.4\\.38\tengines=container\tcpus=8\tload1=[0-9]+\\.[0-9]+\tvm_used=0\tvm_max=3\tvm_room=no\tboxes=0\tdisk_pct=37\tmem_free_mb=unknown\timages=\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=-\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096$"
     },
     {
       "name": "pod status: one of three machines running, room for another; boxes counts both engines",
@@ -3384,7 +3384,7 @@
           "state": "stopped"
         }
       },
-      "stdout_re": "^version=0\\.4\\.37\tengines=container,vm\tcpus=8\tload1=[0-9]+\\.[0-9]+\tvm_used=1\tvm_max=3\tvm_room=yes\tboxes=3\tdisk_pct=37\tmem_free_mb=unknown\timages=\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=-\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096$"
+      "stdout_re": "^version=0\\.4\\.38\tengines=container,vm\tcpus=8\tload1=[0-9]+\\.[0-9]+\tvm_used=1\tvm_max=3\tvm_room=yes\tboxes=3\tdisk_pct=37\tmem_free_mb=unknown\timages=\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=-\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096$"
     },
     {
       "name": "pod status: all machines used, no room (vm_room is the server's own answer)",
@@ -3926,19 +3926,25 @@
         "memory.max": "34359738368\n",
         "memory.current": "12884901888\n",
         "memory.stat": "anon 1073741824\nshmem 0\ninactive_file 2147483648\n",
-        "memory.pressure": "some avg10=2.31 avg60=1.12 avg300=0.50 total=123456\nfull avg10=0.40 avg60=0.18 avg300=0.05 total=4567\n",
+        "memory.pressure": "some avg10=2.31 avg60=1.12 avg300=0.50 total=1234567\nfull avg10=0.40 avg60=0.18 avg300=0.05 total=7654321\n",
         "memory.events": "low 0\nhigh 0\nmax 3\noom 1\noom_kill 1\noom_group_kill 0\n"
       },
       "env": {
         "BOXD_MEMINFO": "/work/meminfo",
         "BOXD_POWER": "on",
         "BOXD_IDLE_STATE": "/work/idle",
-        "BOXD_KEEPAWAKE_LOCK": "/work/lock"
+        "BOXD_KEEPAWAKE_LOCK": "/work/lock",
+        "BOXD_ROUTE": "/work/route",
+        "BOXD_NET": "/work/net"
       },
       "work_files": {
         "meminfo": "MemTotal:       32768000 kB\nMemFree:         1000000 kB\nMemAvailable:    9216000 kB\nSwapTotal:       8192000 kB\nSwapFree:        6963200 kB\n",
         "idle/count": "7\n",
         "idle/last": "idle\n",
+        "route": "Iface\tDestination\tGateway\tFlags\neth1\t0000A8C0\t00000000\t0001\neth0\t00000000\t0100A8C0\t0003\n",
+        "net/eth0/queues/tx-0/tx_timeout": "3\n",
+        "net/eth0/queues/tx-1/tx_timeout": "5\n",
+        "net/eth0/carrier_changes": "4\n",
         "lock": "",
         "jobs/a/runs/r1.log": "out\nEXIT 3\n",
         "jobs/a/runs/r2.log": "out\n",
@@ -3948,7 +3954,7 @@
         "jobs/a/.mem-peak": "700",
         "jobs/b/.vm-user": ""
       },
-      "stdout_re": "^host\tversion=0\\.4\\.37\tengines=container,vm\tcpus=8\tload1=[0-9]+\\.[0-9]+\tload5=[0-9]+\\.[0-9]+\tload15=[0-9]+\\.[0-9]+\tboot=[0-9]+\tmem_total_mb=32000\tmem_avail_mb=9000\tswap_total_mb=8000\tswap_used_mb=1200\tgroup_mem_max_mb=32768\tgroup_mem_used_mb=1024\tpressure_some10=2\\.31\tpressure_some60=1\\.12\tpressure_full10=0\\.40\tpressure_full60=0\\.18\toom_kills=1\tvm_used=0\tvm_max=none\tvm_room=yes\tvm_mem_mb=8192\tbox_mem_mb=12288\tdisk_pct=37\tdisk_total_mb=976562\tdisk_used_mb=361328\tttl=1800\tpower=on\tidle_checks=20\tidle_count=7\tidle_last=idle\treset_at=85\tkeepawake=free\nbox\tbox=a\tengine=container\timage=docker\\.io/library/rust:1\tstate=running\tlast_used=0\tuser=no\tsize=-\tmem_limit_mb=12288\tmem_mb=(-|[0-9]+)\tbusy=no\truns=1\tmem_peak_mb=-\nbox\tbox=b\tengine=vm\timage=localhost/toolbox:latest\tstate=stopped\tlast_used=0\tuser=yes\tsize=small\tmem_limit_mb=2048\tmem_mb=-\tbusy=no\truns=0\tmem_peak_mb=2900\nrun\tbox=a\tid=r1\tstate=ended\texit=3\tbytes=11\tchanged=[0-9]+\nrun\tbox=a\tid=r2\tstate=running\texit=-\tbytes=4\tchanged=[0-9]+\nimage\tname=toolbox\tbytes=0\tbuilt=[0-9]+\tvm_loaded=-$",
+      "stdout_re": "^host\tversion=0\\.4\\.38\tengines=container,vm\tcpus=8\tload1=[0-9]+\\.[0-9]+\tload5=[0-9]+\\.[0-9]+\tload15=[0-9]+\\.[0-9]+\tboot=[0-9]+\tmem_total_mb=32000\tmem_avail_mb=9000\tswap_total_mb=8000\tswap_used_mb=1200\tgroup_mem_max_mb=32768\tgroup_mem_used_mb=1024\tpressure_some10=2\\.31\tpressure_some60=1\\.12\tpressure_full10=0\\.40\tpressure_full60=0\\.18\toom_kills=1\tpressure_some_ms=1234\tpressure_full_ms=7654\tnet_tx_timeouts=8\tnet_link_changes=4\tvm_used=0\tvm_max=none\tvm_room=yes\tvm_mem_mb=8192\tbox_mem_mb=12288\tdisk_pct=37\tdisk_total_mb=976562\tdisk_used_mb=361328\tttl=1800\tpower=on\tidle_checks=20\tidle_count=7\tidle_last=idle\treset_at=85\tkeepawake=free\nbox\tbox=a\tengine=container\timage=docker\\.io/library/rust:1\tstate=running\tlast_used=0\tuser=no\tsize=-\tmem_limit_mb=12288\tmem_mb=(-|[0-9]+)\tbusy=no\truns=1\tmem_peak_mb=-\nbox\tbox=b\tengine=vm\timage=localhost/toolbox:latest\tstate=stopped\tlast_used=0\tuser=yes\tsize=small\tmem_limit_mb=2048\tmem_mb=-\tbusy=no\truns=0\tmem_peak_mb=2900\nrun\tbox=a\tid=r1\tstate=ended\texit=3\tbytes=11\tchanged=[0-9]+\nrun\tbox=a\tid=r2\tstate=running\texit=-\tbytes=4\tchanged=[0-9]+\nimage\tname=toolbox\tbytes=0\tbuilt=[0-9]+\tvm_loaded=-$",
       "podman_calls_absent": [
         "^run",
         "^start",
@@ -3979,9 +3985,11 @@
       "exit": 0,
       "env": {
         "BOXD_KEEPAWAKE_LOCK": "/work/no-lock",
+        "BOXD_ROUTE": "/work/no-route",
+        "BOXD_NET": "/work/no-net",
         "BOXD_IDLE_STATE": "/work/no-idle"
       },
-      "stdout_re": "^host\tversion=0\\.4\\.37\tengines=container\tcpus=8\t.*\tgroup_mem_max_mb=-\tgroup_mem_used_mb=-\tpressure_some10=-\tpressure_some60=-\tpressure_full10=-\tpressure_full60=-\toom_kills=-\tvm_used=0\tvm_max=3\tvm_room=no\tvm_mem_mb=8192\tbox_mem_mb=12288\tdisk_pct=37\tdisk_total_mb=976562\tdisk_used_mb=361328\tttl=1800\tpower=off\tidle_checks=-\tidle_count=-\tidle_last=-\treset_at=-\tkeepawake=none$"
+      "stdout_re": "^host\tversion=0\\.4\\.38\tengines=container\tcpus=8\t.*\tgroup_mem_max_mb=-\tgroup_mem_used_mb=-\tpressure_some10=-\tpressure_some60=-\tpressure_full10=-\tpressure_full60=-\toom_kills=-\tpressure_some_ms=-\tpressure_full_ms=-\tnet_tx_timeouts=-\tnet_link_changes=-\tvm_used=0\tvm_max=3\tvm_room=no\tvm_mem_mb=8192\tbox_mem_mb=12288\tdisk_pct=37\tdisk_total_mb=976562\tdisk_used_mb=361328\tttl=1800\tpower=off\tidle_checks=-\tidle_count=-\tidle_last=-\treset_at=-\tkeepawake=none$"
     },
     {
       "name": "pod report lists every running run and, of the ended ones, the three with the greatest ids per box",

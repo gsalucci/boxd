@@ -30,7 +30,9 @@ waiting cannot fix, like a missing image, still exits at once).
 - Image of a private registry: the server holds no registry login. On your own machine, where you are logged in, run
   `box image push [--vm] <ref>` (full reference, an allowed registry), then use `box --image <ref> ...`; nothing is sent when the server already has it.
 - Virtual machine: add `--vm` only when the work needs docker or podman inside, its own kernel, root, or runs untrusted
-  code, and only when the server has virtual machines (otherwise the call is refused with a clear message, exit 125).
+  code, or a sandbox that mounts its own `/proc` (a container box refuses `bwrap --unshare-all --proc /proc` with
+  `bwrap: Can't mount proc on /proc: Operation not permitted`, while plain `bwrap --ro-bind / / true` works there, so
+  probe with the options the sandbox really takes), and only when the server has virtual machines (otherwise the call is refused with a clear message, exit 125).
   Example: `box --vm --image localhost/toolbox docker run --rm hello-world`. In the toolbox image, tools that load TypeScript as a library find its JavaScript interface, version 6, at /opt/typescript-api/node_modules/typescript (`tsc` itself is version 7, which has no library file). Containers stay the default: lighter and
   they reach the server's own network (a virtual machine reaches the public internet only). A box keeps its engine like its image; to switch
   add `--recreate` (files stay). Pick the smallest size that fits with `--size small|medium|large|xlarge` (2, 4, 8 or 12 GB of memory; 2, 4, 4 or 8 processors; no `--size` means large; take xlarge (8 processors, 12 GB) only when the work needs more than 8 GB, because fewer machines fit beside it; the size is kept, another one needs `--recreate`). A new machine starts when the memory the server really uses plus the machine's size fits, so small machines leave room for others; when it does not fit the call is refused (exit 75, no room). Remove a machine box you no longer need. Repeat `--vm`

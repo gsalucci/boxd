@@ -87,7 +87,7 @@ printf '%s\n' \
 
 export PATH="$T/bin:$PATH" FAKE_STATE=$T/state FAKE_VM_STATE=$T/vmstate BOXD_CONF=$T/none.conf BOXD_VIEW_KEYS=$T/none.keys \
   BOXD_WORK=$W BOXD_IMAGES_DIR=$T/images BOXD_CGROOT=$T/cg BOXD_PROC=$T/proc BOXD_MEMINFO=$T/meminfo BOXD_POD_CLEAN=$T/clean \
-  BOXD_POWER=on BOXD_IDLE_STATE=$T/idle BOXD_KEEPAWAKE_LOCK=$T/keepawake.lock HOME=$T
+  BOXD_POWER=on BOXD_IDLE_STATE=$T/idle BOXD_KEEPAWAKE_LOCK=$T/keepawake.lock BOXD_ROUTE=$T/none.route BOXD_NET=$T/none.net HOME=$T
 pod() { SSH_ORIGINAL_COMMAND="$1" bash "$HERE/server/boxd-pod" </dev/null; }
 
 # A run holds the box's lock and the keepawake lock while the report is read. Both fifos are opened read-write once, here, so no

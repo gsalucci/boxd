@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.38
+
+- `pod report`: the host line gains four counters that only grow, so two reports say what happened in between: `pressure_some_ms` and `pressure_full_ms` (milliseconds in which memory stalled some, or all, processes of the boxes) and `net_tx_timeouts` and `net_link_changes` (transmit timeouts and link changes of the network card of the default route). A dash when a value cannot be read.
+- `tools/host-watch`: every progress line shows `stall_ms` (the increase of `pressure_full_ms` since the previous sample), `tx_timeouts` and `link_changes`, and a finding is logged when the transmit timeouts rise: `<host>: the network card stalled while sending (transmit timeouts <new>, were <old>)`. It works unchanged against an older server.
+- Agent guide: a sandbox that mounts its own `/proc` needs a machine box; a container box refuses it.
+
 ## 0.4.37
 
 - **A box that runs an older copy of the shared image says so, once.** A box keeps the image it was made from; a
