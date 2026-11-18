@@ -227,6 +227,20 @@ the file keeps its limit, silently. The real fix is a guest kernel not built sma
       `pod status` and `pod report` never load, and a machine that exists keeps its image until `--recreate`. A box built from the
       agent's Containerfile loads its own archive (`cache/images/built-<box>.tar`) by a forced load and records it, so it loads once.
 
+      **An older copy is told, once.** A `pod run` into a box that exists (running, or stopped and started again; not one this call
+      creates or recreates) whose image is `localhost/<name>` with an archive in the images folder prints one line on standard error
+      before the command runs when the box was made from an older copy than a new box would get now:
+      `boxd-pod: box <box> runs an older copy of localhost/<name> (the image was rebuilt since the box was made); --recreate gives it the new one`.
+      A container box is older when the image id its container was made from (read by the inspect the call makes anyway) differs from
+      the id of the tag now (one `podman image inspect`). A machine box is older when the archive stamp recorded at its creation
+      (`.vm-image` in the box's folder, a copy of the `cache/loaded-vm-<checksum of ref>` record its store was loaded from) differs from
+      the archive's stamp now; a machine made before this rule has no `.vm-image` and gets no line. The current copy (the tag's id, or the
+      stamp) is remembered in `.image-told` in the box's folder, so the line comes once per copy, not at every call; a creation (also
+      `--recreate`) removes both files and writes `.vm-image` again. Never for an image built from the agent's own file
+      (`--image-file`), never for a registry image, never for an image with no archive in the images folder. A check that cannot be made
+      (the inspect fails) prints nothing and the call runs. `pod report` does not carry it: for container boxes it would cost one image
+      inspect per box on every report.
+
       Registry images are pulled by `podman run` (only when the store lacks them) or `msb create` themselves; an image that
       `pod image load` put into a store is therefore used, not pulled again.
 

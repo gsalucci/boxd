@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.37
+
+- **A box that runs an older copy of the shared image says so, once.** A box keeps the image it was made from; a
+  rebuilt `localhost/` image reaches it with `--recreate`, or when the idle rule has removed the box and the next
+  call makes it again. Nothing told the user which of the two a kept box had: a user could not tell whether a tool
+  added to the image was missing from the image or only from the old box. A call into an existing box that was made
+  from an older copy now prints one line on standard error,
+  `boxd-pod: box <box> runs an older copy of localhost/<name> (the image was rebuilt since the box was made); --recreate gives it the new one`,
+  once per box and per rebuild. A container box is judged by the image it was made from against the image the name
+  has now; a machine box by the archive it was made from (recorded from this release on; an older machine says
+  nothing). Never for an image built from the worktree's own file or pulled from a registry.
+
 ## 0.4.36
 
 - **The files of the repository in the box keep their times between calls on the same commit.** With `--git` or

@@ -19,7 +19,7 @@ CGROOT=${BOXD_CGROOT:-/sys/fs/cgroup}
 CGROUP=${BOXD_CGROUP:-$CGROOT/boxd}
 PROC=${BOXD_PROC:-/proc}   # test hook, like BOXD_MEMINFO: where `pod report` finds a box's process and its cgroup
 KVM=${BOXD_KVM:-/dev/kvm}   # test hook: the device a --kvm box gets
-VERSION=0.4.36
+VERSION=0.4.37
 # Keys that may only read, one "<type> <key> [comment]" per line (view_only below); and the largest answer of pod calls and pod log.
 VIEW_KEYS=${BOXD_VIEW_KEYS:-/etc/boxd/view_keys}
 READ_MAX=${BOXD_READ_MAX:-1048576}
@@ -943,11 +943,29 @@ pod_clear() {
     echo cleared
 }
 
+# A box that exists keeps the image it was made from (intended). When the shared image localhost/<name> (an archive in $IMAGES) was
+# rebuilt since, print the copy a new box would get now and return 0; else return 1, also when the check cannot be made.
+# Container box: the id its container was created from ($4, read by the inspect pod_run does anyway) against the id of the tag,
+# one inspect. Machine box: the archive stamp recorded at creation (.vm-image, copied from the store's own record) against the
+# archive's stamp now, no inspect and no hashing.
+image_stale_now() {
+    local name cur
+    case $2 in localhost/*) ;; *) return 1 ;; esac
+    name=${2#localhost/}; name=${name%%:*}
+    [ -r "$IMAGES/$name.tar" ] || return 1
+    if [ "$1" = vm ]; then
+        cur=$(stat -c %s:%Y "$IMAGES/$name.tar" 2>/dev/null) && [ -n "$cur" ] && [ -s "$3/.vm-image" ] && [ "$(cat "$3/.vm-image")" != "$cur" ] || return 1
+    else
+        cur=$(podman image inspect --format '{{.Id}}' "$2" </dev/null 2>/dev/null) && [ -n "$cur" ] && [ -n "$4" ] && [ "$4" != "$cur" ] || return 1
+    fi
+    echo "$cur"
+}
+
 pod_run() {
     local box=${1:-} image="" imgfile="" vm="" container="" user="" cuser="" kvm="" ckvm="" ulabels="" recreate="" snapshot="" run="" b64="" tty="" name J out rc
     local -a envs=()
     local size="" have="" lim="" asked="" pk pick chosen="" used_mb=0 cap_mb=0 max="" box_fit_mb box_why
-    local kengine="" kuser="" kkvm="" kimage="" gmine="" gother="" k v2 newid="" changed="" rebuilt="" full engine=container pc="" vc="" cimg="" cst="" vimg="" vst="" other mine cur st create="" start="" n
+    local kengine="" kuser="" kkvm="" kimage="" gmine="" gother="" k v2 newid="" changed="" rebuilt="" full engine=container cid="" sc="" pc="" vc="" cimg="" cst="" vimg="" vst="" other mine cur st create="" start="" n
     shift
     CALL_T0=${EPOCHREALTIME//[!0-9]/} CALL_BOX=$box CALL_ENGINE=container
     [[ $box =~ $BOX_RE ]] || die "bad box name"
@@ -1021,7 +1039,8 @@ pod_run() {
 
     # The box may exist on either engine; the engine is part of the box, like its image.
     # "<image> <state> map[<label>:<value> ...]": the labels tell whether the box was made with --user.
-    if out=$(podman container inspect --format '{{.Config.Image}} {{.State.Status}} {{.Config.Labels}}' "$name" 2>/dev/null); then
+    if out=$(podman container inspect --format '{{.Image}} {{.Config.Image}} {{.State.Status}} {{.Config.Labels}}' "$name" 2>/dev/null); then
+        cid=${out%% *} out=${out#* }
         pc=1 cimg=${out%% *} cst=${out#* } ulabels=${cst#* } cst=${cst%% *}
         [[ $ulabels == *boxd.user:1* ]] && cuser=1
         [[ $ulabels == *boxd.kvm:1* ]] && ckvm=1
@@ -1207,6 +1226,10 @@ pod_run() {
     if [ -n "$create" ]; then
         if [ -n "$vm" ]; then printf %s "$size" >"$J/.vm-size"; else rm -f "$J/.vm-size"; fi
         if [ -n "$vm" ] && [ -n "$user" ]; then : >"$J/.vm-user"; else rm -f "$J/.vm-user"; fi
+        # The copy of the shared image the box is made from (a machine: the archive stamp its store was loaded from; a container's
+        # id is read from podman later) and the told-once marker start over.
+        rm -f "$J/.image-told" "$J/.vm-image"
+        [ -z "$vm" ] || cp "$WORK/cache/loaded-vm-$(printf %s "$image" | cksum | cut -d' ' -f1)" "$J/.vm-image" 2>/dev/null || true
         if [ -n "$imgfile" ]; then printf %s "$newid" >"$J/.built-id"
         elif [ "$image" != "localhost/built-$box:latest" ]; then rm -f "$J/.built-id"; fi
     fi
@@ -1217,6 +1240,11 @@ pod_run() {
             echo "engine=$engine"; [ -z "$user" ] || echo user=1; [ -z "$kvm" ] || echo kvm=1
             [ "$image" = "$DEFAULT_IMAGE" ] || [ "$image" = "localhost/built-$box:latest" ] || echo "image=$image"
         } >"$J/.kind.new" && mv -f "$J/.kind.new" "$J/.kind"
+    fi
+    # A box this call did not make that runs an older copy of its shared image: said once per copy, one line.
+    if [ -z "$create" ] && [ -n "$mine" ] && [ -z "$imgfile" ] && sc=$(image_stale_now "$engine" "$image" "$J" "$cid") && [ "$sc" != "$(cat "$J/.image-told" 2>/dev/null)" ]; then
+        echo "boxd-pod: box $box runs an older copy of ${image%%:*} (the image was rebuilt since the box was made); --recreate gives it the new one" >&2
+        printf %s "$sc" >"$J/.image-told"
     fi
     exec 9>&-
 

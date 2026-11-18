@@ -22,7 +22,7 @@ waiting cannot fix, like a missing image, still exits at once).
 - Example: `box cargo test -p mycrate`. Gate on the exit code, never on a pipe.
 - No shell: the command is an argument list. Pipes, `&&`, redirects, globs: `box sh -c 'make && make test'`.
 - Image: `--image rust:1.83` (default debian:stable-slim). Registries: the ones the server allows (docker.io and ghcr.io by default; others are refused, exit 125).
-  A box keeps one image; to change it add `--recreate` (files stay). Install extra tools inside (`apt-get install -y ...`).
+  A box keeps one image; to change it add `--recreate` (files stay). When the host's shared image was rebuilt after the box was made, the first call into the box afterwards prints `boxd-pod: box <box> runs an older copy of localhost/<name> ...` once: a tool missing from the box may be only missing from the old copy, and `--recreate` gives the new one. Install extra tools inside (`apt-get install -y ...`).
 - Your own image: put a Containerfile in the worktree and run `box --image-file <path> <command...>` (path relative to the worktree's
   top folder, no `..`; not with `--image`). The server builds it on every call (unchanged builds are fast) and replaces the box by itself
   when the built image changed; files under `/job` stay. A failed build exits 125 with the build output on stderr and the old box stays.

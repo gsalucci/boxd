@@ -31,14 +31,18 @@ case $1 in
         [ -e "$FAKE_STATE/.creating" ] && : > "$FAKE_OVERLAP"
         last "$@"; [ -f "$FAKE_STATE/$n" ] || exit 1
         read -r img st u < "$FAKE_STATE/$n"
+        # the id the container was made from ({{.Image}}): kept at run; a box the test wrote by hand has the tag's id now (never stale)
+        cid=$(cat "$FAKE_STATE/../cid/$n" 2>/dev/null || cat "$FAKE_IMAGES/$(echo "$img" | tr / _)" 2>/dev/null); cid=${cid:-noid}
         l=; case " $u " in *" user "*) l=" boxd.user:1" ;; esac; case " $u " in *" kvm "*) l="$l boxd.kvm:1" ;; esac
         case "$*" in   # pod report asks for the init process id too (FAKE_CPID: the id of the running container's init process)
             *State.Pid*) echo "${FAKE_CPID:-0} map[boxd.box:x$l]" ;;
+            *"{{.Image}} "*) echo "$cid $img $st map[boxd.box:x$l]" ;;
             *) echo "$img $st map[boxd.box:x$l]" ;;
         esac ;;
     run)
         u=; while [ $# -gt 0 ]; do case $1 in --name) name=$2 ;; boxd.user=1) u="$u user" ;; boxd.kvm=1) u="$u kvm" ;; sleep) break ;; esac; img=$1; shift; done
         if mv "$FAKE_BLOCK" "$FAKE_BLOCK.used" 2>/dev/null; then : > "$FAKE_STATE/.creating"; block run-blocked; rm -f "$FAKE_STATE/.creating"; fi
+        mkdir -p "$FAKE_STATE/../cid"; cat "$FAKE_IMAGES/$(echo "$img" | tr / _)" > "$FAKE_STATE/../cid/$name" 2>/dev/null
         echo "$img running${u:+ $u}" > "$FAKE_STATE/$name" ;;
     image)
         case $2 in
@@ -1298,5 +1302,54 @@ exec 6>"$T/e/rel"; exec 6>&-; wait "$lp"
 
 # --clean: the client's sync may also delete what its filter leaves out
 setup; pod "rsync --server -logDtpre.iLsfxCIvu --delete --delete-excluded . jobs/$box/src/"; eq "rsync: --delete-excluded passes" 0 "$rc"
+
+# A box that exists keeps its image; when the shared image was rebuilt since, one line says so, once per copy.
+# Container box: the id its container was made from against the tag's id now. Machine box: the archive stamp recorded at creation against the archive's now.
+older="boxd-pod: box tb runs an older copy of localhost/toolbox (the image was rebuilt since the box was made); --recreate gives it the new one"
+tbrun() { pod "pod run tb $1 -- $B64"; }
+tbsetup() { setup; : > "$BOXD_IMAGES_DIR/toolbox.tar"; touch -d @1700000000 "$BOXD_IMAGES_DIR/toolbox.tar"; echo id1 > "$FAKE_IMAGES/localhost_toolbox:latest"; }
+tbsetup; tbrun "--image localhost/toolbox:latest"
+eq "older image: a box made by this call says nothing about its image" "0|" "$rc|$(grep 'older copy' "$T/e/err")"
+tbrun ""; eq "older image: a box on the tag's current id: no line" "0|" "$rc|$(cat "$T/e/err")"
+echo id2 > "$FAKE_IMAGES/localhost_toolbox:latest"
+tbrun ""; eq "older image: after a rebuild the line, once" "0|$older" "$rc|$(cat "$T/e/err")"
+eq "older image: the marker holds the copy told about" id2 "$(cat "$W/jobs/tb/.image-told")"
+tbrun ""; eq "older image: not again at the next call" "0|" "$rc|$(cat "$T/e/err")"
+echo id3 > "$FAKE_IMAGES/localhost_toolbox:latest"
+tbrun ""; eq "older image: a second rebuild gives the line again" "0|$older" "$rc|$(cat "$T/e/err")"
+tbrun ""; eq "older image: and once only" "" "$(cat "$T/e/err")"
+tbrun "--recreate"; eq "older image: --recreate makes the box from the new copy, no line, marker gone" "0|no" "$rc|$([ -e "$W/jobs/tb/.image-told" ] && echo yes || echo no)"
+grep -q 'older copy' "$T/e/err" && echo "FAIL older image: --recreate printed the line" && fails=$((fails + 1))
+tbrun ""; eq "older image: the recreated box is current" "" "$(cat "$T/e/err")"
+echo id4 > "$FAKE_IMAGES/localhost_toolbox:latest"
+rm -f "$FAKE_STATE/pod-tb"
+tbrun ""; eq "older image: a stopped-and-gone box made again by this call: no line" "" "$(grep 'older copy' "$T/e/err")"
+# a stopped box that is started again is an existing box
+echo id5 > "$FAKE_IMAGES/localhost_toolbox:latest"; sed -i 's/ running/ exited/' "$FAKE_STATE/pod-tb"
+tbrun ""; eq "older image: a stopped box started again says it" "$older" "$(cat "$T/e/err")"
+# the check cannot be made (the tag's inspect fails): no line, the call runs
+tbsetup; tbrun "--image localhost/toolbox:latest"; rm -f "$FAKE_IMAGES/localhost_toolbox:latest"
+tbrun ""; eq "older image: a failing inspect gives no line and the call runs" "0|" "$rc|$(cat "$T/e/err")"
+# images with no archive in the images folder, registry images, images built from the agent's own file: never
+setup; echo id1 > "$FAKE_IMAGES/localhost_toolbox:latest"; tbrun "--image localhost/toolbox:latest"
+echo id2 > "$FAKE_IMAGES/localhost_toolbox:latest"; tbrun ""; eq "older image: a localhost image with no archive: no line" "" "$(cat "$T/e/err")"
+setup; mkdir -p "$W/jobs/tb/src"; printf 'FROM scratch\n' > "$W/jobs/tb/src/Containerfile"
+pod "pod run tb --image-file Containerfile -- $B64"; : > "$BOXD_IMAGES_DIR/built-tb.tar"
+echo id-other > "$FAKE_IMAGES/localhost_built-tb:latest"; pod "pod run tb --image-file Containerfile -- $B64"
+eq "older image: a box from the agent's own file never gets the line" "" "$(grep 'older copy' "$T/e/err")"
+setup; echo id1 > "$FAKE_IMAGES/docker.io_library_debian:stable-slim"; : > "$BOXD_IMAGES_DIR/debian.tar"; tbrun ""
+echo id2 > "$FAKE_IMAGES/docker.io_library_debian:stable-slim"; tbrun ""; eq "older image: a registry image: no line" "" "$(cat "$T/e/err")"
+# machine box
+tbsetup; tbrun "--vm --image localhost/toolbox:latest"
+eq "older image: a machine records the archive stamp it was made from" "0:1700000000" "$(cat "$W/jobs/tb/.vm-image")"
+tbrun ""; eq "older image: a machine on the archive's stamp: no line" "0|" "$rc|$(cat "$T/e/err")"
+touch -d @1700000500 "$BOXD_IMAGES_DIR/toolbox.tar"
+tbrun ""; eq "older image: a machine after the archive changed: the line" "0|$older" "$rc|$(cat "$T/e/err")"
+tbrun ""; eq "older image: a machine: once only" "" "$(cat "$T/e/err")"
+tbrun "--recreate"; eq "older image: a machine made again records the new stamp, marker gone" "0:1700000500|no" "$(cat "$W/jobs/tb/.vm-image")|$([ -e "$W/jobs/tb/.image-told" ] && echo yes || echo no)"
+eq "older image: and says nothing" "" "$(grep 'older copy' "$T/e/err")"
+touch -d @1700000900 "$BOXD_IMAGES_DIR/toolbox.tar"; tbrun ""; eq "older image: a machine, second rebuild: the line again" "$older" "$(cat "$T/e/err")"
+tbsetup; tbrun "--vm --image localhost/toolbox:latest"; rm -f "$W/jobs/tb/.vm-image"; touch -d @1700000500 "$BOXD_IMAGES_DIR/toolbox.tar"
+tbrun ""; eq "older image: a machine with no creation record: no line (never a guess)" "0|" "$rc|$(cat "$T/e/err")"
 
 [ "$fails" -eq 0 ] && echo "ALL OK" || { echo "$fails FAILED"; exit 1; }
