@@ -65,7 +65,7 @@ const shardsFake = `if [ -n "\${FAKE_SHARDS:-}" ]; then
 fi
 `;
 const hostFake = `if [ -n "\${FAKE_LOGDIR:-}" ]; then
-  case "$*" in *" pod log "*) echo x >> "$FAKE_LOGDIR/count"; cat "$FAKE_LOGDIR/$(wc -l < "$FAKE_LOGDIR/count" | tr -d ' ')"; exit "$(cat "$FAKE_LOGDIR/exit" 2>/dev/null || echo 0)";; esac
+  case "$*" in *" pod log "*|*" pod events "*) echo x >> "$FAKE_LOGDIR/count"; cat "$FAKE_LOGDIR/$(wc -l < "$FAKE_LOGDIR/count" | tr -d ' ')"; [ ! -f "$FAKE_LOGDIR/err" ] || cat "$FAKE_LOGDIR/err" >&2; exit "$(cat "$FAKE_LOGDIR/exit" 2>/dev/null || echo 0)";; esac
 fi
 ${shardsFake}if [ -n "\${FAKE_BLOCK_DIR:-}" ]; then
   case "$*" in *" pod run "*)
@@ -949,6 +949,58 @@ test("box log --tail 0 --follow prints nothing old, only what comes in later rou
   const k = logRun(["log", "run-1", "--follow", "--tail", "1"], [`${head(4, 0, 4, "running")}a\nb\n`, `${head(10, 4, 10, "ended", "3")}c\nEXIT 3\n`]);
   assert.equal(k.out, "b\nc\nEXIT 3\n"); // the last old line, then everything after
   assert.equal(k.code, 3);
+});
+
+// box log <run> --events: `pod events` answers one line, events then key=value words; each word is printed on its own line, and the exit code says
+// whether the record covers the whole window of the run (0 yes, 3 no).
+const evWords = (o: Record<string, string> = {}) => "events\t" + Object.entries({ box, id: "run-1", engine: "container", state: "ended", complete: "yes", why: "-", start: "1000", end: "1100", seconds: "100", exit: "0", group_stall_ms: "5", kills: "2", others: "dt,fg", ...o }).map(([k, v]) => `${k}=${v}`).join("\t") + "\n";
+const evLines = (o: Record<string, string> = {}) => evWords(o).trimEnd().split("\t").slice(1).join("\n") + "\n";
+
+test("box log --events: one key=value line per word of the answer, nothing else on standard output, exit 0 when complete, one call", () => {
+  const r = logRun(["log", "run-1", "--events"], [evWords()]);
+  assert.equal(r.out, evLines());
+  assert.deepEqual([r.code, r.err, r.calls], [0, "", [`ssh boxd-test pod events ${box} run-1`]]);
+  assert.ok(r.out.startsWith(`box=${box}\nid=run-1\n`));
+});
+
+test("box log --events with a record that does not cover the window: the lines are printed, the reason goes to standard error, exit 3 (not 125, 75, 2, 1, 129 or 255)", () => {
+  const r = logRun(["log", "run-1", "--events"], [evWords({ complete: "no", why: "host-restarted", group_stall_ms: "-" })]);
+  assert.equal(r.out, evLines({ complete: "no", why: "host-restarted", group_stall_ms: "-" }));
+  assert.equal(r.err, "box: the event record of run run-1 does not cover its window (host-restarted)\n");
+  assert.equal(r.code, 3);
+  for (const why of ["running", "no-start-record", "no-end-record", "counter-unreadable", "calls-log-short"]) {
+    const x = logRun(["log", "run-1", "--events"], [evWords({ complete: "no", why })]);
+    assert.deepEqual([x.code, x.err], [3, `box: the event record of run run-1 does not cover its window (${why})\n`]);
+  }
+});
+
+test("box log --events --pod and --host name the box and the host", () => {
+  const r = logRun(["log", "run-1", "--events", "--pod", "other", "--host", "h2"], [evWords()]);
+  assert.deepEqual(r.calls, ["ssh boxd-h2 pod events other run-1"]);
+});
+
+test("box log --events with --follow, --tail or --state is a usage error (exit 2) and calls nothing", () => {
+  for (const v of [["--follow"], ["--tail", "3"], ["--state"]]) {
+    const r = runBox(["log", "run-1", "--events", ...v]);
+    assert.equal(r.code, 2, v.join(" "));
+    assert.match(r.err, /^box log: --events goes with no other option but --pod and --host\n/);
+    assert.deepEqual(r.calls, []);
+  }
+});
+
+test("box log --events against a server that does not know the word: its refusal as a line about the upgrade, exit 125; an answer that is no record is exit 1", () => {
+  const dir = mkdtempSync(path.join(root, "logdir-"));
+  writeFileSync(path.join(dir, "1"), ""); writeFileSync(path.join(dir, "err"), "boxd-pod: unknown command\n"); writeFileSync(path.join(dir, "exit"), "125");
+  const r = runBox(["log", "run-1", "--events"], { env: { FAKE_LOGDIR: dir } });
+  assert.deepEqual([r.code, r.out, r.err], [125, "", "box: this build server is older than the event record: box log --events needs an upgrade\n"]);
+  const x = logRun(["log", "run-1", "--events"], ["log\tsize=1\n"]);
+  assert.deepEqual([x.code, x.out, x.err], [1, "", "box log: the server's answer is not an event record\n"]);
+  const g = logRun(["log", "run-1", "--events"], [evWords({ complete: "maybe" })]);
+  assert.deepEqual([g.code, g.out], [1, ""]);
+});
+
+test("box --help lists box log --events", () => {
+  assert.match(runBox(["--help"]).out, /box log <run> --events/);
 });
 
 test("box log --tail: a value that is not a whole number from 0 to 100000 is a usage error and calls nothing", () => {

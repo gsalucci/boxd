@@ -106,6 +106,9 @@ waiting cannot fix, like a missing image, still exits at once).
   between calls; `--clean` deletes them first, so the box's source folder is exactly your worktree (use it for measurements).
 - `box log <id> --state` answers "is it still running" in one line (`<id>`, `state=running|ended`, `exit=<code>`, and for an ended run `ended=<UTC time>` and `seconds=<wall seconds>`), without reading the log.
 - `box log <id> --follow --tail 20` answers "how did it end" for a run that has ended (its last 20 lines), and exits with the run's code.
+- `box log <id> --events` after a detached run ended (a paid measurement): the host's own record of what could have disturbed it, one `key=value` per line: memory stall milliseconds and
+  kills for memory (of all boxes, and of this box when it is a container), network card stalls, other boxes busy meanwhile. Void the run by a rule fixed beforehand. Exit 0: the record covers the whole
+  run. Exit 3: it does not (`why` on standard error and in the lines: still running, older server, host restarted, a counter unreadable); never read exit 3 as "nothing happened". Not given: the killed process, kills inside a machine box.
 - `box log <id> --follow` exits 129 when the run ended without an exit code: its box or the server went down under it (reboot, power loss,
   box removed). Nothing restarts such a run. A server never sleeps while a detached run or a call is going.
 - `--no-sync` skips the sync; `--pod <name>` shares one box between worktrees; `box --help` lists everything.

@@ -42,6 +42,7 @@ session and every box is under the total cap. The main sshd (port 22) refuses `b
 | `pod report` | Read only, for the dashboard (see "The reading verbs"): the facts of the host, its boxes, their detached runs and the local image archives, in one answer. |
 | `pod calls [<offset>]` | Read only: the call log from a byte offset, whole lines, in windows of at most 1 048 576 bytes (see "The reading verbs"). |
 | `pod log <box> <run> [<offset>]` | Read only: a detached run's log from a byte offset, the same windows; the box is not started (see "The reading verbs"). |
+| `pod events <box> <run>` | Read only: the host's own record of what could have disturbed a detached run during its window, one line (see "The event record of a detached run"). |
 | `pod help` | Since 0.4.10. Read only, one line per command the server accepts over ssh with a few words each, exit 0; no lock, no stamp, no call log line; allowed for keys that may only read. Extra words: exit 125, `boxd-pod: unknown command`. |
 | anything else | Exit 125, `boxd-pod: unknown command` on stderr (the text stays as it is: the client and the dashboard match it to detect a server older than the command; `pod help` lists the commands). `pod report`, `pod calls` and `pod log` with more words than shown are unknown commands too. |
 
@@ -529,11 +530,62 @@ else `ended`), `exit` (the last line `EXIT <code>`; a dash while running or with
 for the offset, the limit and the missing offset. No such run: exit 125, `boxd-pod: no run <run> in box <box>`. A bad box name or run
 id: exit 125, `boxd-pod: bad box name`, `boxd-pod: bad run id`.
 
+## The event record of a detached run (`pod events`)
+
+For measurements that must be voided by a rule fixed beforehand: after a detached run ended, the host's own record of the events that
+could have disturbed it, read by a script. **A record with a hole never reads as "nothing happened":** `complete=no` and a `why` say
+that it does not cover the whole window of the run, and every word that cannot be told is a dash, never a zero.
+
+**Where the record is kept.** The wrapper of a detached run writes a snapshot of the host's counters when the command starts and again
+when it ended (right after the command returned, before the `EXIT` line), each atomically (a temporary name, then a rename), to
+`$BOXD_WORK/cache/events/<box>/<run>.start` and `<run>.end` (the build account owns `cache`; the work area itself belongs to root). Not in the box folder: that folder is mounted in the box (`/job`, in a container
+and in a machine alike), so anything in it, `runs/` and the dot files included, can be written by the command that is measured.
+`$BOXD_WORK/cache/events/<box>` is mounted nowhere (of `cache` a box sees only `cache/pod`), and the removal of the box (`drop_box`: `pod drop`, retention) removes it with the box folder.
+A snapshot is lines `key=value`: `engine` (`vm` or `container`), `time` (seconds since 1970), `boot` (`btime` of `/proc/stat`, as
+`pod report`), `group_some_ms` and `group_full_ms` (the `some` and `full` totals of the memory pressure of the group of all boxes,
+milliseconds: `pressure_some_ms`, `pressure_full_ms` of `pod report`), `net_tx_timeouts`, `net_link_changes` (as in `pod report`),
+`group_kills` (`oom_kill` of `memory.events` of the group of all boxes: processes killed for memory anywhere below it),
+`group_cap_kills` (`oom` of `memory.events.local` of that group: the times its own limit, the cap of all boxes, called the killer) and, for
+a container box only, `box_some_ms`, `box_full_ms` (the pressure totals of the box's own group, found from its init process as
+`box_mem_mb` is), `box_kills` and `box_limit_kills` (`oom_kill` of its `memory.events` and `oom` of its `memory.events.local`: its own
+limit). A machine box has no group of its own, so those four are `-`; every other value that cannot be read is `-`.
+A run started by a server older than this word has no snapshot.
+
+**`pod events <box> <run>`** validates as `pod log` does (exit 125: `boxd-pod: bad box name`, `boxd-pod: bad run id`, `boxd-pod: no run <run> in box <box>`;
+extra words: `unknown command`). Exit 0 whenever it could answer; the client decides its own exit code from `complete`. One line, tab
+separated: `events`, then these words in this order:
+
+- `box`, `id`: as asked. `engine`: `vm` or `container` (a dash when nothing says).
+- `state`: `running` while the run's process group is alive, else `ended`.
+- `complete`: `yes` or `no`. `why`: `-` when complete, else the first of: `running` (no end record can exist yet), `no-start-record` (a run
+  started by an older server), `no-end-record` (the run ended without writing it: killed outright, host power lost), `host-restarted` (`boot`
+  differs between the two snapshots: the counters started again from zero), `counter-unreadable` (a counter of the group or of the network card is `-` in either snapshot, or is lower at the end than at the start),
+  `calls-log-short` (the first line of the call log is younger than the start of the window, so a foreground call at the start of it
+  cannot be known; `cache/calls.log` is never cut by the server, so this means it was emptied, `boxd-reset all`, or never existed).
+- `start`, `end`: the `time` of the start and of the end snapshot, a dash when missing. `seconds`: the end minus the start, a dash when either is missing.
+- `exit`: the code of the last line `EXIT <code>` of the log, a dash while running or without one (as `pod log`).
+- The end minus the start, each a dash when either snapshot has a dash there (and every one after `host-restarted`, `running`, `no-start-record`,
+  `no-end-record`): `group_stall_ms` (`group_full_ms`: milliseconds in which every runnable task of the boxes waited for memory),
+  `group_stall_some_ms` (`group_some_ms`: milliseconds in which at least one did), `kills` (`group_kills`), `kills_by_cap` (`group_cap_kills`),
+  `box_stall_ms`, `box_stall_some_ms`, `box_kills`, `box_limit_kills` (the box's own, `-` for a machine box; a container's own group that
+  could not be read, for example because the box was already gone at the end, gives dashes and does not make the record incomplete),
+  `net_tx_timeouts` (times the network card stalled while sending), `net_link_changes` (times its link went up or down).
+- `others`: the names of the OTHER boxes that were busy at any moment of the window, sorted, comma separated, `-` for none and when the
+  window is not known. Three sources: foreground calls of `cache/calls.log` (a line whose start and start plus duration touch the window; the
+  lines of this box and the lines whose exit column is `detached`, which are only the launch, do not count); the detached runs of other boxes
+  (from the `time` of its start snapshot, or the log file's creation time when it has none, to the log's last modification time when it ended and to now
+  while it runs); and a box that holds its `.running` lock now with a `.last-used` stamp not after the end of the window (a foreground call
+  in progress is not in the call log yet).
+
+What is NOT given: the name of the killed process; the times of network stalls (counts only); kills made by the guest kernel inside a
+machine box (they show only in that run's log, `GUEST_KILLS`); a stall of one machine, because all machines of the host sit in one
+memory group (only the whole group of boxes has a stall counter and a kill counter); what the other busy boxes did.
+
 **Keys that may only read.** The build sshd's settings (`/etc/boxd/sshd_config`) carry `ExposeAuthInfo yes`, so that sshd writes the
 login's authentication to a file named by `SSH_USER_AUTH` (a line `publickey <type> <key>`) and `boxd-pod` can tell which key logged in.
 `/etc/boxd/view_keys` (the hook `BOXD_VIEW_KEYS`) lists keys, one `<type> <key> [comment]` per line, `#` starts a comment; the file must
 be readable by the build account (mode 644: public keys are not secret). A login with a listed key (type and key text must match
-exactly) may run `pod status`, `pod list`, `pod ps`, `pod report`, `pod calls`, `pod log` and `pod help`; everything else, the rsync passthrough
+exactly) may run `pod status`, `pod list`, `pod ps`, `pod report`, `pod calls`, `pod log`, `pod events` and `pod help`; everything else, the rsync passthrough
 and unknown commands included, exits 125 with `boxd-pod: this key may only read` before anything is touched or logged. Other keys keep
 every command. Fails closed: when the list has entries and sshd did not name a public key that logged in (an old settings file
 without `ExposeAuthInfo`, or a login that is not by key), every command of every key is refused with `boxd-pod: view keys are set but
@@ -847,6 +899,8 @@ characters removed and 120 characters at most; `-` when the log has none. With n
 (before any host note), exit 0.
 
 `box log <run> --state` prints no log, only one line `<run>`, `state=running|ended`, `exit=<code>` (a dash while running or without a code), tab separated, from the header of one `pod log` call, and exits 0. For an ended run the line ends with `ended=<time>` (UTC, like `2026-11-16T17:48:47Z`) and, when the server sent a valid `seconds`, `seconds=<n>` (the run's wall seconds); only digits are believed, and a running run or an older server gives the line without them.
+
+`box log <run> --events [--pod <name>] [--host <name>]` asks `pod events <box> <run>` and prints each word of the answer after `events` on its own line as `key=value`, nothing else on standard output. Exit 0 when `complete=yes`. When `complete=no` it still prints every line, writes `box: the event record of run <run> does not cover its window (<why>)` to standard error and exits **3**: not 125 (the server refused), 75 (no room), 2 (usage), 1 (the answer is not an event record), 129 (ended from outside) or 255 (ssh failed), and not a code this call can take from a command, since it runs none. `--events` excludes `--follow`, `--tail` and `--state` (exit 2, `box log: --events goes with no other option but --pod and --host`). A server older than the word answers 125 `unknown command`: the client prints `box: this build server is older than the event record: box log --events needs an upgrade` and exits 125.
 
 `box log <run> [--pod <name>] [--host <name>] [--follow] [--tail <n>]` reads a detached run's log with `pod log <box> <run> <offset>` (the box of
 this worktree, or `--pod`, on the host this worktree is placed on, or `--host`; no choosing, no sync, the box is neither started nor

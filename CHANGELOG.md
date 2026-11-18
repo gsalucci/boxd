@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.40
+
+- The event record of a detached run (0.4.39) was never written on a real host: its folder was to be made at the top of the work area, which belongs to root, not to the build account. The records now go to `cache/events/<box>` in the work area, which the build account owns and no box sees. With 0.4.39 every record read `complete=no`, `why=no-start-record`, never a false "nothing happened".
+
+## 0.4.39
+
+- The event record of a detached run. A run started with `--detach` now leaves on the server, outside every folder the box can write, the host's counters at its start and at its end. `box log <run> --events` (server word `pod events <box> <run>`) prints what happened in between, one `key=value` per line: the window (`start`, `end`, `seconds`), memory stall time of all boxes and of the box itself, kills for memory split by whose limit called the killer (`kills`, `kills_by_cap`, `box_kills`, `box_limit_kills`), transmit timeouts and link changes of the host's network card, and the other boxes that were busy in the window (`others`).
+- A record that does not cover the whole window never reads as "nothing happened": `complete=no` with the reason in `why` (`running`, `no-start-record`, `no-end-record`, `host-restarted`, `counter-unreadable`, `calls-log-short`), and `box log --events` exits 3.
+- Limits, stated in the contract: a machine box has no memory group of its own, so its box words are dashes and only the figures of all boxes together apply; no name of a killed process, no times of network stalls, nothing about kills made inside a machine by its own kernel.
+- The record is removed with its box.
+
 ## 0.4.38
 
 - `pod report`: the host line gains four counters that only grow, so two reports say what happened in between: `pressure_some_ms` and `pressure_full_ms` (milliseconds in which memory stalled some, or all, processes of the boxes) and `net_tx_timeouts` and `net_link_changes` (transmit timeouts and link changes of the network card of the default route). A dash when a value cannot be read.

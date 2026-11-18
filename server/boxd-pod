@@ -21,7 +21,7 @@ PROC=${BOXD_PROC:-/proc}   # test hook, like BOXD_MEMINFO: where `pod report` fi
 KVM=${BOXD_KVM:-/dev/kvm}   # test hook: the device a --kvm box gets
 ROUTE=${BOXD_ROUTE:-/proc/net/route}   # test hooks: the routing table and the network interface folder `pod report` reads
 NETDIR=${BOXD_NET:-/sys/class/net}
-VERSION=0.4.38
+VERSION=0.4.40
 # Keys that may only read, one "<type> <key> [comment]" per line (view_only below); and the largest answer of pod calls and pod log.
 VIEW_KEYS=${BOXD_VIEW_KEYS:-/etc/boxd/view_keys}
 READ_MAX=${BOXD_READ_MAX:-1048576}
@@ -559,6 +559,7 @@ drop_box() {
         mb=$(podman unshare du -smx -- "$J" </dev/null 2>/dev/null 9>&- | cut -f1) || mb=
         [[ $mb =~ ^[0-9]+$ ]] || mb=
         podman unshare rm -rf -- "$J" </dev/null 9>&- || exit 1
+        rm -rf -- "$WORK/cache/events/$box"   # the event records of its runs (outside the folder the box writes)
         # The image built from the box's Containerfile has no other user (an image that is not there is no error).
         podman rmi "localhost/built-$box:latest" </dev/null >/dev/null 2>&1 9>&-
         ! have_msb || vmx image rm "localhost/built-$box:latest" </dev/null >/dev/null 2>&1 9>&-
@@ -792,6 +793,71 @@ pod_log() {
     win_out "$f"
 }
 
+# pod events <box> <run>: the event record of a detached run (docs/pod-contract.md, "The event record of a detached run"), one line.
+# snap_read <file> <array>: the key=value lines of a snapshot into the associative array; fails when it has no time.
+snap_read() {
+    local -n a=$2; local k v
+    a=()
+    [ -f "$1" ] || return 1
+    while IFS== read -r k v; do a[$k]=$v; done <"$1"
+    [[ ${a[time]:-} =~ ^[0-9]+$ ]]
+}
+pod_events() {
+    local box=${1:-} id=${2:-} f ev st=ended ex=- why=- eng=- s=- e=- sec=- k b i l first=- cn now oth=- os oe hs= he= full=yes
+    local -A S=() E=() X=() O=() D=()
+    [[ $box =~ $BOX_RE ]] || die "bad box name"
+    [[ $id =~ $RUN_RE ]] || die "bad run id"
+    f=$WORK/jobs/$box/runs/$id.log
+    [ -f "$f" ] && [ ! -L "$f" ] || die "no run $id in box $box"
+    ev=$WORK/cache/events/$box/$id
+    if run_alive "${f%.log}.pid"; then st=running; else ex=$(run_exit "$f"); fi
+    snap_read "$ev.start" S && hs=1 && s=${S[time]}
+    snap_read "$ev.end" E && he=1 && e=${E[time]}
+    [ -n "$hs" ] && [ -n "$he" ] && sec=$((e - s))
+    # The call log: the engine of this run (from its launch line, when no snapshot names it) and, once the window is known, the foreground calls in it.
+    # A call is logged when it ends, so the first line tells whether the log reaches back to the window's start.
+    while read -r k b; do case $k in n) O[$b]=1 ;; first) first=$b ;; eng) cn=$b ;; esac; done < <(awk -F'\t' -v me="$box" -v id="$id" -v s="$s" -v e="$e" '
+        $1 !~ /^[0-9]+$/ { next }
+        !f { f = 1; print "first", int($1 / 1000000) }
+        $2 == me && $8 == id { print "eng", $3 }
+        $2 != me && $5 != "detached" && s != "-" && e != "-" { b = $1 / 1000000; if (b <= e && b + $6 / 1000 >= s) print "n", $2 }' "$WORK/cache/calls.log" 2>/dev/null)
+    eng=${S[engine]:-${E[engine]:-${cn:--}}}; [[ $eng =~ ^(vm|container)$ ]] || eng=-
+    if [ "$st" = running ]; then why=running
+    elif [ -z "$hs" ]; then why=no-start-record
+    elif [ -z "$he" ]; then why=no-end-record
+    elif [ "${S[boot]:--}" != "${E[boot]:--}" ]; then why=host-restarted
+    else
+        # The network words count too: a dash there must not pass as "nothing happened". A counter that went down (another card took the default route) is no reading either.
+        for k in group_some_ms group_full_ms group_kills group_cap_kills net_tx_timeouts net_link_changes; do
+            [[ ${S[$k]:-} =~ ^[0-9]+$ && ${E[$k]:-} =~ ^[0-9]+$ ]] && [ "${E[$k]}" -ge "${S[$k]}" ] || { why=counter-unreadable; break; }
+        done
+    fi
+    if [ -n "$hs" ] && [ -n "$he" ]; then
+        # The detached runs of the other boxes (from the start record, else the log's birth, to the log's last write, or now while it runs).
+        now=$(date +%s)
+        while IFS= read -r l; do
+            b=${l#"$WORK/jobs/"}; b=${b%%/*}; i=${l##*/}; i=${i%.log}
+            [[ $b =~ $BOX_RE && $i =~ $RUN_RE ]] && [ "$b" != "$box" ] && [ "$i" != dockerd ] || continue
+            if run_alive "${l%.log}.pid"; then oe=$now; else oe=$(stat -c %Y "$l" 2>/dev/null) || continue; fi
+            if snap_read "$WORK/cache/events/$b/$i.start" X; then os=${X[time]}; else os=$(stat -c %W "$l" 2>/dev/null); [[ $os =~ ^[1-9][0-9]*$ ]] || os=0; fi   # no birth time: from the beginning, so the box is listed rather than missed
+            [ "$os" -le "$e" ] && [ "$oe" -ge "$s" ] && O[$b]=1
+        done < <(find "$WORK/jobs" -mindepth 3 -maxdepth 3 -path '*/runs/*.log' -type f 2>/dev/null)
+        # A box that holds its run lock now and was stamped (a call begins with the stamp) no later than the window's end: a foreground call still going, not yet in the call log.
+        while IFS= read -r b; do [[ $b =~ $BOX_RE && $b != "$box" ]] && box_busy "$b" && [ "$(stamp_of "$b")" -le "$e" ] && O[$b]=1; done < <(find "$WORK/jobs" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null)
+        [ "$why" != - ] || { [[ $first =~ ^[0-9]+$ ]] && [ "$first" -le "$s" ] || why=calls-log-short; }
+        [ ${#O[@]} -eq 0 ] || oth=$(printf '%s\n' "${!O[@]}" | sort | paste -sd,)
+    fi
+    # The end minus the start; a dash when either is not a number, and for every word after a restart (the counters began again).
+    for k in group_full_ms group_some_ms group_kills group_cap_kills box_full_ms box_some_ms box_kills box_limit_kills net_tx_timeouts net_link_changes; do
+        D[$k]=-
+        [ -n "$hs" ] && [ -n "$he" ] && [ "$why" != host-restarted ] && [[ ${S[$k]:-} =~ ^[0-9]+$ && ${E[$k]:-} =~ ^[0-9]+$ ]] && [ "${E[$k]}" -ge "${S[$k]}" ] && D[$k]=$((E[$k] - S[$k]))
+    done
+    [ "$why" = - ] || full=no
+    printf 'events\tbox=%s\tid=%s\tengine=%s\tstate=%s\tcomplete=%s\twhy=%s\tstart=%s\tend=%s\tseconds=%s\texit=%s' "$box" "$id" "$eng" "$st" "$full" "$why" "$s" "$e" "$sec" "$ex"
+    printf '\tgroup_stall_ms=%s\tgroup_stall_some_ms=%s\tkills=%s\tkills_by_cap=%s\tbox_stall_ms=%s\tbox_stall_some_ms=%s\tbox_kills=%s\tbox_limit_kills=%s\tnet_tx_timeouts=%s\tnet_link_changes=%s\tothers=%s\n' \
+        "${D[group_full_ms]}" "${D[group_some_ms]}" "${D[group_kills]}" "${D[group_cap_kills]}" "${D[box_full_ms]}" "${D[box_some_ms]}" "${D[box_kills]}" "${D[box_limit_kills]}" "${D[net_tx_timeouts]}" "${D[net_link_changes]}" "$oth"
+}
+
 # Megabytes a running box uses, a dash when unreadable. Container: memory.current of the cgroup of its init process ($1 is
 # its pid); with "used" as $2 the figure of vm_mem instead (anonymous, shared and swapped, no file cache), which admission
 # counts. Machine: resident memory of its machine process.
@@ -832,10 +898,14 @@ run_lines() {
 
 # Counters that only grow, so a later report minus an earlier one says what happened in between: milliseconds memory
 # stalled some then all of the boxes, then the transmit timeouts and the link changes of the card of the default route.
+# pressure_ms <cgroup folder>: "<some ms> <full ms> " (no newline) of its memory.pressure totals, dashes when unreadable.
+pressure_ms() {
+    awk '$1 == "some" || $1 == "full" { for (i = 2; i <= NF; i++) { split($i, a, "="); if (a[1] == "total") v[$1] = int(a[2] / 1000) } }
+         END { printf "%s %s ", (v["some"] == "" ? "-" : v["some"]), (v["full"] == "" ? "-" : v["full"]) }' "$1/memory.pressure" 2>/dev/null || printf '%s ' - -
+}
 stall_counters() {
     local nic q t s=0 n=0 c
-    awk '$1 == "some" || $1 == "full" { for (i = 2; i <= NF; i++) { split($i, a, "="); if (a[1] == "total") v[$1] = int(a[2] / 1000) } }
-         END { printf "%s %s ", (v["some"] == "" ? "-" : v["some"]), (v["full"] == "" ? "-" : v["full"]) }' "$CGROUP/memory.pressure" 2>/dev/null || printf '%s ' - -
+    pressure_ms "$CGROUP"
     nic=$(awk '$2 == "00000000" { print $1; exit }' "$ROUTE" 2>/dev/null)
     if [ -n "$nic" ]; then
         set +f   # the script runs without globbing; the queues are found by pattern
@@ -848,6 +918,26 @@ stall_counters() {
     [[ ${c:-} =~ ^[0-9]+$ ]] || c="-"
     [ "$n" -gt 0 ] && printf '%s %s\n' "$s" "$c" || printf '%s %s\n' - "$c"
 }
+
+# event_count <events file> <key>: the number after <key> in a cgroup events file, a dash when the file or the key is not there.
+event_count() { [ -r "$1" ] && awk -v k="$2" '$1 == k && $2 ~ /^[0-9]+$/ { print $2; f = 1 } END { if (!f) print "-" }' "$1" || echo -; }
+# events_snapshot <box> <vm|container>: what `pod events` differences, one key=value line each, a dash when unreadable (docs/pod-contract.md).
+# All counters only grow, so the end minus the start is what happened in between. A machine has no group of its own: every box word is a dash.
+events_snapshot() {
+    local some full ntx nlc bl pid c g="" bs=- bf=- bk=- bc=- boot
+    read -r some full ntx nlc < <(stall_counters)
+    if [ "$2" != vm ]; then
+        bl=$(podman container inspect --format '{{.State.Pid}} {{.Config.Labels}}' "pod-$1" </dev/null 2>/dev/null); pid=${bl%% *}
+        [[ $pid =~ ^[1-9][0-9]*$ ]] && c=$(sed -n 's/^0:://p' "$PROC/$pid/cgroup" 2>/dev/null) && [ -n "$c" ] && g=$CGROOT$c
+        [ -z "$g" ] || { read -r bs bf < <(pressure_ms "$g"); bk=$(event_count "$g/memory.events" oom_kill); bc=$(event_count "$g/memory.events.local" oom); }
+    fi
+    boot=$(awk '$1 == "btime" { print $2 }' /proc/stat)
+    printf 'engine=%s\ntime=%s\nboot=%s\ngroup_some_ms=%s\ngroup_full_ms=%s\nnet_tx_timeouts=%s\nnet_link_changes=%s\ngroup_kills=%s\ngroup_cap_kills=%s\n' \
+        "$2" "$(date +%s)" "${boot:--}" "$some" "$full" "$ntx" "$nlc" "$(event_count "$CGROUP/memory.events" oom_kill)" "$(event_count "$CGROUP/memory.events.local" oom)"
+    printf 'box_some_ms=%s\nbox_full_ms=%s\nbox_kills=%s\nbox_limit_kills=%s\n' "$bs" "$bf" "$bk" "$bc"
+}
+# events_write <file> <box> <vm|container>: the snapshot under a temporary name, then renamed, so a reader never sees half of it.
+events_write() { mkdir -p "${1%/*}" && events_snapshot "$2" "$3" >"$1.new" && mv -f "$1.new" "$1"; }
 
 # The facts of the host, its boxes, their detached runs and the local images, in one answer (docs/pod-contract.md): tab
 # separated words, the first says what the line is, the others are key=value. What cannot be read is a dash. The words
@@ -1318,16 +1408,20 @@ pod_run() {
         [ -z "$vm" ] || eng+=(sh -c "$GUEST_KILLS" _)   # detached runs only: a foreground call has no log to hold the lines
         # The wrapper's own words are fixed (with this script's functions for the note of a machine that ended); the client's
         # words travel as arguments only. The shared lock on .running tells reap this box is busy.
-        setsid bash -c "$(declare -f vm_alive oom_kills vm_end_note ctr_end_note)"'
-            j=$1; log=$2; CGROUP=$3; sb=$4; bx=$5; shift 5
+        # The event record (pod events) goes to $WORK/cache/events, which no mount of the box shows: the box folder is mounted whole.
+        CGROOT=$CGROOT PROC=$PROC ROUTE=$ROUTE NETDIR=$NETDIR setsid bash -c "$(declare -f vm_alive oom_kills vm_end_note ctr_end_note stall_counters pressure_ms event_count events_snapshot events_write)"'
+            j=$1; log=$2; CGROUP=$3; sb=$4; bx=$5; ev=$6; shift 6
             echo $$ > "${log%.log}.pid"
             k0=$(oom_kills)
+            eg=container; [ -z "$sb" ] || eg=vm
+            rm -f "$ev.end"; events_write "$ev.start" "$bx" "$eg"
             boxd-keepawake flock -s "$j/.running" "$@" >"$log" 2>&1
             rc=$?
+            events_write "$ev.end" "$bx" "$eg"
             if [ -n "$sb" ]; then vm_end_note "$sb" "$bx" "$k0"; else ctr_end_note "$bx" "$k0" "$rc"; fi >>"$log"
             touch "$j/.last-used"
             rm -f "${log%.log}.pid"
-            echo "EXIT $rc" >>"$log"' _ "$J" "$J/runs/$run.log" "$CGROUP" "${vm:+$name}" "$box" "${eng[@]}" "${argv[@]}" \
+            echo "EXIT $rc" >>"$log"' _ "$J" "$J/runs/$run.log" "$CGROUP" "${vm:+$name}" "$box" "$WORK/cache/events/$box/$run" "${eng[@]}" "${argv[@]}" \
             </dev/null >/dev/null 2>&1 &
         echo "$run"
         CALL_RUN=$run
@@ -1452,6 +1546,7 @@ pod status             one line of host facts
 pod report             host, boxes, runs and images in one answer
 pod calls [offset]     the call log
 pod log <box> <run> [offset]         output of a detached run
+pod events <box> <run>               what could have disturbed a detached run
 pod forward <box> <port>             connect to a port inside a box
 pod image ...          manage local images
 pod help               this list
@@ -1464,7 +1559,7 @@ if [ -n "${SSH_ORIGINAL_COMMAND:-}" ]; then
     [[ $cmd =~ $LINE_RE ]] || die "unknown command"
     read -ra W <<<"$cmd"
     if [ -n "$ro" ]; then   # a key that may only read: the reading verbs, nothing else (not even the rsync passthrough)
-        case "${W[0]} ${W[1]:-}" in "pod status"|"pod list"|"pod ps"|"pod report"|"pod calls"|"pod log"|"pod help") ;; *) die "this key may only read" ;; esac
+        case "${W[0]} ${W[1]:-}" in "pod status"|"pod list"|"pod ps"|"pod report"|"pod calls"|"pod log"|"pod events"|"pod help") ;; *) die "this key may only read" ;; esac
     fi
     if [ "${W[0]}" = rsync ] && [ "${W[1]:-}" = --server ]; then
         # Relative paths in the sync land under the work area, so the client never needs to know where it is.
@@ -1506,6 +1601,7 @@ if [ -n "${SSH_ORIGINAL_COMMAND:-}" ]; then
         report) [ ${#W[@]} -eq 2 ] || die "unknown command"; pod_report ;;
         calls) [ ${#W[@]} -le 3 ] || die "unknown command"; pod_calls "${W[2]:-}" ;;
         log) [ ${#W[@]} -ge 4 ] && [ ${#W[@]} -le 5 ] || die "unknown command"; pod_log "${W[@]:2}" ;;
+        events) [ ${#W[@]} -eq 4 ] || die "unknown command"; pod_events "${W[@]:2}" ;;
         forward) [ ${#W[@]} -eq 4 ] || die "unknown command"; pod_forward "${W[2]}" "${W[3]}" ;;
         image) pod_image "${W[@]:2}" ;;
         help) [ ${#W[@]} -eq 2 ] || die "unknown command"; pod_help ;;

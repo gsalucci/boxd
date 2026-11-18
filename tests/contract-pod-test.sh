@@ -283,6 +283,8 @@ for ((i = 0; i < n; i++)); do
         [ -n "$f" ] || continue
         mkdir -p "$W/$(dirname "$f")"; jq -j --arg f "$f" '.work_files[$f]' <<<"$c" > "$W/$f"
     done < <(j '.work_files // {} | keys[]')
+    # mtimes: path under /work to epoch seconds, the modification time after the files are written (a run that ended in the past)
+    while IFS= read -r f; do [ -n "$f" ] && touch -d "@$(jq -r --arg f "$f" '.mtimes[$f]' <<<"$c")" "${f/\/work/$W}"; done < <(j '.mtimes // {} | keys[]')
     pod "$(j .command | paths)"
     want=$(j .exit); eq "$name: exit code" "$want" "$rc"
     if [ "$(j 'has("stdout")')" = true ]; then eq "$name: stdout" "$(j .stdout)" "$(cat "$T/e/out")"; fi
@@ -1081,7 +1083,7 @@ KEYA=AAAAC3NzaC1lZDI1NTE5AAAAIviewviewviewviewviewviewviewviewviewviewview
 setup; printf '# none yet\n\n' > "$W/view_keys"; printf 'publickey ssh-ed25519 %s\n' "$KEYA" > "$W/auth"
 CASE_ENV=(BOXD_VIEW_KEYS="$W/view_keys" SSH_USER_AUTH="$W/auth"); pod "pod list"; eq "view keys: a list with comments only limits nobody" 0 "$rc"
 printf 'ssh-ed25519 %s dashboard\n' "$KEYA" > "$W/view_keys"
-for v in "pod status" "pod list" "pod report" "pod calls" "pod calls 0" "pod log boxd-2889387319 r1 0" "pod ps nobox"; do
+for v in "pod status" "pod list" "pod report" "pod calls" "pod calls 0" "pod log boxd-2889387319 r1 0" "pod events boxd-2889387319 r1" "pod ps nobox"; do
     pod "$v"; eq "view keys: '$v' is not refused for being a write" 0 "$(grep -c 'may only read' "$T/e/err")"
 done
 for v in "pod clear" "pod reap" "pod image has container docker.io/library/busybox:stable 0123456789ab" "pod run x --detach r1 -- $B64" "podman ps" "ls"; do
@@ -1351,5 +1353,64 @@ eq "older image: and says nothing" "" "$(grep 'older copy' "$T/e/err")"
 touch -d @1700000900 "$BOXD_IMAGES_DIR/toolbox.tar"; tbrun ""; eq "older image: a machine, second rebuild: the line again" "$older" "$(cat "$T/e/err")"
 tbsetup; tbrun "--vm --image localhost/toolbox:latest"; rm -f "$W/jobs/tb/.vm-image"; touch -d @1700000500 "$BOXD_IMAGES_DIR/toolbox.tar"
 tbrun ""; eq "older image: a machine with no creation record: no line (never a guess)" "0|" "$rc|$(cat "$T/e/err")"
+
+# pod events: the snapshots a real detached run writes (docs/pod-contract.md, "The event record of a detached run"). The build group
+# and the box's own group (found from the init process of the container: FAKE_CPID, BOXD_PROC) hold different numbers, so a mix-up shows.
+evsetup() {
+    setup; mkdir -p "$BOXD_CGROOT/boxd" "$BOXD_CGROOT/box.scope" "$T/e/proc/4242"
+    printf 'some avg10=0.00 avg60=0.00 avg300=0.00 total=2500000\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=1200000\n' > "$BOXD_CGROOT/boxd/memory.pressure"
+    printf 'oom 0\noom_kill 3\n' > "$BOXD_CGROOT/boxd/memory.events"; printf 'oom 2\noom_kill 1\n' > "$BOXD_CGROOT/boxd/memory.events.local"
+    printf 'some avg10=0.00 avg60=0.00 avg300=0.00 total=700000\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=300000\n' > "$BOXD_CGROOT/box.scope/memory.pressure"
+    printf 'oom 0\noom_kill 5\n' > "$BOXD_CGROOT/box.scope/memory.events"; printf 'oom 4\noom_kill 1\n' > "$BOXD_CGROOT/box.scope/memory.events.local"
+    echo "0::/box.scope" > "$T/e/proc/4242/cgroup"
+    mkdir -p "$T/e/net/eth9/queues/tx-0"; echo 3 > "$T/e/net/eth9/queues/tx-0/tx_timeout"; echo 7 > "$T/e/net/eth9/carrier_changes"
+    printf 'Iface\tDestination\tGateway\neth9\t00000000\t0101A8C0\n' > "$T/e/route"
+    export FAKE_CPID=4242; CASE_ENV=(BOXD_PROC="$T/e/proc" BOXD_ROUTE="$T/e/route" BOXD_NET="$T/e/net")
+}
+evwait() { [ -e "$W/jobs/$box/runs/$1.log" ] || { echo "FAIL event record: run $1 did not start: $(cat "$T/e/err" 2>/dev/null | head -n 1)"; return; }; until grep -q "^EXIT" "$W/jobs/$box/runs/$1.log" 2>/dev/null; do sleep 0.05; done; }   # the end record is written before EXIT
+evwords() { grep -v '^time=\|^boot=' "$1" | paste -sd'|'; }
+evsetup; pod "pod run $box --detach 20261118-100000-0001 -- $B64"; evwait 20261118-100000-0001; EV=$W/cache/events/$box
+want="engine=container|group_some_ms=2500|group_full_ms=1200|net_tx_timeouts=3|net_link_changes=7|group_kills=3|group_cap_kills=2|box_some_ms=700|box_full_ms=300|box_kills=5|box_limit_kills=4"
+eq "event record: the start snapshot of a container run" "$want" "$(evwords "$EV/20261118-100000-0001.start")"
+eq "event record: the end snapshot of a container run" "$want" "$(evwords "$EV/20261118-100000-0001.end")"
+eq "event record: time and boot are numbers" "2" "$(grep -c '^time=[0-9]\+$\|^boot=[0-9]\+$' "$EV/20261118-100000-0001.start")"
+eq "event record: no temporary file is left" "" "$(ls "$EV" | grep '\.new$')"
+eq "event record: nothing in the box folder, which the box writes (runs/ and the dot files)" "" "$(find "$W/jobs" -name '*.start' -o -name '*.end' -o -name '*.new' -o -name 'events*')"
+mounts=$(grep '^run -d' "$FAKE_LOG" | grep -o -- '-v [^ ]*' | cut -d' ' -f2 | cut -d: -f1); bad=
+for m in $mounts; do case $EV/ in "$m"/*) bad="$bad $m" ;; esac; done
+eq "event record: the folder is under no folder mounted in the box" "" "$bad"
+eq "event record: and the box has mounts to compare with" "$W/jobs/$box $W/cache/pod" "$(echo $mounts)"
+pod "pod events $box 20261118-100000-0001"
+eq "event record: a real run is complete and its words come from the snapshots" "engine=container complete=yes why=- others=-" "$(tr '\t' '\n' < "$T/e/out" | grep -E '^(complete|why|engine|others)=' | paste -sd' ')"
+eq "event record: a real run has no difference" "group_stall_ms=0 kills=0 kills_by_cap=0 box_kills=0 box_limit_kills=0" "$(tr '\t' '\n' < "$T/e/out" | grep -E '^(group_stall_ms|kills|kills_by_cap|box_kills|box_limit_kills)=' | paste -sd' ')"
+pod "pod drop $box"; eq "event record: removed with the box" no "$([ -e "$W/cache/events/$box" ] && echo yes || echo no)"
+# a stale end record of an earlier run with the same id is gone before the command runs
+evsetup; mkdir -p "$EV"; printf 'time=1\n' > "$EV/20261118-100000-0002.end"; export FAKE_BLOCK_EXEC=1
+pod "pod run $box --detach 20261118-100000-0002 -- $B64"; read -r _ <&3
+eq "event record: while the command runs there is a start record and no end record" "yes no" "$([ -e "$EV/20261118-100000-0002.start" ] && echo yes || echo no) $([ -e "$EV/20261118-100000-0002.end" ] && echo yes || echo no)"
+pod "pod events $box 20261118-100000-0002"; eq "event record: asked meanwhile, the run is running and the record not complete" "state=running complete=no why=running" "$(tr '\t' '\n' < "$T/e/out" | grep -E '^(state|complete|why)=' | paste -sd' ')"
+echo go > "$FAKE_REL"; evwait 20261118-100000-0002; unset FAKE_BLOCK_EXEC
+eq "event record: after the end there are both" "yes" "$([ -e "$EV/20261118-100000-0002.end" ] && [ -e "$EV/20261118-100000-0002.start" ] && echo yes || echo no)"
+# on a real host the work area belongs to root and the build account owns only what is in it: the record must not need a new folder at its top (0.4.39 wrote none there)
+evsetup; mkdir -p "$W/home" "$W/tmp" "$W/cache" "$W/jobs"; chmod 555 "$W"; pod "pod run $box --detach 20261118-100000-0003 -- $B64"; evwait 20261118-100000-0003; chmod 755 "$W"
+eq "event record: written when the work area's top folder cannot be written" "yes" "$([ -e "$W/cache/events/$box/20261118-100000-0003.end" ] && echo yes || echo no)"
+# a machine box: the four words of an own group are dashes
+setup; mkdir -p "$BOXD_CGROOT/boxd"; CASE_ENV=(BOXD_ROUTE="$T/e/noroute" BOXD_NET="$T/e/nonet"); printf 'oom 0\noom_kill 3\n' > "$BOXD_CGROOT/boxd/memory.events"
+pod "pod run $box --vm --detach 20261118-100000-0003 -- $B64"; evwait 20261118-100000-0003
+eq "event record: a machine run: engine vm, no own group, the build group's words, the unreadable ones dashes" "engine=vm|group_some_ms=-|group_full_ms=-|net_tx_timeouts=-|net_link_changes=-|group_kills=3|group_cap_kills=-|box_some_ms=-|box_full_ms=-|box_kills=-|box_limit_kills=-" "$(evwords "$W/cache/events/$box/20261118-100000-0003.end")"
+pod "pod events $box 20261118-100000-0003"
+eq "event record: a machine run whose build group cannot be read in full is not complete" "engine=vm complete=no why=counter-unreadable" "$(tr '\t' '\n' < "$T/e/out" | grep -E '^(engine|complete|why)=' | paste -sd' ')"
+# a view-only key may ask for it, and asking writes nothing
+before=$(find "$W" | sort | md5sum)
+eq "pod events writes nothing (no stamp, no lock, no folder, no call log line)" "$before" "$(pod "pod events $box 20261118-100000-0003"; find "$W" | sort | md5sum)"
+# a box busy now, with a stamp not after the end of the window, was busy in it: a foreground call in progress is not in the call log yet
+evsetup; mkdir -p "$W/jobs/fg" "$EV"; : > "$W/jobs/fg/.running"; touch -d @1050 "$W/jobs/fg/.last-used"
+printf 'time=1000\nboot=5\nengine=container\n' > "$EV/r1.start"; printf 'time=1100\nboot=5\nengine=container\n' > "$EV/r1.end"; mkdir -p "$W/jobs/$box/runs" "$W/cache"; : > "$W/jobs/$box/runs/r1.log"
+printf '900000000\t%s\tcontainer\t0\tdetached\t5\t\tr1\tsleep\n' "$box" > "$W/cache/calls.log"
+exec 8>>"$W/jobs/fg/.running"; flock -s 8
+pod "pod events $box r1"; eq "pod events: a box that holds its run lock now with an old stamp was busy in the window" "others=fg" "$(tr '\t' '\n' < "$T/e/out" | grep '^others=')"
+touch -d @1200 "$W/jobs/fg/.last-used"; pod "pod events $box r1"; eq "pod events: one whose stamp is after the window began later" "others=-" "$(tr '\t' '\n' < "$T/e/out" | grep '^others=')"
+exec 8>&-
+unset FAKE_CPID; CASE_ENV=()
 
 [ "$fails" -eq 0 ] && echo "ALL OK" || { echo "$fails FAILED"; exit 1; }

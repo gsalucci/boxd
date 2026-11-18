@@ -7,6 +7,7 @@
 //   box runs [--follow [--tail <n>]] [--pod <pattern>]... [--host <name>]
 //   box --version
 //   box log <run> [--pod <name>] [--host <name>] [--follow] [--tail <n>] [--state]
+//   box log <run> --events [--pod <name>] [--host <name>]
 //   box forward [--host <name>] [--pod <name>] <local-port> <box-port>
 //   box vnc [--host <name>] [--pod <name>] [--port <box-port>]
 //   box drop [--pod <name>] [--host <name>]
@@ -19,7 +20,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-export const VERSION = "0.4.38";
+export const VERSION = "0.4.40";
 const BOX = /^[a-z0-9][a-z0-9_.-]{0,62}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const MAC = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i;
@@ -52,6 +53,10 @@ export const HELP = `usage: box [options] [--] <command...>
                                        <run> state=running|ended exit=<code> (exit=- while running or when the run ended without a code), tab separated; an ended run adds
                                        ended=<time in UTC, like 2026-11-16T17:48:47Z> and, when the server knows when the run began, seconds=<wall seconds>:
                                        "box log <run> --follow --tail 20" shows how an ended run ended, and exits with its code
+       box log <run> --events [--pod <name>] [--host <name>]
+                                       after a --detach run ended: the server's own record of what could have disturbed it (memory stalls, kills
+                                       for memory, network card stalls, other boxes busy), one key=value per line; exit 0 when the record covers the
+                                       whole run, 3 when it does not (the reason on standard error, the lines still printed); excludes --follow, --tail, --state
        box forward [--host <name>] [--pod <name>] <local-port> <box-port>
                                        reach a port of this worktree's running container box (loopback inside it) on the loopback address here
                                        (0 picks a free local port); one ssh per connection, no sync, starts nothing; Ctrl+C stops
@@ -817,8 +822,28 @@ const lastLines = (buf, n) => {
     }
     return n === 0 ? Buffer.alloc(0) : buf.subarray(p + 1);
 };
+// box log <run> --events: `pod events <box> <run>` answers one line (events, then key=value words); each word is printed on its own line.
+// Exit 0 when the record covers the whole window of the run (complete=yes), else 3 with the reason on standard error: 3 is none of 125 (the
+// server refused), 75 (no room), 2 (usage), 1 (the answer is no record), 129 (ended from outside) or 255 (ssh failed), and the call runs no command that could give it.
+function eventsCall(HOST, box, run) {
+    const r = spawnSync("ssh", [HOST, `pod events ${box} ${run}`], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 1 << 20 });
+    if (r.status !== 0) {
+        process.stderr.write(/unknown command/.test(r.stderr) ? "box: this build server is older than the event record: box log --events needs an upgrade\n" : r.stderr);
+        return r.status ?? 1;
+    }
+    const words = r.stdout.trimEnd().split("\t"), kv = Object.fromEntries(words.slice(1).map((w) => w.split("=", 2)));
+    if (words[0] !== "events" || !words.slice(1).every((w) => /^[a-z_]+=[A-Za-z0-9_.,-]*$/.test(w)) || !/^(yes|no)$/.test(kv.complete ?? "")) {
+        process.stderr.write("box log: the server's answer is not an event record\n");
+        return 1;
+    }
+    process.stdout.write(`${words.slice(1).join("\n")}\n`);
+    if (kv.complete === "yes")
+        return 0;
+    process.stderr.write(`box: the event record of run ${run} does not cover its window (${kv.why})\n`);
+    return 3;
+}
 export async function logCall(args, env) {
-    let run, hostFlag, pod, follow = false, state = false, tail;
+    let run, hostFlag, pod, follow = false, state = false, events = false, tail;
     for (let i = 0; i < args.length; i++) {
         const a = args[i], v = args[i + 1];
         if (a === "--help" || a === "-h") {
@@ -829,6 +854,8 @@ export async function logCall(args, env) {
             follow = true;
         else if (a === "--state")
             state = true;
+        else if (a === "--events")
+            events = true;
         else if (a === "--tail") {
             if (!/^\d{1,6}$/.test(v ?? "") || Number(v) > 100000)
                 return usage("box log: --tail needs a whole number from 0 to 100000");
@@ -849,9 +876,13 @@ export async function logCall(args, env) {
     }
     if (run === undefined || !/^[A-Za-z0-9_.-]{1,64}$/.test(run))
         return usage("box log: give the run id (the one box --detach printed)");
+    if (events && (follow || state || tail !== undefined))
+        return usage("box log: --events goes with no other option but --pod and --host");
     const t = readTarget(hostFlag, pod, env);
     if (typeof t === "string")
         return usage(t);
+    if (events)
+        return eventsCall(t.HOST, t.box, run);
     const poll = Number(env.BOXD_LOG_POLL_MS ?? 2000);
     let held = tail === undefined ? undefined : Buffer.alloc(0); // --tail: only the last lines are kept until the log is caught up
     for (let off = 0;;) {
