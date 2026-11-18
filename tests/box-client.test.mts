@@ -2542,8 +2542,8 @@ test("box --shards: --detach, --pull, --no-sync, --snapshot, forward and vnc are
   assert.equal(refuse(["--shards", "2", "--detach", ...c]), "box: --shards cannot go with --detach: it syncs, starts detached runs, follows them and stops the boxes itself");
   assert.equal(refuse(["--shards", "2", "--pull", "out", "--snapshot", ...c]), "box: --shards cannot go with --pull, --snapshot: it syncs, starts detached runs, follows them and stops the boxes itself");
   assert.equal(refuse(["--shards", "2", "--no-sync", ...c]), "box: --shards cannot go with --no-sync: it syncs, starts detached runs, follows them and stops the boxes itself");
-  assert.equal(refuse(["--shards", "2", "forward", "{shard}", "80"]), "box: --shards runs a command in several boxes; it is not for forward");
-  assert.equal(refuse(["--shards", "2", "vnc", "{shard}"]), "box: --shards runs a command in several boxes; it is not for vnc");
+  assert.equal(refuse(["--shards", "2", "--", "forward", "{shard}", "80"]), "box: --shards runs a command in several boxes; it is not for forward");
+  assert.equal(refuse(["--shards", "2", "--", "vnc", "{shard}"]), "box: --shards runs a command in several boxes; it is not for vnc");
   assert.equal(refuse(["forward", "--shards", "2", "80", "80"]), "box forward: unknown option --shards");
   for (const n of ["1", "33", "x", "007"]) assert.equal(refuse(["--shards", n, ...c]), "box: --shards needs a whole number from 2 to 32");
   assert.equal(refuse(["--tail", "5", "t"]), "box: --tail goes with --shards (or with box runs --follow and box log)");
@@ -2670,4 +2670,31 @@ test("--history alone is refused in one line, nothing sent; a shallow source sen
   assert.equal(git(s2, "log", "--oneline").split("\n").length, 2);
   assert.equal(git(s2, "rev-parse", "HEAD"), git(shallow, "rev-parse", "HEAD"));
   void src;
+});
+
+test("an option before a box word is refused before anything is asked of a host; -- and word-first forms are unchanged", () => {
+  for (const [args, word] of [[["--host", "tower", "drop"], "drop"], [["--host", "tower", "stop"], "stop"], [["--pod", "x", "ps"], "ps"], [["--no-sync", "--host", "tower", "gc", "--dry-run"], "gc"]] as const) {
+    const r = runBox([...args]);
+    assert.equal(r.code, 2, args.join(" "));
+    assert.deepEqual(r.calls, [], "nothing asked of the host");
+    assert.equal(r.out, "");
+    assert.equal(r.err.trimEnd().split("\n").length, 1);
+    assert.match(r.err, new RegExp(`^box: "${word}" is a box word and must come first: box ${word} .*; to run a program named ${word} in the box, put -- before it: box .* -- ${word}`));
+  }
+  assert.equal(runBox(["--host", "tower", "drop"]).err, `box: "drop" is a box word and must come first: box drop --host tower; to run a program named drop in the box, put -- before it: box --host tower -- drop\n`);
+  // --shards and --detach build their own command from the same first word: refused the same way
+  for (const extra of [["--shards", "2"], ["--detach"], ["--wait"], ["--pull", "x"], ["--image-file", "Containerfile"]]) {
+    const r = runBox([...extra, "drop", "{shard}"]);
+    assert.equal(r.code, 2, extra.join(" "));
+    assert.deepEqual(r.calls, []);
+  }
+  const ok = runBox(["--host", "test", "--", "drop"]);
+  assert.equal(ok.code, 0);
+  assert.ok(ok.calls.some((c) => c === `ssh boxd-test pod run ${box} -- ${b64("drop")}`), ok.calls.join("\n"));
+  assert.ok(runBox(["--host", "test", "--", "ps", "aux"]).calls.some((c) => c.endsWith(b64("ps", "aux"))));
+  assert.ok(runBox(["--host", "test", "dropdb"]).calls.some((c) => c.endsWith(b64("dropdb"))));
+  assert.ok(runBox(["--host", "test", "./drop"]).calls.some((c) => c.endsWith(b64("./drop"))));
+  const word = runBox(["drop", "--host", "test"]);
+  assert.notEqual(word.code, 2);
+  assert.equal(word.err.includes("is a box word"), false);
 });

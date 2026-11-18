@@ -86,6 +86,7 @@ Installing changes nothing but files. Then, as root:
 ```
 sudoedit /etc/boxd/boxd.conf                       # at least BOXD_PORT when 2222 is taken (see the homeserver notes)
 boxd-setup --key /path/to/agents-machine.pub       # account, work area, ssh settings, virtual machine support; add --images for the toolbox image
+# after a rebuild of the image (boxd-setup --images again) new machine boxes get the new image by themselves; existing boxes, with --recreate
 boxctl check                                       # every condition boxd needs
 boxctl start                                       # boxd.service: starts boxd-sshd.service and the reaper
 boxctl status

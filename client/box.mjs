@@ -19,7 +19,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-export const VERSION = "0.4.32";
+export const VERSION = "0.4.35";
 const BOX = /^[a-z0-9][a-z0-9_.-]{0,62}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const MAC = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i;
@@ -70,6 +70,8 @@ export const HELP = `usage: box [options] [--] <command...>
                                        owns ("unknown owner", nothing is touched) and reports commands running over 6 hours;
                                        --dry-run only says what it would do. Runs by itself after an ordinary call, at most every
                                        15 minutes ($BOXD_GC=0 turns that off); records in ~/.local/state/boxd
+The words setup, runs, hosts, image, ps, log, forward, vnc, drop, stop and gc must come first (box drop --host <name>): after an option, as in box --host <name> drop,
+they are refused (exit 2); to run a program of that name in the box, write -- before it.
 Syncs the git worktree you are in to the build server, runs <command> in this worktree's own box (a podman
 container or, with --vm, a small virtual machine; the same box on every call) and passes its exit code through. Use sh -c '...' for shell syntax.
   --image <ref>    image for a new box (default debian:stable-slim); an existing box keeps its image when you
@@ -1435,6 +1437,8 @@ async function shardsCall(keep, words, base, n, tail, env) {
         await dropCall(["--pod", s.box, "--host", s.host], env, "stop");
     return started.every((s) => codes.get(key(s)) === "0") ? 0 : 1;
 }
+// The words box handles itself, dispatched on args[0] in main: they must come first. Keep this list in step with that dispatch.
+const BOX_WORDS = ["setup", "runs", "ps", "hosts", "log", "forward", "vnc", "drop", "stop", "gc", "image"];
 // `inner`: set by box --shards for each of its own calls: the call is detached with this run id, is never on a terminal, prints no run lines
 // and says the host it ran on.
 export function main(args, env = process.env, inner) {
@@ -1521,6 +1525,12 @@ export function main(args, env = process.env, inner) {
             return usage(`box: unknown option ${a}`);
     }
     const argv = args.slice(i);
+    // An option before one of box's own words would run that word in the box (exit 127, nothing dropped): refuse, unless -- says it is a command.
+    if (args[i - 1] !== "--" && BOX_WORDS.includes(argv[0])) {
+        const w = argv[0], o = args.slice(0, i).join(" ");
+        process.stderr.write(`box: "${w}" is a box word and must come first: box ${w} ${o}; to run a program named ${w} in the box, put -- before it: box ${o} -- ${argv.join(" ")}\n`);
+        return 2;
+    }
     if (tail !== undefined && shards === undefined)
         return usage("box: --tail goes with --shards (or with box runs --follow and box log)");
     if (shards !== undefined) {

@@ -263,6 +263,8 @@ for ((i = 0; i < n; i++)); do
     while read -r im id; do [ -n "$im" ] && echo "$id" > "$FAKE_IMAGES/$(echo "$im" | tr / _)"; done < <(j '.image_ids // {} | to_entries[] | "\(.key) \(.value)"')
     while read -r im id; do [ -n "$im" ] && echo "$id" > "$FAKE_VM_IMAGES/$(echo "$im" | tr / _)"; done < <(j '.vm_image_ids // {} | to_entries[] | "\(.key) \(.value)"')
     for ar in $(j '.archives // [] | .[]'); do : > "$BOXD_IMAGES_DIR/$ar.tar"; done
+    # archive_stamp: the modification time (epoch seconds) of every archive in the images folder; with work_files it fixes what the machine store's record says
+    [ "$(j 'has("archive_stamp")')" = false ] || for ar in "$BOXD_IMAGES_DIR"/*.tar; do touch -d "@$(j .archive_stamp)" "$ar"; done
     [ "$(j '.archives_built // false')" = true ] && mkdir -p "$W/cache/images" && : > "$W/cache/images/built-boxd-2889387319.tar"
     # files the case wants in the job folder (src_files under src), written byte for byte (-j: no newline added)
     for kind in src job; do
@@ -315,6 +317,21 @@ echo "$R $I1" | SSH_ORIGINAL_COMMAND="pod image load vm $R $I1" bash "$POD" >/de
 pod "pod image has vm $R $I1"; eq "image has vm: the pushed id is found" 0 "$rc"
 pod "pod image has vm $R $I2"; eq "image has vm: another id is not" 1 "$rc"
 pod "pod image has container $R $I1"; eq "image has container: a push to the vm store does not count" 1 "$rc"
+
+# A machine made from a local image is made from the current archive: one load per archive, the record decides
+setup; : > "$BOXD_IMAGES_DIR/toolbox.tar"; touch -d @100 "$BOXD_IMAGES_DIR/toolbox.tar"; : > "$FAKE_VM_IMAGES/localhost_toolbox:latest"
+loads() { grep -c '^load <' "$FAKE_MSB_LOG"; }
+pod "pod run $box --vm --image localhost/toolbox -- $B64"; eq "archive: a machine with no record loads the archive" 1 "$(loads)"
+pod "pod run b2 --vm --image localhost/toolbox -- $B64"; eq "archive: a second machine made from the same archive loads nothing" 1 "$(loads)"
+touch -d @200 "$BOXD_IMAGES_DIR/toolbox.tar"
+pod "pod run b3 --vm --image localhost/toolbox -- $B64"; eq "archive: after a rebuild the next machine loads once" 2 "$(loads)"
+pod "pod run b4 --vm --image localhost/toolbox -- $B64"; eq "archive: and the one after it loads nothing" 2 "$(loads)"
+pod "pod run b2 --vm --image localhost/toolbox -- $B64"; eq "archive: a call into an existing machine loads nothing" 2 "$(loads)"
+touch -d @300 "$BOXD_IMAGES_DIR/toolbox.tar"
+pod "pod report"; eq "archive: pod report shows what the machine store was loaded from, and a stale store differs from built=" 1 "$(grep -c "^image	name=toolbox	bytes=0	built=300	vm_loaded=0:200$" "$T/e/out")"
+# the build of a box's own Containerfile hands over its archive with the forced load, once
+setup; mkdir -p "$W/jobs/$box/src"; printf 'FROM scratch\nRUN v1\n' > "$W/jobs/$box/src/Containerfile"
+pod "pod run $box --image-file Containerfile --vm -- $B64"; eq "image-file vm: one load for a build handed over" 1 "$(loads)"
 
 # More refusals the cases do not list
 setup
@@ -847,6 +864,34 @@ CASE_ENV=(FAKE_CPID=4242 BOXD_PROC="$T/e/proc"); pod "pod run a3 -- $B64"; eq "b
 eq "box admission: an admitted call gives the room lock back (foreground and detached)" "free" "$(roomfree)"
 pod "pod run a4 --detach r2 -- $B64"; eq "box admission: a detached call is admitted too" 0 "$rc"; eq "box admission: and gives the room lock back" free "$(roomfree)"
 CASE_ENV=()
+# A container call gets the room of idle machines too (owner, 2026-11-18: two machines of 12288 MB on one host, one with its run ended, and a
+# small container call was refused). Cap 8192 MB: two medium machines count 4096 MB each, a call needs the reserve of 4096 MB on top.
+NOROOM_BOX="boxd-pod: no room for another busy box (8192 MB counted + 4096 MB reserve > 8192 MB, 100% of the 8192 MB cap); wait for one to end"
+two_machines() { cg8; for b in b1 b2; do pod "pod run $b --vm --size medium -- $B64"; done; }
+boxroom() { tr '\t' '\n' < "$T/e/out" | grep -E '^box_room=' | cut -d= -f2; }
+two_machines; pod "pod run c -- $B64"
+eq "idle machines for a container call: machines used a moment ago are not idle, the call is refused, the ending names the way out, both stay" "75 $NOROOM_BOX, or stop a machine that has no run (box stop) yes yes" "$rc $(cat "$T/e/err") $(hasvm b1) $(hasvm b2)"
+pod "pod status"; eq "idle machines for a container call: pod status says no room while none is idle" no "$(boxroom)"
+touch -d @100 "$W/jobs/b1/.last-used"; touch -d @200 "$W/jobs/b2/.last-used"
+pod "pod status"; eq "idle machines for a container call: pod status says room when an idle machine would be removed, as vm_room does, and removes nothing" "yes yes yes" "$(boxroom) $(hasvm b1) $(hasvm b2)"
+pod "pod run c -- $B64"; eq "idle machines for a container call: the longest unused machine goes, no more than needed, and the call runs" "0 no yes" "$rc $(hasvm b1) $(hasvm b2)"
+eq "idle machines for a container call: the caller is told in one line" "boxd-pod: the idle machine of box b1 was removed to make room for this one" "$(grep -i 'removed' "$T/e/err")"
+eq "idle machines for a container call: the log line names both boxes" "b1	idle machine removed, c asked for room" "$(cut -f2- "$W/cache/evictions.log")"
+eq "idle machines for a container call: the container was made" yes "$([ -e "$FAKE_STATE/pod-c" ] && echo yes || echo no)"
+# A machine with a run in flight is never removed, however old; with every machine busy the refusal is today's text, byte for byte.
+two_machines; touch -d @100 "$W/jobs/b1/.last-used"; touch -d @200 "$W/jobs/b2/.last-used"
+exec 8<"$W/jobs/b1/.running"; flock -s 8; exec 9<"$W/jobs/b2/.running"; flock -s 9
+pod "pod run c -- $B64"; eq "idle machines for a container call: busy machines are never removed, the refusal is today's text" "75 $NOROOM_BOX yes yes" "$rc $(cat "$T/e/err") $(hasvm b1) $(hasvm b2)"
+eq "idle machines for a container call: nothing was logged" no "$([ -s "$W/cache/evictions.log" ] && echo yes || echo no)"
+exec 8<&- 9<&-
+# Idle machines alone would not make room (a busy container box counts the reserve too): none is removed for nothing.
+two_machines; ctrcg 1024 0; ctrbox x; holdbox x; touch -d @100 "$W/jobs/b1/.last-used"
+pod "pod run c -- $B64"; eq "idle machines for a container call: none is removed when all the idle ones together would not make it fit" "75 yes yes" "$rc $(hasvm b1) $(hasvm b2)"
+eq "idle machines for a container call: the refusal counts what is still there" "boxd-pod: no room for another busy box (12288 MB counted + 4096 MB reserve > 8192 MB, 100% of the 8192 MB cap); wait for one to end, or stop a machine that has no run (box stop)" "$(cat "$T/e/err")"
+unhold; CASE_ENV=()
+# The rule off (BOXD_BOX_RESERVE=0): no admission, no removal, as before the rule existed.
+two_machines; touch -d @100 "$W/jobs/b1/.last-used"
+BOXD_BOX_RESERVE=0 pod "pod run c -- $B64"; eq "idle machines for a container call: with the rule off the call runs and no machine is removed" "0 yes yes" "$rc $(hasvm b1) $(hasvm b2)"
 # Container boxes are made with a raised out-of-memory score: when the build cgroup hits its cap the kernel kills the
 # grower, not a machine. The badness of a process is its memory plus score/1000 of the cgroup's limit, so 1000 adds the whole cap.
 setup; pod "pod run $box -- $B64"

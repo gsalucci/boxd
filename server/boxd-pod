@@ -19,7 +19,7 @@ CGROOT=${BOXD_CGROOT:-/sys/fs/cgroup}
 CGROUP=${BOXD_CGROUP:-$CGROOT/boxd}
 PROC=${BOXD_PROC:-/proc}   # test hook, like BOXD_MEMINFO: where `pod report` finds a box's process and its cgroup
 KVM=${BOXD_KVM:-/dev/kvm}   # test hook: the device a --kvm box gets
-VERSION=0.4.32
+VERSION=0.4.35
 # Keys that may only read, one "<type> <key> [comment]" per line (view_only below); and the largest answer of pod calls and pod log.
 VIEW_KEYS=${BOXD_VIEW_KEYS:-/etc/boxd/view_keys}
 READ_MAX=${BOXD_READ_MAX:-1048576}
@@ -284,16 +284,29 @@ norm_image() {
 # A localhost/ image missing from the asked engine's own store (boxd-reset all empties both) is loaded from its archive:
 # $IMAGES/<name>.tar (made by images-build) or, for images built from an agent's Containerfile, $WORK/cache/images/<name>.tar.
 # A third word "force" loads even when the store has the tag: a rebuilt image keeps its tag, the store's copy is stale.
+# The machine engine's store is its own and nothing builds into it, so it is stale after a rebuild: the archive it was loaded from
+# is recorded (cache/loaded-vm-<checksum of ref>: size and modification time, which a rebuild changes; hashing a 4 GB archive on
+# every creation would cost minutes) and an archive that differs from the record, or no record, loads again. podman's store needs
+# none of this: images-build builds into it, so it is right whenever it has the tag. The load and the record sit under one lock:
+# ensure_image runs before the room lock, and two machines made at once must not both load a 4 GB archive into one store.
 ensure_image() {
-    local ref=$2 name ar d
+    local ref=$2 name ar="" d id="" rec=""
     case $ref in localhost/*) ;; *) return 0 ;; esac
-    if [ "${3:-}" != force ] && image_have "$1" "$ref"; then return 0; fi
     name=${ref#localhost/}; name=${name%%:*}
-    ar=$IMAGES/$name.tar
     for d in "$IMAGES" "$WORK/cache/images"; do [ -r "$d/$name.tar" ] && { ar=$d/$name.tar; break; }; done
-    [ -r "$ar" ] || die "image $ref is not in storage and $IMAGES/$name.tar is missing; run boxd-setup --images"
-    image_load "$1" "$ar"
+    if [ "$1" = vm ] && [ -n "$ar" ]; then
+        rec=$WORK/cache/loaded-vm-$(printf %s "$ref" | cksum | cut -d' ' -f1)
+        id=$(stat -c %s:%Y "$ar")
+        exec 4>"$WORK/cache/image-load.lock"; flock 4
+    fi
+    if [ "${3:-}" != force ] && image_have "$1" "$ref" && { [ -z "$rec" ] || [ "$(cat "$rec" 2>/dev/null)" = "$id" ]; }; then
+        exec 4>&-; return 0
+    fi
+    [ -n "$ar" ] || die "image $ref is not in storage and $IMAGES/$name.tar is missing; run boxd-setup --images"
+    image_load "$1" "$ar" 4>&-
     image_have "$1" "$ref" || die "loading $ar did not give $ref"
+    [ -z "$rec" ] || printf %s "$id" >"$rec"
+    exec 4>&-
 }
 # The asked engine's own store: has the image, and loads an archive (output and exit code of a failed load are
 # ignored: the caller checks that the image is there).
@@ -459,6 +472,13 @@ vm_evict_idle() {
     ) || return 1
     echo "boxd-pod: the idle machine of box ${best#pod-} was removed to make room for this one" >&2
     printf '%s\t%s\t%s\n' "$(date +%s)" "${best#pod-}" "idle machine removed, ${1#pod-} asked for room" >>"$WORK/cache/evictions.log" 2>/dev/null || true
+}
+# vm_calm: succeeds when a running machine has no run or call in it (not busy): one that was too young to be removed above.
+vm_calm() {
+    local b st rows
+    rows=$(vm_rows 2>/dev/null) || return 1
+    while IFS=$'\t' read -r b _ st; do [ "$st" = running ] && ! box_busy "${b#pod-}" && return 0; done <<<"$rows"
+    return 1
 }
 # vm_fit <own sandbox name> <megabytes asked> [all]: the one computation behind that rule. Sets fit_mb (the largest machine
 # `pod run` admits now, in megabytes: the smaller of the cap minus the measured use and the commit share minus the running
@@ -699,7 +719,7 @@ pod_status() {
         eng=container,vm used=$(vm_used)
         SKIP_IDLE=1 vm_fit "" "$(lim_mb "$VM_LIMITS")" all; why=$fit_why; [ -n "$why" ] || room=yes   # one pass for the words vm_room, vm_why and vm_fit_mb: the same rule as `pod run`
     fi
-    box_fit ""; [ -z "$box_why" ] || box_room=no   # the same rule as `pod run` for a container box that is not busy
+    SKIP_IDLE=1 box_fit ""; [ -z "$box_why" ] || box_room=no   # the same rule as `pod run` for a container box that is not busy, idle machines left out as for vm_room
     read -r l1 _ </proc/loadavg
     ! vm_mem || mem=$((cap_mb > used_mb ? cap_mb - used_mb : 0))
     while IFS= read -r f; do img=${img:+$img,}${f%.tar}; done < <(find "$IMAGES" -maxdepth 1 -name '*.tar' -printf '%f\n' 2>/dev/null | sort)
@@ -867,7 +887,8 @@ pod_report() {
     done < <(sort <<<"$rows")
     printf %s "$runs" | grep .
     while IFS= read -r f; do
-        printf 'image\tname=%s\tbytes=%s\tbuilt=%s\n' "${f%.tar}" "$(stat -c %s "$IMAGES/$f")" "$(stat -c %Y "$IMAGES/$f")"
+        printf 'image\tname=%s\tbytes=%s\tbuilt=%s\tvm_loaded=%s\n' "${f%.tar}" "$(stat -c %s "$IMAGES/$f")" "$(stat -c %Y "$IMAGES/$f")" \
+            "$(cat "$WORK/cache/loaded-vm-$(printf %s "localhost/${f%.tar}:latest" | cksum | cut -d' ' -f1)" 2>/dev/null || echo -)"
     done < <(find "$IMAGES" -maxdepth 1 -name '*.tar' -printf '%f\n' 2>/dev/null | sort)
     # What retention removed in the last day (cache/evictions.log), oldest first, 50 lines at most.
     awk -F'\t' -v t="$(($(date +%s) - 86400))" 'NF == 3 && $1 ~ /^[0-9]+$/ && $1 >= t { printf "evicted\tat=%s\tbox=%s\treason=%s\n", $1, $2, $3 }' "$WORK/cache/evictions.log" 2>/dev/null | tail -n 50
@@ -1127,8 +1148,13 @@ pod_run() {
     if [ -z "$vm" ] && [ "$BOX_RESERVE" -gt 0 ] && ! box_busy "$box"; then
         exec 7>"$WORK/cache/vm-room.lock"
         flock 7
-        box_fit "$box" "$([ -n "$create$start" ] || echo kept)"   # a box that runs and is kept counts what it uses when that is more than the reserve
-        [ -z "$box_why" ] || noroom "no room for another busy box ($box_why); wait for one to end"
+        kept=$([ -n "$create$start" ] || echo kept)   # a box that runs and is kept counts what it uses when that is more than the reserve
+        box_fit "$box" "$kept"
+        # No room: idle machines go, the longest unused first, until the call fits, and none when all of them together would not make it fit.
+        if [ -n "$box_why" ] && have_msb && (SKIP_IDLE=1; box_fit "$box" "$kept"; [ -z "$box_why" ]); then
+            while [ -n "$box_why" ] && vm_evict_idle "$name"; do box_fit "$box" "$kept"; done
+        fi
+        [ -z "$box_why" ] || noroom "no room for another busy box ($box_why); wait for one to end$(have_msb && vm_calm && echo ', or stop a machine that has no run (box stop)')"
     fi
     if [ -n "$recreate" ] || [ -n "$rebuilt" ]; then
         [ -z "$pc" ] || podman rm -f "$name" >/dev/null

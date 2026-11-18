@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.4.35
+
+- **An option before one of box's own words is refused instead of run.** The words of `box` (`drop`, `stop`, `ps`,
+  `log`, `runs`, `hosts`, `forward`, `vnc`, `gc`, `image`, `setup`) must come first. With an option before the
+  word, as in `box --host tower drop`, the word was taken as the command to run in the box: the box was made or
+  started, `drop` was not found inside (exit 127) and nothing was dropped. A clean-up line of that form, with its
+  output thrown away, left every box of a user to the idle rule for two days. Such a call now exits 2 with one line
+  that names the right form (`box drop --host tower`), before anything is contacted. A program that really has such
+  a name runs with `--` before it: `box --host tower -- drop`.
+
+## 0.4.34
+
+- **A call for a container box removes idle machines before it is refused for room.** A machine counts its full size
+  while it exists. When a machine was asked for and there was no room, idle machines (no run or call, unused for
+  `BOXD_VM_IDLE_MIN` seconds) already went, the longest unused first, their files kept. A call for a container box did
+  not do that: on a host that held one busy machine and one whose run had ended, a small container box was refused
+  (`no room for another busy box`). It now removes idle machines the same way, and none when all of them together
+  would not make the call fit. `pod status` answers `box_room` by the same rule.
+- When a machine without a run is still too young to count as idle, that refusal ends
+  `, or stop a machine that has no run (box stop)`. Otherwise its text is unchanged.
+
+## 0.4.33
+
+- **A machine box made after an image rebuild gets the rebuilt image.** `images-build` builds the shared image into
+  the store that container boxes use and writes its archive, but the machine engine has its own store, and the server
+  loaded the archive into it only when the tag was missing there. So machine boxes kept the copy that was loaded first,
+  for good: on a host a fresh machine still ran an image from days before, without tools the image had long had, while
+  a fresh container box had them (a user's suite skipped 67 tests in a machine against 39 elsewhere). The server now
+  records which archive (size and time) the machine store was loaded from, in `cache/loaded-vm-<checksum>`, and when
+  a machine is created from a local image whose archive differs from the record, or there is no record, it loads the
+  archive first. One lock keeps two creations from loading at once. A machine that exists keeps its image until
+  `--recreate`. `pod report` shows the record as `vm_loaded=` on the image line.
+
 ## 0.4.32
 
 - **`--history`: the repository in the box carries the full history and the tags.** With `--git --history` or

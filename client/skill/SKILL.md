@@ -98,6 +98,7 @@ waiting cannot fix, like a missing image, still exits at once).
   (a count above 0 means the kernel in the box ended a process for lack of memory).
 - Options go before the command: `box --no-sync sh -c '...' --pull x` hands `--pull x` to the command (box warns once); write `--` before
   the command to say it is meant.
+- The words `setup`, `runs`, `hosts`, `image`, `ps`, `log`, `forward`, `vnc`, `drop`, `stop` and `gc` must come FIRST: right is `box drop --host tower`, wrong is `box --host tower drop`. An option before one of them is refused at once (exit 2, one line on stderr, nothing contacted), because it would otherwise be run as a command in the box. To run a program of that name in the box, write `--`: `box --host tower -- drop`.
 - **The sync sends only what git counts as the worktree.** A file git ignores (a `*.log` journal, a state folder) does not reach the box
   unless named: `--include <path>` (file or folder, repeatable). The other way round, ignored files a run made in the box stay there
   between calls; `--clean` deletes them first, so the box's source folder is exactly your worktree (use it for measurements).

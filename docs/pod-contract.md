@@ -214,7 +214,20 @@ the file keeps its limit, silently. The real fix is a guest kernel not built sma
       `boxd-pod: image <ref> is not in storage and <archive> is missing; run boxd-setup --images`.
       Loaded but the image is still absent (the archive lacks that tag): exit 125,
       `boxd-pod: loading <archive> did not give <ref>`. The two stores are separate: loading for one engine
-      never touches the other. Registry images are pulled by `podman run` (only when the store lacks them) or `msb create` themselves; an image that
+      never touches the other.
+
+      **A machine is made from the current archive.** podman's store is written by `images-build` itself, so it is right whenever it has
+      the tag. The machine engine's store is not: nothing builds into it, so after a rebuild it keeps the copy it was first loaded with.
+      So for the vm engine, when the archive exists the server records the archive it loaded in `cache/loaded-vm-<checksum of ref>`
+      (`<bytes>:<modification time in epoch seconds>`; a 4 GB archive is not hashed on every creation, and a rebuild always changes the
+      time), and a machine that is being created loads the archive again when the store lacks the tag, when there is no record, or
+      when the record differs from the archive; then it writes the record. The check, the load and the record sit under one lock
+      (`cache/image-load.lock`, taken before the room lock, which is held only after this step), so two machines made at once load
+      once. With no archive the store's copy is used as it is. The rule applies at creation only: a call into an existing machine,
+      `pod status` and `pod report` never load, and a machine that exists keeps its image until `--recreate`. A box built from the
+      agent's Containerfile loads its own archive (`cache/images/built-<box>.tar`) by a forced load and records it, so it loads once.
+
+      Registry images are pulled by `podman run` (only when the store lacks them) or `msb create` themselves; an image that
       `pod image load` put into a store is therefore used, not pulled again.
 
    b. **vm only: room**, when the box is to be created or started. Take the global lock
@@ -258,7 +271,10 @@ the file keeps its limit, silently. The real fix is a guest kernel not built sma
         `.running` lock); the time is the box's `.last-used` stamp, touched when a call begins, against the server's clock. The asking
         box's share is the larger of the reserve and what the box itself uses when it runs and is kept (a box that is made, started or
         recreated by the call uses nothing yet). Refused with exit **75**, one line, nothing made or started and no stamp:
-        `boxd-pod: no room for another busy box (<counted> MB counted + <share> MB reserve > <limit> MB, <percent>% of the <cap> MB cap); wait for one to end`.
+        `boxd-pod: no room for another busy box (<counted> MB counted + <share> MB reserve > <limit> MB, <percent>% of the <cap> MB cap); wait for one to end`,
+        which ends `; wait for one to end, or stop a machine that has no run (box stop)` when a running machine exists that is not busy (one too
+        young to be removed, see "Idle machines give their room back"); the prefix `boxd-pod: no room for another` is the same in both.
+        Where the machine engine exists, a refused call first removes idle machines, as a call for a machine does (below).
         A call into a box that is **already busy** adds nothing and is never refused by this rule; `pod ps`, `pod log`, `pod drop`,
         `pod stop`, `pod list`, `pod status`, `pod report`, `pod forward` and the rsync passthrough are never refused by it. A host whose
         memory cannot be measured or counted (no readable build group, a container box that cannot be read and has no `--memory` limit, a
@@ -266,8 +282,7 @@ the file keeps its limit, silently. The real fix is a guest kernel not built sma
         `ctr_commit` is under both), so a machine is not admitted into memory that a container box started a second ago is about to
         claim. One admission at a time: the room lock of the machines is held from the check until the call holds its box busy (the
         shared lock on `.running`, taken before the lock is given back, also for a detached run, whose wrapper inherits it), so ten calls
-        at once are counted one after the other. Limits: idle machines are not removed for a container call (the machine rule does that
-        for a machine); the server's clock is used, with no fixed clock in the settings.
+        at once are counted one after the other. Limit: the server's clock is used, with no fixed clock in the settings.
       - **Count ceiling**: only when `BOXD_VM_MAX` is set and not empty (unset or empty: no count limit). Count the
         running sandboxes named `pod-*`, the asked box itself not included; if that count is `BOXD_VM_MAX` or more: exit **75**,
         `boxd-pod: no room for another virtual machine (<n> of <max> running); wait for one to end or stop one`.
@@ -447,7 +462,7 @@ logs nothing: the log never creates the folder, and a failed write is ignored.
   (in place of `podman rm -af`), kills the remaining `build` processes, and swaps subvolumes as before. Removing
   a box also ends its detached runs (their exec exits with the box), which releases their boxd-keepawake locks.
   `work` keeps `/work/cache/msb`, so virtual machine images survive while boxes go; `all` empties it, and the
-  next `--vm --image localhost/toolbox` call reloads the archive, as podman does.
+  next `--vm --image localhost/toolbox` call reloads the archive, as podman does. After `images-build` makes a new archive, new machines load it by themselves (see 5a); existing machines keep their image until `--recreate`.
 
 ## The reading verbs (`pod report`, `pod calls`, `pod log`) and the keys that may only read
 
@@ -479,7 +494,7 @@ engine call that starts, stops or changes anything (they ask `podman ps` and `ms
   last line `EXIT <code>`; a dash while running or without such a line), `bytes` (size of the log), `changed` (epoch seconds of its
   last write). Listed: every running run and, per box, the three ended runs with the greatest ids (an id starts with its date and
   time, so these are the newest). `runs/dockerd.log`, the docker daemon's log of a virtual machine box, is not a run.
-- One `image` line per archive in the images folder: `name`, `bytes`, `built` (epoch seconds of the file).
+- One `image` line per archive in the images folder: `name`, `bytes`, `built` (epoch seconds of the file) and `vm_loaded` (`<bytes>:<epoch seconds>` of the archive the machine store was last loaded from for `localhost/<name>:latest`, or `-` when no record exists; a store is stale when it differs from `bytes` and `built`).
 - Since 0.4.1, one `evicted` line per removal by retention in the last day (from `cache/evictions.log`, oldest first, 50 at most): `at` (epoch
   seconds), `box` (`images` for the image pass), `reason`. The dashboard shows them as one alert per host.
 
@@ -686,7 +701,10 @@ again. Each removal appends a line to `cache/evictions.log` with the reason `idl
 room`, which `pod report` prints as an `evicted` line. `pod status` answers with the idle machines left out of the
 sizes and of the count (`vm_room`, `vm_why`, `vm_fit_mb`), so a client does not refuse a call the server would make
 room for; `vm_used` stays the true count. Limit: the measured memory still holds what idle machines use, so `pod status`
-can say no where `pod run` would make room. Without waiting callers nothing changes: an idle box of either engine still
+can say no where `pod run` would make room. A call that starts work in a container box gets the same room: when the admission above refuses it, idle machines go, the longest
+unused first and no more than needed, and it is asked again after each; none goes when the call would still be refused with every
+idle machine left out (the sums with the idle machines left out are computed first, by the same `vm_commit`). The log line names
+the asking box. `box_room` of `pod status` is computed with the idle machines left out, as `vm_room` is. Without waiting callers nothing changes: an idle box of either engine still
 goes after `BOXD_TTL`.
 
 ## Memory need (owner decision 2026-11-17)
