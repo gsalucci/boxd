@@ -21,7 +21,7 @@ PROC=${BOXD_PROC:-/proc}   # test hook, like BOXD_MEMINFO: where `pod report` fi
 KVM=${BOXD_KVM:-/dev/kvm}   # test hook: the device a --kvm box gets
 ROUTE=${BOXD_ROUTE:-/proc/net/route}   # test hooks: the routing table and the network interface folder `pod report` reads
 NETDIR=${BOXD_NET:-/sys/class/net}
-VERSION=0.4.40
+VERSION=0.4.41
 # Keys that may only read, one "<type> <key> [comment]" per line (view_only below); and the largest answer of pod calls and pod log.
 VIEW_KEYS=${BOXD_VIEW_KEYS:-/etc/boxd/view_keys}
 READ_MAX=${BOXD_READ_MAX:-1048576}
@@ -531,6 +531,92 @@ box_fit() {
     [ "$box_fit_mb" -ge "$need" ] || box_why="$((com + ctr)) MB counted + $need MB reserve > $lim MB, $VM_COMMIT% of the $cap_mb MB cap"
 }
 
+# The waiting line (docs/pod-contract.md): a call made with --queued (the client's --wait) that is refused for room leaves a ticket
+# in cache/queue, a folder of the build account that no box mounts: "<epoch of the first ask> vm <megabytes>" or "<epoch> box"; its
+# modification time is the last ask. A ticket is live when that was no more than BOXD_QUEUE_LIVE seconds ago (120: four asks of the
+# client's 30 seconds). All of it is read and written under the room lock (vm-room.lock), so two callers cannot both pass.
+QUEUE_LIVE=${BOXD_QUEUE_LIVE:-120}
+[[ $QUEUE_LIVE =~ ^[0-9]+$ ]] || die "BOXD_QUEUE_LIVE must be a number"
+QUEUE=$WORK/cache/queue
+# queue_live [sweep]: the live tickets, oldest first, "<first ask> <box> <need>" per line; with sweep the dead ones are removed (under
+# the room lock only). Run it inside $( ): it switches globbing on for the folder.
+queue_live() {
+    local f t need now
+    now=$(date +%s); set +f
+    for f in "$QUEUE"/*; do
+        [ -f "$f" ] || continue
+        t= need=; read -r t need <"$f" 2>/dev/null
+        if [[ $t =~ ^[0-9]+$ ]] && [ $((now - $(stat -c %Y "$f" 2>/dev/null || echo 0))) -le "$QUEUE_LIVE" ]; then printf '%s %s %s\n' "$t" "${f##*/}" "$need"
+        else [ "${1:-}" != sweep ] || rm -f "$f"; fi
+    done | sort -k1,1n -k2,2
+}
+hhmm() { date -d "@$1" +%H:%M; }
+# join_max <max> <items...>: the items joined by ", ", past max the rest as " and <n> more".
+join_max() {
+    local max=$1 s="" n i; shift; n=$#
+    for ((i = 1; i <= n && i <= max; i++)); do s+="${s:+, }${!i}"; done
+    [ "$n" -le "$max" ] || s+=" and $((n - max)) more"
+    printf %s "$s"
+}
+# queue_look <box>: sets q_first (when this box first asked: its own live ticket, else now) and q_ahead (the live tickets of other boxes
+# older than that, oldest first, one per line; all of them when this box has no ticket). Sweeps the dead ones.
+queue_look() {
+    local t b need
+    q_first=$(date +%s) q_ahead=
+    while read -r t b need; do
+        [ -n "$b" ] || continue
+        [ "$b" != "$1" ] || { q_first=$t; break; }
+        q_ahead+="$t $b $need"$'\n'
+    done <<<"$(queue_live sweep)"
+}
+# queue_fits <box> <need>: whether that box's call would be admitted now, by the check a real ask gets (idle machines count as gone, as the
+# eviction would make them, but none is removed here).
+queue_fits() {
+    local box_fit_mb box_why
+    case $2 in
+        vm\ *) [ -z "$(SKIP_IDLE=1 vm_refusal "pod-$1" "${2#vm }")" ] ;;
+        *) ! box_busy "$1" || return 1   # a call into a busy box needs no room
+           SKIP_IDLE=1 box_fit "$1"; [ -z "$box_why" ] ;;
+    esac
+}
+# queue_busy <asking box>: the boxes that count against the room, "<box> (since HH:MM)" (the stamp of the box's last call, as far as known).
+queue_busy() {
+    local rows t b st l=() line
+    rows=$(box_rows $(have_msb && echo 1) 2>/dev/null) || rows=
+    while read -r line; do t=${line%% *} b=${line#* }; l+=("$b$([ "$t" = 0 ] || echo " (since $(hhmm "$t"))")"); done < <(
+        while IFS=$'\t' read -r b _ st _; do
+            [ "$st" = running ] && [ "$b" != "$1" ] && box_busy "$b" && printf '%s %s\n' "$(stamp_of "$b")" "$b"
+        done <<<"$rows" | sort -n)
+    [ ${#l[@]} -gt 0 ] && join_max 4 "${l[@]}" || printf none
+}
+# room_refused <box> <need> <message>: ends a call that found no room (exit 75). A queued call (pod_run's $queued) also writes or refreshes
+# its ticket (the first ask kept) and is told its place and what holds the room.
+room_refused() {
+    local msg=$3 t b a=() n
+    if [ -n "$queued" ]; then
+        { mkdir -p "$QUEUE" && printf '%s %s\n' "$q_first" "$2" >"$QUEUE/$1"; } 2>/dev/null || true   # a ticket that cannot be written costs the call its place, not the refusal
+        while read -r t b _; do [ -z "$b" ] || a+=("$(hhmm "$t")"); done <<<"$q_ahead"
+        n=${#a[@]}
+        if [ "$n" = 0 ]; then msg+="; first in line"
+        else msg+="; $n call$([ "$n" = 1 ] && echo " waits" || echo "s wait") ahead of this one (since $(join_max 3 "${a[@]}"))"; fi
+        msg+="; busy now: $(queue_busy "$1")"
+    fi
+    noroom "$msg"
+}
+# queue_gate <box> <need> <what>: nobody takes room an earlier waiter could take at its next ask: refuses a call that needs new room
+# (the caller has seen today's check admit it) while a live ticket older than this call's own, or any when it has none, would fit now.
+# An earlier waiter that does not fit holds nobody back. Nothing is removed on a ticket's behalf.
+queue_gate() {
+    local t b need l=() n v
+    while read -r t b need; do
+        [ -n "$b" ] && queue_fits "$b" "$need" || continue
+        l+=("$b since $(hhmm "$t")")
+    done <<<"$q_ahead"
+    n=${#l[@]}; [ "$n" -gt 0 ] || return 0
+    v="calls wait"; [ "$n" != 1 ] || v="call waits"
+    room_refused "$1" "$2" "no room for another $3 yet: $n earlier $v for it ($(join_max 3 "${l[@]}")); it is served in turn"
+}
+
 # Retention: the host is kept clean by boxd itself, nobody cleans by hand (owner decision 2026-11-14). Only whole box
 # folders go, never single files of a box: unused for BOXD_KEEP_DAYS, or the least recently used one per reaper pass
 # while the work area is full (from BOXD_EVICT_AT percent until it is under BOXD_EVICT_TO), or the folder of a worktree
@@ -731,7 +817,7 @@ pod_status() {
     printf 'version=%s\tengines=%s\tcpus=%s\tload1=%s\tvm_used=%s\tvm_max=%s\tvm_room=%s\tboxes=%s\tdisk_pct=%s\tmem_free_mb=%s\timages=%s' \
         "$VERSION" "$eng" "$(nproc)" "$l1" "$used" "${vmax:-none}" "$room" "$(grep -c . <<<"$rows")" \
         "$(df --output=pcent "$WORK" | tail -1 | tr -dc 0-9)" "$mem" "$img"
-    printf '\tmem_avail_mb=%s\tgroup_mem_used_mb=%s\tgroup_mem_max_mb=%s\tvm_why=%s\tvm_fit_mb=%s\tbox_room=%s\tbox_fit_mb=%s\tbox_reserve_mb=%s\n' "${ma:--}" "$gcur" "$gmax" "$why" "$fit_mb" "$box_room" "$box_fit_mb" "$BOX_RESERVE"
+    printf '\tmem_avail_mb=%s\tgroup_mem_used_mb=%s\tgroup_mem_max_mb=%s\tvm_why=%s\tvm_fit_mb=%s\tbox_room=%s\tbox_fit_mb=%s\tbox_reserve_mb=%s\twaiting=%s\n' "${ma:--}" "$gcur" "$gmax" "$why" "$fit_mb" "$box_room" "$box_fit_mb" "$BOX_RESERVE" "$(queue_live | grep -c .)"
 }
 
 # ---- The reading verbs for the dashboard: pod report, pod calls, pod log (docs/pod-contract.md). Read only like pod status:
@@ -972,7 +1058,7 @@ pod_report() {
         "$gmax" "$gcur" "${pr[0]:--}" "${pr[1]:--}" "${pr[2]:--}" "${pr[3]:--}" "${oom:--}" "$psome" "$pfull" "$ntx" "$nlc"
     printf '\tvm_used=%s\tvm_max=%s\tvm_room=%s\tvm_mem_mb=%s\tbox_mem_mb=%s\tdisk_pct=%s\tdisk_total_mb=%s\tdisk_used_mb=%s\tttl=%s' \
         "${S[vm_used]}" "${S[vm_max]}" "${S[vm_room]}" "$(lim_mb "$VM_LIMITS")" "$(ctr_limit_mb)" "${S[disk_pct]}" "$dt" "$du" "$TTL"
-    printf '\tpower=%s\tidle_checks=%s\tidle_count=%s\tidle_last=%s\treset_at=%s\tkeepawake=%s\n' "$power" "$ic" "${cnt:--}" "${last:--}" "$rat" "$ka"
+    printf '\tpower=%s\tidle_checks=%s\tidle_count=%s\tidle_last=%s\treset_at=%s\tkeepawake=%s\twaiting=%s\n' "$power" "$ic" "${cnt:--}" "${last:--}" "$rat" "$ka" "${S[waiting]:-0}"
     have_msb && vmrows=1
     rows=$(box_rows $vmrows) || exit 125   # a failed engine listing is no list (see pod_list)
     while IFS=$'\t' read -r box image state engine; do
@@ -1074,7 +1160,7 @@ image_stale_now() {
 }
 
 pod_run() {
-    local box=${1:-} image="" imgfile="" vm="" container="" user="" cuser="" kvm="" ckvm="" ulabels="" recreate="" snapshot="" run="" b64="" tty="" name J out rc
+    local box=${1:-} image="" imgfile="" vm="" container="" queued="" user="" cuser="" kvm="" ckvm="" ulabels="" recreate="" snapshot="" run="" b64="" tty="" name J out rc
     local -a envs=()
     local size="" have="" lim="" asked="" pk pick chosen="" used_mb=0 cap_mb=0 max="" box_fit_mb box_why
     local kengine="" kuser="" kkvm="" kimage="" gmine="" gother="" k v2 newid="" changed="" rebuilt="" full engine=container cid="" sc="" pc="" vc="" cimg="" cst="" vimg="" vst="" other mine cur st create="" start="" n
@@ -1095,6 +1181,7 @@ pod_run() {
                 [[ $2 =~ $SECRET_RE ]] || die "--env $2: only names ending in _TOKEN, _KEY, _SECRET or _PASSWORD"
                 envs+=("$2"); shift 2 ;;
             --recreate) recreate=1; shift ;;
+            --queued) queued=1; shift ;;
             --snapshot) snapshot=1; shift ;;
             --detach) [[ ${2:-} =~ $RUN_RE ]] || die "bad run id"; run=$2; shift 2 ;;
             --) shift; [ $# -eq 1 ] || die "expected exactly one command word after --"; b64=$1; break ;;
@@ -1262,16 +1349,17 @@ pod_run() {
         # One admission at a time: the lock is held until the sandbox exists, so two first calls cannot both take the last room.
         exec 7>"$WORK/cache/vm-room.lock"
         flock 7
-        out=$(vm_refusal "$name" "$(lim_mb "$lim")")
+        queue_look "$box"
+        out=$(vm_refusal "$name" "$(lim_mb "$lim")") hope=
+        [ -z "$out" ] || hope=$(SKIP_IDLE=1 vm_refusal "$name" "$(lim_mb "$lim")")
         # No room: idle machines go, the longest unused first, until this one fits. None goes when the sizes of the busy
         # machines alone refuse it (the answer with the idle ones left out names another rule than the measured memory).
-        if [ -n "$out" ]; then
-            hope=$(SKIP_IDLE=1 vm_refusal "$name" "$(lim_mb "$lim")")
-            if [ -z "$hope" ] || [[ $hope == *" MB in use + "* ]]; then
-                while [ -n "$out" ] && vm_evict_idle "$name"; do out=$(vm_refusal "$name" "$(lim_mb "$lim")"); done
-            fi
+        # Before any goes, the waiting line: a call today's check would admit gives way to an earlier waiter that fits.
+        if [ -z "$hope" ] || [[ $hope == *" MB in use + "* ]]; then
+            queue_gate "$box" "vm $(lim_mb "$lim")" "virtual machine"
+            while [ -n "$out" ] && vm_evict_idle "$name"; do out=$(vm_refusal "$name" "$(lim_mb "$lim")"); done
         fi
-        [ -z "$out" ] || noroom "no room for another virtual machine ($out); wait for one to end or stop one"
+        [ -z "$out" ] || room_refused "$box" "vm $(lim_mb "$lim")" "no room for another virtual machine ($out); wait for one to end or stop one"
     fi
     # A container box: a call that starts work in one that is not busy is admitted by the reserve (box_fit); one already busy adds
     # nothing and is never refused here. The room lock is held until this call holds .running below, so ten calls at once are
@@ -1279,14 +1367,18 @@ pod_run() {
     if [ -z "$vm" ] && [ "$BOX_RESERVE" -gt 0 ] && ! box_busy "$box"; then
         exec 7>"$WORK/cache/vm-room.lock"
         flock 7
+        queue_look "$box"
         kept=$([ -n "$create$start" ] || echo kept)   # a box that runs and is kept counts what it uses when that is more than the reserve
         box_fit "$box" "$kept"
         # No room: idle machines go, the longest unused first, until the call fits, and none when all of them together would not make it fit.
-        if [ -n "$box_why" ] && have_msb && (SKIP_IDLE=1; box_fit "$box" "$kept"; [ -z "$box_why" ]); then
+        # Before any goes, the waiting line: a call today's check would admit gives way to an earlier waiter that fits.
+        if [ -z "$box_why" ] || { have_msb && (SKIP_IDLE=1; box_fit "$box" "$kept"; [ -z "$box_why" ]); }; then
+            queue_gate "$box" box "busy box"
             while [ -n "$box_why" ] && vm_evict_idle "$name"; do box_fit "$box" "$kept"; done
         fi
-        [ -z "$box_why" ] || noroom "no room for another busy box ($box_why); wait for one to end$(have_msb && vm_calm && echo ', or stop a machine that has no run (box stop)')"
+        [ -z "$box_why" ] || room_refused "$box" box "no room for another busy box ($box_why); wait for one to end$(have_msb && vm_calm && echo ', or stop a machine that has no run (box stop)')"
     fi
+    rm -f "$QUEUE/$box" 2>/dev/null   # admitted (or never refused): the call's ticket, if any, is spent
     if [ -n "$recreate" ] || [ -n "$rebuilt" ]; then
         [ -z "$pc" ] || podman rm -f "$name" >/dev/null
         [ -z "$vc" ] || vm_rm "$name"
@@ -1535,6 +1627,26 @@ pod_forward() {
 }
 
 # One line per command the dispatcher below accepts over ssh. Read only: no lock, no stamp, no call log line.
+# pod queue <box> box | vm <size>: a waiting call asks for its place without starting anything (the client sends it while no room shows in
+# `pod status`, which cannot write). Exit 0: the room is there now, ask with pod run. Exit 75: no room, with the ticket written or
+# refreshed and the place and the busy boxes in the line. shortcut: a machine is counted at the size word asked (large when none), not at
+# the smaller size `pod run` may pick from the measured need; upgrade when a ticket for a machine that never fits is seen.
+pod_queue() {
+    local box=${1:-} what=${2:-} size=${3:-} queued=1 need
+    [[ $box =~ $BOX_RE ]] || die "bad box name"
+    case "$what $size" in
+        "box ") need=box ;;
+        "vm small"|"vm medium"|"vm large"|"vm xlarge") have_msb || die "virtual machines are not installed on this host"; need="vm $(lim_mb "$(size_lim "$size")")" ;;
+        *) die "unknown command" ;;
+    esac
+    mkdir -p "$WORK/cache" || die "cannot create $WORK/cache"
+    exec 7>"$WORK/cache/vm-room.lock"
+    flock 7
+    queue_look "$box"
+    queue_fits "$box" "$need" && exit 0
+    room_refused "$box" "$need" "no room for another $([ "$what" = vm ] && echo virtual machine || echo busy box) now" 2>&1   # standard output: the client reads that
+}
+
 pod_help() {
     cat <<'HELP'
 pod run <box> ...      run a command in a box (starts it when missing)
@@ -1549,6 +1661,7 @@ pod log <box> <run> [offset]         output of a detached run
 pod events <box> <run>               what could have disturbed a detached run
 pod forward <box> <port>             connect to a port inside a box
 pod image ...          manage local images
+pod queue <box> box|vm <size>        ask for a place in the waiting line, start nothing
 pod help               this list
 HELP
 }
@@ -1604,6 +1717,7 @@ if [ -n "${SSH_ORIGINAL_COMMAND:-}" ]; then
         events) [ ${#W[@]} -eq 4 ] || die "unknown command"; pod_events "${W[@]:2}" ;;
         forward) [ ${#W[@]} -eq 4 ] || die "unknown command"; pod_forward "${W[2]}" "${W[3]}" ;;
         image) pod_image "${W[@]:2}" ;;
+        queue) [ ${#W[@]} -ge 4 ] && [ ${#W[@]} -le 5 ] || die "unknown command"; pod_queue "${W[@]:2}" ;;
         help) [ ${#W[@]} -eq 2 ] || die "unknown command"; pod_help ;;
         *) die "unknown command" ;;
     esac

@@ -758,7 +758,7 @@ eq "pod status: free memory is never below zero" mem_free_mb=0 "$(tr '\t' '\n' <
 # The three new words have the meaning and the code of the host line of pod report; mem_free_mb stays as it was.
 cg8; printf 'MemTotal: 32768000 kB\nMemAvailable: 9216000 kB\nSwapTotal: 0 kB\nSwapFree: 0 kB\n' > "$W/meminfo"; echo $((3 * 1048576)) > "$BOXD_CGROOT/boxd/memory.swap.current"
 CASE_ENV=(BOXD_MEMINFO="$W/meminfo"); pod "pod status"
-eq "pod status: after images come the host's available memory and the group's used and maximum" $'mem_avail_mb=9000\tgroup_mem_used_mb=3\tgroup_mem_max_mb=8192' "$(awk -F'\t' '{ print $(NF-7) "\t" $(NF-6) "\t" $(NF-5) }' "$T/e/out")"
+eq "pod status: after images come the host's available memory and the group's used and maximum" $'mem_avail_mb=9000\tgroup_mem_used_mb=3\tgroup_mem_max_mb=8192' "$(awk -F'\t' '{ print $(NF-8) "\t" $(NF-7) "\t" $(NF-6) }' "$T/e/out")"
 eq "pod status: mem_free_mb stays the group's accounting" mem_free_mb=8189 "$(tr '\t' '\n' < "$T/e/out" | grep '^mem_free_mb=')"
 pod "pod report"; eq "pod report: its host line has the same three figures as pod status" $'mem_avail_mb=9000\tgroup_mem_max_mb=8192\tgroup_mem_used_mb=3' "$(head -1 "$T/e/out" | tr '\t' '\n' | grep -E '^(mem_avail_mb|group_mem_max_mb|group_mem_used_mb)=' | paste -sd'\t')"
 CASE_ENV=()
@@ -790,10 +790,10 @@ eq "container memory counts in the commitment" "75 boxd-pod: no room for another
 rm -f "$FAKE_STATE/pod-x"; pod "pod run b2 --vm --size small -- $B64"; eq "the same machines without container memory are admitted" 0 "$rc"
 cg8; ctrcg 2048 0; pod "pod run b1 --vm --size small -- $B64"; eq "container memory alone does not refuse when everything fits" 0 "$rc"
 cg8; ctrcg 1024 0; pod "pod status"; eq "pod status: no room for a large machine once a container box uses memory" vm_room=no "$(tr '\t' '\n' < "$T/e/out" | grep '^vm_room=')"
-eq "pod status: vm_why comes before vm_fit_mb and the three words of container boxes, and says why no machine fits" "vm_why=0 MB of running machines + 1024 MB used by container boxes + 8192 MB asked > 8192 MB, 100% of the 8192 MB cap" "$(awk -F'\t' '{ print $(NF-4) }' "$T/e/out")"
+eq "pod status: vm_why comes before vm_fit_mb and the three words of container boxes, and says why no machine fits" "vm_why=0 MB of running machines + 1024 MB used by container boxes + 8192 MB asked > 8192 MB, 100% of the 8192 MB cap" "$(awk -F'\t' '{ print $(NF-5) }' "$T/e/out")"
 rm -f "$FAKE_STATE/pod-x"; pod "pod status"; eq "pod status: room for a large machine on an idle cap" vm_room=yes "$(tr '\t' '\n' < "$T/e/out" | grep '^vm_room=')"
-eq "pod status: vm_why is empty when a machine fits" vm_why= "$(awk -F'\t' '{ print $(NF-4) }' "$T/e/out")"
-eq "pod status: vm_fit_mb comes before the three words of container boxes, the whole cap on an idle host" vm_fit_mb=8192 "$(awk -F'\t' '{ print $(NF-3) }' "$T/e/out")"
+eq "pod status: vm_why is empty when a machine fits" vm_why= "$(awk -F'\t' '{ print $(NF-5) }' "$T/e/out")"
+eq "pod status: vm_fit_mb comes before the three words of container boxes, the whole cap on an idle host" vm_fit_mb=8192 "$(awk -F'\t' '{ print $(NF-4) }' "$T/e/out")"
 # vm_fit_mb: the largest machine `pod run` admits (the smaller of cap minus use and the commit share minus machines minus
 # containers); the seam test runs pod run itself, with a machine of just under, exactly and just over that size.
 fitword() { pod "pod status"; tr '\t' '\n' < "$T/e/out" | sed -n 's/^vm_fit_mb=//p'; }
@@ -1412,5 +1412,57 @@ pod "pod events $box r1"; eq "pod events: a box that holds its run lock now with
 touch -d @1200 "$W/jobs/fg/.last-used"; pod "pod events $box r1"; eq "pod events: one whose stamp is after the window began later" "others=-" "$(tr '\t' '\n' < "$T/e/out" | grep '^others=')"
 exec 8>&-
 unset FAKE_CPID; CASE_ENV=()
+
+# The waiting line (docs/pod-contract.md, "The waiting line"): a call made with --queued that is refused for room leaves a ticket in
+# cache/queue; a call that needs new room gives way to an older live ticket that fits now. Ticket ages are set with file times.
+# The setup: two idle container boxes and a busy one (x) that holds the room; ticket files are written by hand where a case needs more.
+qroom() { cg8; ctrcg 1024 0; ctrbox x; ctrbox w; holdbox x; CASE_ENV+=(BOXD_VM_IDLE_MIN=99999999999); }
+tk() { mkdir -p "$W/cache/queue"; printf '%s %s\n' "$2" "${3:-box}" > "$W/cache/queue/$1"; [ "${4:-live}" = live ] || touch -d @100 "$W/cache/queue/$1"; }
+hm() { date -d "@$1" +%H:%M; }
+have() { [ -e "$W/cache/queue/$1" ] && echo yes || echo no; }
+QSTAMP=1700000000; QWAIT=1700000100
+qroom; touch -d @$QSTAMP "$W/jobs/x/.last-used"
+pod "pod run y --queued -- $B64"
+eq "waiting line: a queued call refused for room leaves a ticket, and is told it is first in line and what holds the room" "75 yes boxd-pod: no room for another busy box (5120 MB counted + 4096 MB reserve > 8192 MB, 100% of the 8192 MB cap); wait for one to end; first in line; busy now: x (since $(hm $QSTAMP))" "$rc $(have y) $(cat "$T/e/err")"
+eq "waiting line: the ticket holds the time of the first ask and what the call needs" "box" "$(cut -d' ' -f2- "$W/cache/queue/y")"
+tk y $QWAIT; pod "pod run y --queued -- $B64"
+eq "waiting line: a refresh keeps the time of the first ask" "$QWAIT box" "$(cat "$W/cache/queue/y")"
+pod "pod run z -- $B64"; eq "waiting line: a call without the word leaves no ticket" "75 no" "$rc $(have z)"
+rm -f "$W/cache/queue/y"; tk a 1000; tk b 2000; pod "pod run c --queued -- $B64"
+eq "waiting line: the place and the busy boxes of a refused call" "no room for another busy box (5120 MB counted + 4096 MB reserve > 8192 MB, 100% of the 8192 MB cap); wait for one to end; 2 calls wait ahead of this one (since $(hm 1000), $(hm 2000)); busy now: x (since $(hm $QSTAMP))" "$(sed 's/^boxd-pod: //' "$T/e/err")"
+# room appears: x is no longer busy
+unhold; rm -f "$W/cache/queue/"*; tk y $QWAIT
+pod "pod run z -- $B64"
+eq "waiting line: a call without a ticket is refused while an older live ticket fits, with the exact line" "75 boxd-pod: no room for another busy box yet: 1 earlier call waits for it (y since $(hm $QWAIT)); it is served in turn" "$rc $(cat "$T/e/err")"
+eq "waiting line: the refused call left no ticket and made no box" "no no" "$(have z) $([ -e "$FAKE_STATE/pod-z" ] && echo yes || echo no)"
+pod "pod run y --queued -- $B64"; eq "waiting line: the ticket's own call is admitted and its ticket is gone" "0 no" "$rc $(have y)"
+rm -f "$FAKE_STATE/pod-y"; tk y1 1000; tk y2 2000
+pod "pod run y2 --queued -- $B64"
+eq "waiting line: the younger of two tickets is refused while the older fits, and told so" "75 yes boxd-pod: no room for another busy box yet: 1 earlier call waits for it (y1 since $(hm 1000)); it is served in turn; 1 call waits ahead of this one (since $(hm 1000)); busy now: none" "$rc $(have y2) $(cat "$T/e/err")"
+pod "pod run y1 --queued -- $B64"; eq "waiting line: the older is admitted" "0 no" "$rc $(have y1)"
+pod "pod run y2 --queued -- $B64"; eq "waiting line: then the younger is admitted too" "0 no" "$rc $(have y2)"
+rm -f "$FAKE_STATE/pod-y1" "$FAKE_STATE/pod-y2"; tk dead 100 box dead; pod "pod run z -- $B64"
+eq "waiting line: a dead ticket (not refreshed within BOXD_QUEUE_LIVE) holds nobody back and is removed" "0 no" "$rc $(have dead)"
+rm -f "$FAKE_STATE/pod-z"; tk old 1000; touch -d @$(( $(date +%s) - 50 )) "$W/cache/queue/old"
+BOXD_QUEUE_LIVE=10 pod "pod run z -- $B64"; eq "waiting line: BOXD_QUEUE_LIVE sets how long a ticket lives (50 seconds old, 10 allowed)" "0 no" "$rc $(have old)"
+rm -f "$FAKE_STATE/pod-z"; tk big 1000 "vm 8192"; pod "pod run z -- $B64"
+eq "waiting line: an older ticket for a machine that does not fit holds back no container call that fits" "0 yes" "$rc $(have big)"
+rm -f "$FAKE_STATE/pod-z"; qroom; rm -f "$W/cache/queue/"*; ctrbox b; exec 9<"$W/jobs/b/.running"; flock -s 9; unhold; tk q 1000
+pod "pod run b -- $B64"; eq "waiting line: a call into a box that is already busy is never held back" 0 "$rc"
+pod "pod run z -- $B64"; eq "waiting line: but a call that needs new room is, while the ticket fits" 75 "$rc"
+exec 9<&-
+pod "pod status"; eq "waiting line: pod status counts the live tickets" "waiting=1" "$(tr '\t' '\n' < "$T/e/out" | grep '^waiting=')"
+tk dead2 100 box dead; pod "pod status"; eq "waiting line: and not the dead ones" "waiting=1" "$(tr '\t' '\n' < "$T/e/out" | grep '^waiting=')"
+pod "pod report"; eq "waiting line: the host line of pod report has it too" "waiting=1" "$(head -n 1 "$T/e/out" | tr '\t' '\n' | grep '^waiting=')"
+eq "waiting line: pod status wrote nothing, not even a sweep of the dead ticket" yes "$(have dead2)"
+# pod queue: the waiting call's own ask while pod status shows no room
+qroom; pod "pod queue y box"; eq "pod queue: no room, 75, the ticket is written, the line says what holds the room" "75 yes boxd-pod: no room for another busy box now; first in line; busy now: x" "$rc $(have y) $(sed 's/ (since.*//' "$T/e/out")"
+unhold; pod "pod queue y box"; eq "pod queue: room, exit 0 and the ticket is left as it was" "0 yes" "$rc $(have y)"
+rm -f "$W/cache/queue/"*; pod "pod queue y box"; eq "pod queue: room and no ticket writes none" "0 no" "$rc $(have y)"
+pod "pod queue y vm huge"; eq "pod queue: a bad size is refused" 125 "$rc"
+# the ticket is written although the top of the work area is not writable (on a real host it belongs to root)
+qroom; mkdir -p "$W/home" "$W/tmp" "$W/cache" "$W/jobs"; chmod 555 "$W"; pod "pod run y --queued -- $B64"; chmod 755 "$W"
+eq "waiting line: the ticket is written when the work area's top folder cannot be written, and the call is refused, not hung" "75 yes" "$rc $(have y)"
+unhold; CASE_ENV=()
 
 [ "$fails" -eq 0 ] && echo "ALL OK" || { echo "$fails FAILED"; exit 1; }

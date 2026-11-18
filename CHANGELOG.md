@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.41
+
+- Calls that wait for room are served in turn. Until now `box --wait` asked again every 30 seconds and held no place, so a call that arrived late could be served before one that had waited for an hour. Now a waiting call holds a ticket on the server (`cache/queue`, new server word `pod queue`), and nobody takes room that an earlier waiter could take at its next ask. A waiter whose need does not fit anyway holds nobody back, and a call into a box that is already busy is never held back.
+- The refusal tells a waiting call its place and what holds the room: `2 calls wait ahead of this one (since 01:16, 01:33); busy now: x (since 23:13)`.
+- `pod status` and the host line of `pod report` gain `waiting=<number of waiting calls>`. New setting `BOXD_QUEUE_LIVE` (seconds a ticket lives without a new ask, default 120).
+- The client sends the new words only to a server of this version or later; with an older server `--wait` works as before.
+
 ## 0.4.40
 
 - The event record of a detached run (0.4.39) was never written on a real host: its folder was to be made at the top of the work area, which belongs to root, not to the build account. The records now go to `cache/events/<box>` in the work area, which the build account owns and no box sees. With 0.4.39 every record read `complete=no`, `why=no-start-record`, never a false "nothing happened".

@@ -85,6 +85,8 @@ if [ -n "\${FAKE_HOSTS:-}" ]; then
       [ ! -f "$FAKE_HOSTS/$h.report.fail.$n" ] || exit 1
       if [ -f "$FAKE_HOSTS/$h.report.$n" ]; then cat "$FAKE_HOSTS/$h.report.$n"; else cat "$FAKE_HOSTS/$h.report" 2>/dev/null; fi; exit 0;;
     *" pod log "*) r=\${*% *}; cat "$FAKE_HOSTS/$h.log.\${r##* }" 2>/dev/null; exit 0;;
+    *" pod queue "*) echo x >> "$FAKE_HOSTS/$h.queues"; n=$(wc -l < "$FAKE_HOSTS/$h.queues" | tr -d ' ')   # the place: <alias>.queue.<n> or <alias>.queue (said, exit 75), else room
+      for q in "$FAKE_HOSTS/$h.queue.$n" "$FAKE_HOSTS/$h.queue"; do [ ! -f "$q" ] || { cat "$q"; exit 75; }; done; exit 0;;
     *" pod list") cat "$FAKE_HOSTS/$h.list" 2>/dev/null; exit 0;;
     *" pod ps "*) cat "$FAKE_HOSTS/$h.ps.\${*##* }" 2>/dev/null; exit 0;;
     *" pod stop "*) exit "$(cat "$FAKE_HOSTS/$h.stop.exit" 2>/dev/null || echo 0)";;
@@ -92,6 +94,7 @@ if [ -n "\${FAKE_HOSTS:-}" ]; then
     *" pod run "*) if [ -f "$FAKE_HOSTS/$h.run.refuse" ] && [ "$(cat "$FAKE_HOSTS/$h.run.refuse")" -gt 0 ]; then
         echo $(( $(cat "$FAKE_HOSTS/$h.run.refuse") - 1 )) > "$FAKE_HOSTS/$h.run.refuse"
         [ ! -f "$FAKE_HOSTS/$h.run.pre" ] || cat "$FAKE_HOSTS/$h.run.pre" >&2
+        if [ -f "$FAKE_HOSTS/$h.refuse.line" ]; then cat "$FAKE_HOSTS/$h.refuse.line" >&2; exit 75; fi
         echo "boxd-pod: no room for another virtual machine (3 of 3 running); wait for one to end or stop one" >&2; exit 75
       fi
       [ ! -f "$FAKE_HOSTS/$h.run.err" ] || cat "$FAKE_HOSTS/$h.run.err" >&2
@@ -528,7 +531,7 @@ function realStatus(vmRunning: number, capMb?: number): string {
   const r = spawnSync("bash", [path.join(REPO, "server/boxd-pod")], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
     env: { PATH: `${sbin}:${process.env.PATH ?? ""}`, HOME: home, BOXD_CONF: "/nonexistent", BOXD_WORK: work, BOXD_IMAGES_DIR: imgs, BOXD_CGROOT: path.join(d, "cg"), BOXD_VM_MAX: "3", SSH_ORIGINAL_COMMAND: "pod status" } });
   assert.equal(r.status, 0, r.stderr);
-  return r.stdout.trim();
+  return r.stdout.trim().replace(/version=[^\t]+/, "version=0.4.40");   // an old server, stated here: tests must not inherit the client's VERSION (a server from 0.4.41 gets --queued and pod queue)
 }
 const FULL = realStatus(3), FREE = realStatus(1);
 const REFUSAL = "boxd-pod: no room for another virtual machine (3 of 3 running); wait for one to end or stop one";
@@ -573,7 +576,7 @@ const choices = (s: Servers) => { try { return readFileSync(path.join(s.home, ".
 const closedPort = async () => { const s = net.createServer().listen(0, "127.0.0.1"); await once(s, "listening"); const p = (s.address() as net.AddressInfo).port; s.close(); await once(s, "close"); return p; };
 
 test("seam: the real server's status line is what the client's choice reads", () => {
-  assert.deepEqual(Object.keys(parseStatus(FULL)), ["version", "engines", "cpus", "load1", "vm_used", "vm_max", "vm_room", "boxes", "disk_pct", "mem_free_mb", "images", "mem_avail_mb", "group_mem_used_mb", "group_mem_max_mb", "vm_why", "vm_fit_mb", "box_room", "box_fit_mb", "box_reserve_mb"]);
+  assert.deepEqual(Object.keys(parseStatus(FULL)), ["version", "engines", "cpus", "load1", "vm_used", "vm_max", "vm_room", "boxes", "disk_pct", "mem_free_mb", "images", "mem_avail_mb", "group_mem_used_mb", "group_mem_max_mb", "vm_why", "vm_fit_mb", "box_room", "box_fit_mb", "box_reserve_mb", "waiting"]);
   assert.equal(parseStatus(FULL).vm_room, "no");
   assert.equal(parseStatus(FREE).vm_room, "yes");
   assert.equal(parseStatus(FREE).images, "toolbox");
@@ -2830,4 +2833,48 @@ test("an option before a box word is refused before anything is asked of a host;
   const word = runBox(["drop", "--host", "test"]);
   assert.notEqual(word.code, 2);
   assert.equal(word.err.includes("is a box word"), false);
+});
+
+// ---- 0.4.41: --wait keeps its place in line ---------------------------------------------------------------------------------------
+const V41 = (status: string) => status.replace(/version=[^\t]+/, "version=0.4.41");
+const queued = (rp: Repo, n: string, ...opts: string[]) => runLine(rp, n, ...opts).replace(" -- ", " --queued -- ");
+
+test("--wait sends --queued to a server of 0.4.41 or later, and to no older one; without --wait never", () => {
+  const s = servers([{ name: "tower", status: V41(FREE) }, { name: "laptop", status: FREE }]), rp = newRepo();
+  const r = waits(rp, s, ["--no-sync", "--vm", "true"]);
+  assert.equal(r.code, 0, r.err);
+  assert.deepEqual(rest(r.calls), [queued(rp, "tower", "--vm")]);
+  const old = servers([{ name: "tower", status: FREE }, { name: "laptop", status: FREE }]), rq = newRepo();
+  assert.deepEqual(rest(waits(rq, old, ["--no-sync", "--vm", "true"]).calls), [runLine(rq, "tower", "--vm")], "a server of 0.4.40 does not know the word");
+  const plain = go(newRepo(), s, ["--no-sync", "--vm", "true"]), rp2 = rest(plain.calls);
+  assert.ok(rp2.length === 1 && !rp2[0]?.includes("--queued"), "no --wait, no word");
+  const newer = servers([{ name: "tower", status: FREE.replace(/version=[^\t]+/, "version=0.10.0") }, { name: "laptop", status: FREE }]), rn = newRepo();
+  assert.deepEqual(rest(waits(rn, newer, ["--no-sync", "--vm", "true"]).calls), [queued(rn, "tower", "--vm")], "versions compare by number: 0.10.0 is after 0.4.41");
+});
+
+test("--wait: while pod status shows no room the call asks the server for its place, and a change of place is shown as changed reasons", () => {
+  const s = servers([{ name: "tower", status: V41(FULL) }, { name: "laptop", status: FULL }]), rp = newRepo();
+  hostFile(s, "tower", "status.3", `${V41(FREE)}\n`);
+  hostFile(s, "tower", "queue.1", "boxd-pod: no room for another virtual machine now; first in line; busy now: a (since 10:00)\n");
+  hostFile(s, "tower", "queue.2", "boxd-pod: no room for another virtual machine now; 1 call waits ahead of this one (since 09:00); busy now: a (since 10:00)\n");
+  const r = waits(rp, s, ["--no-sync", "--vm", "true"]);
+  assert.equal(r.code, 0, r.err);
+  assert.equal(r.err, "box: waiting for room, asking every 0.001 seconds:\n  tower: 3 of 3 running\n  laptop: 3 of 3 running\n  tower: first in line; busy now: a (since 10:00)\n"
+    + "box: the reasons changed: tower: 3 of 3 running; laptop: 3 of 3 running; tower: 1 call waits ahead of this one (since 09:00); busy now: a (since 10:00)\n");
+  assert.equal(r.calls.filter((c) => c.includes(" pod queue ")).length, 2, "the older server (laptop) is not asked");
+  assert.ok(r.calls.every((c) => !c.includes("boxd-laptop") || c.endsWith(" pod status")));
+  assert.ok(r.calls.some((c) => c.endsWith(` pod queue ${rp.box} vm large`)));
+  assert.deepEqual(rest(r.calls).filter((c) => !c.includes(" pod queue ")), [queued(rp, "tower", "--vm")]);
+});
+
+test("--wait: a refusal at the server with a place in it shows the place, and a changed place is a changed reason", () => {
+  const s = servers([{ name: "tower", status: V41(FREE) }, { name: "laptop", status: FULL }]), rp = newRepo();
+  writeFileSync(path.join(rp.cwd, ".git/boxd-host"), "tower\n");
+  hostFile(s, "tower", "run.refuse", "2\n");
+  hostFile(s, "tower", "refuse.line", "boxd-pod: no room for another virtual machine yet: 1 earlier call waits for it (a since 09:00); it is served in turn; 1 call waits ahead of this one (since 09:00); busy now: none\n");
+  const r = waits(rp, s, ["--no-sync", "--vm", "true"]);
+  assert.equal(r.code, 0, r.err);
+  assert.ok(r.err.includes("box: waiting for room, asking every 0.001 seconds:\n  tower: no room (the server refused the call); 1 call waits ahead of this one (since 09:00); busy now: none\n"), r.err);
+  assert.equal(r.calls.filter((c) => c === runLine(rp, "tower", "--vm")).length, 1, "the first ask of a placed worktree comes before any probe, so before the version is known: no word");
+  assert.equal(r.calls.filter((c) => c === queued(rp, "tower", "--vm")).length, 2);
 });

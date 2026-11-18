@@ -21,7 +21,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-export const VERSION = "0.4.40";
+export const VERSION = "0.4.41";
 const BOX = /^[a-z0-9][a-z0-9_.-]{0,62}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const MAC = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i;
@@ -117,8 +117,9 @@ container or, with --vm, a small virtual machine; the same box on every call) an
                    --no-sync, --snapshot, forward or vnc
   --wait           when no build server has room (for a machine, or memory for another busy container box), wait and ask
                    again every 30 seconds ($BOXD_WAIT_MS) until the call can be placed, instead of exit 75 at once; a
-                   worktree whose server is full moves first when it can; holds nothing meanwhile and gives no order
-                   among several waiting callers. A refusal that waiting cannot fix (no server with the image or with virtual machines, none
+                   worktree whose server is full moves first when it can. From server 0.4.41 the call keeps its place in
+                   line: waiting callers are served in the order they first asked as far as memory allows, and the waiting line
+                   tells its place and what holds the room. A refusal that waiting cannot fix (no server with the image or with virtual machines, none
                    reachable) still ends at once
   --pull <path>    after a foreground run, copy <path> (relative to the worktree) back; repeatable. Only changed
                    files travel (rsync)
@@ -516,6 +517,11 @@ function wakeTarget(env: Env, name: string): string | undefined {
 
 // One host's state, asked without waking it: a host that sleeps is first tried with a plain connection to its wake
 // target (what box-wake does), and only an answer lets the ssh through; no answer means asleep and no ssh is made.
+// What each host's last `pod status` said its version is: a call made with --wait keeps its place in line only on a server that knows it.
+const hostVersion = new Map<string, string>(), PLACE_FROM = "0.4.41";
+const atLeast = (v: string | undefined, min: string) => { const a = (v ?? "").split(".").map(Number), b = min.split(".").map(Number), i = b.findIndex((x, j) => (a[j] ?? 0) !== x); return i < 0 || (a[i] ?? 0) > (b[i] as number); };
+// The place and the busy boxes the server tells a waiting call, at the end of its last line (docs/pod-contract.md, "The waiting line").
+const placeOf = (text: string) => /; (first in line|\d+ calls? waits? ahead of this one).*$/.exec(text.trimEnd().split("\n").pop() ?? "")?.[0].slice(2);
 export async function probe(name: string, env: Env): Promise<HostState> {
   const target = wakeTarget(env, name);
   if (target && !(await answers(target, PROBE_SECONDS * 1000))) return { name, state: "asleep" };
@@ -526,7 +532,7 @@ export async function probe(name: string, env: Env): Promise<HostState> {
     c.on("error", () => resolve({ code: 255, out }));
     c.on("close", (code) => resolve({ code: code ?? 255, out }));
   });
-  if (r.code === 0 && r.out.includes("version=")) return { name, state: "awake", status: r.out.trim() };
+  if (r.code === 0 && r.out.includes("version=")) { hostVersion.set(name, parseStatus(r.out).version ?? ""); return { name, state: "awake", status: r.out.trim() }; }
   return { name, state: r.code === 125 ? "awake" : "unreachable" }; // 125: a server too old to know `pod status`
 }
 
@@ -1328,10 +1334,11 @@ export function main(args: string[], env: Env = process.env, inner?: { run: stri
     }
     } finally { drop(); for (const s of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.removeListener(s, onSignal); }
     register(env, name, box, toplevel);
-    if (tty) return { code: spawnSync("ssh", ["-t", ...sendEnv, HOST, remote], { ...stdio, env: sshEnv }).status ?? 1, err: "" };
+    const sent = wait && atLeast(hostVersion.get(name), PLACE_FROM) ? remote.replace(" -- ", " --queued -- ") : remote; // --queued goes before the "--" that ends the options, and only to a server that knows it
+    if (tty) return { code: spawnSync("ssh", ["-t", ...sendEnv, HOST, sent], { ...stdio, env: sshEnv }).status ?? 1, err: "" };
     // A foreground call ends with its starter (BOXD_ORPHAN_CHECK_MS is how often the client looks; a test hook).
     const orphanMs = run || env.BOXD_KEEP_ORPHAN === "1" ? 0 : Number(env.BOXD_ORPHAN_CHECK_MS ?? 1000);
-    return watched(HOST, remote, box, run ? 0 : minutes * 60_000, sendEnv, sshEnv, orphanMs);
+    return watched(HOST, sent, box, run ? 0 : minutes * 60_000, sendEnv, sshEnv, orphanMs);
   }
   // The server writes the refusal as the last line before it exits 75 (an image build or a removal note may come first), so the last non-empty line decides.
   const refused = (r: { code: number; err: string }) => r.code === NO_ROOM && (r.err.trimEnd().split("\n").pop() ?? "").startsWith(NO_ROOM_TEXT);
@@ -1352,6 +1359,14 @@ export function main(args: string[], env: Env = process.env, inner?: { run: stri
       process.stderr.write("box: the process that started this call is gone; no longer waiting\n");
       return true;
     };
+    // While pod status shows no room (it cannot write), the call asks each such server for its place with pod queue, which keeps its ticket
+    // alive; the answer is told with the reasons. Only servers from 0.4.41; one that fails or has room adds no line.
+    const queueLines = async (seen: HostState[]): Promise<string[]> => wait ? (await Promise.all(seen.map(async (h) => {
+      const c = h.state === "awake" && h.status !== undefined && atLeast(parseStatus(h.status).version, PLACE_FROM) ? choose([h], req) : undefined;
+      if (!c || !("refusal" in c) || !c.wait) return "";
+      const r = await ask(h.name, `pod queue ${box} ${req.vm ? `vm ${req.size ?? "large"}` : "box"}`), told = r.code === 75 ? placeOf(r.out) : undefined;
+      return told ? `${h.name}: ${told}` : "";
+    }))).filter(Boolean) : [];
     // A placed worktree whose own host has no room moves by itself (owner decision 2026-11-17), as --host would: the placement is
     // recorded and "moved" logged. Only when another host has room for this call and nothing of this box would be lost or stranded
     // on the old host: a machine or container of it in any state, or a run of it, running or ended (its log and results are there),
@@ -1375,11 +1390,11 @@ export function main(args: string[], env: Env = process.env, inner?: { run: stri
     }
     for (;;) {
     if (wait && waiting && name !== undefined) { // a placed worktree stays on its host: ask that one only
-      const c = choose([await probe(name, env)], req);
+      const seen = await probe(name, env), c = choose([seen], req);
       if ("refusal" in c) {
         if (!c.wait) { process.stderr.write(`box: no build server has room for this call\n${c.refusal.map((l) => `  ${l}\n`).join("")}`); return NO_ROOM; }
         if (await autoMove(name)) continue; // moving is tried first, each round
-        if (await hold(c.refusal)) return 129;
+        if (await hold([...c.refusal, ...await queueLines([seen])])) return 129;
         continue;
       }
     }
@@ -1388,7 +1403,7 @@ export function main(args: string[], env: Env = process.env, inner?: { run: stri
       if (placed !== undefined) rmSync(placedFile, { force: true }); // it names a host that is no longer registered
       const seen = await Promise.all(order.map((n) => probe(n, env))), c = choose(seen, req);
       if ("refusal" in c) {
-        if (wait && c.wait) { if (await hold(c.refusal)) return 129; continue; }
+        if (wait && c.wait) { if (await hold([...c.refusal, ...await queueLines(seen)])) return 129; continue; }
         process.stderr.write(`box: no build server has room for this call\n${[...c.refusal, ...(c.wait ? roomHint(seen, req, wait) : [])].map((l) => `  ${l}\n`).join("")}`);
         return NO_ROOM;
       }
@@ -1408,9 +1423,9 @@ export function main(args: string[], env: Env = process.env, inner?: { run: stri
       if (fresh) rmSync(placedFile, { force: true }); // this call placed the worktree and no box was made
       else if (await autoMove(name)) continue;
       if (wait) { // ask again: everybody for a worktree this call placed, only its own host for a placed one
-        const refusedBy = name, c = choose(await Promise.all((fresh ? order : [name]).map((n) => probe(n, env))), req);
+        const refusedBy = name, seen = await Promise.all((fresh ? order : [name]).map((n) => probe(n, env))), c = choose(seen, req), told = placeOf(r.err);
         if (fresh) { name = undefined; spare = []; }
-        if (await hold("refusal" in c ? c.refusal : [`${refusedBy}: no room (the server refused the call)`])) return 129;
+        if (await hold("refusal" in c ? [...c.refusal, ...await queueLines(seen)] : [`${refusedBy}: no room (the server refused the call)${told ? `; ${told}` : ""}`])) return 129;
         continue;
       }
       const others = await Promise.all(order.filter((n) => n !== name).map((n) => probe(n, env)));
