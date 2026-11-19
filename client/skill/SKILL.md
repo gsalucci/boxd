@@ -20,6 +20,8 @@ queue around `box`; a refusal waiting cannot fix, like a missing image, still ex
 
 - Run `box <command...>` from inside your git worktree. It syncs the worktree, runs the command in your box, prints
   the output, exits with the command's exit code. Same box on every call.
+  The last line on stderr of a foreground call is `box: exit <code> on <host>` (the code box exits with, the host it
+  ran on), once the command was handed to a host; `--detach`, `--shards` and a call refused before a host was chosen print none.
 - Example: `box cargo test -p mycrate`. Gate on the exit code, never on a pipe.
 - No shell: the command is an argument list. Pipes, `&&`, redirects, globs: `box sh -c 'make && make test'`.
 - Image: `--image rust:1.83` (default debian:stable-slim). Registries: the ones the server allows (docker.io and ghcr.io by default; others are refused, exit 125).

@@ -21,7 +21,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-export const VERSION = "0.4.53";
+export const VERSION = "0.4.54";
 const BOX = /^[a-z0-9][a-z0-9_.-]{0,62}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const MAC = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i;
@@ -82,7 +82,7 @@ export const HELP = `usage: box [options] [--] <command...>
 The words setup, runs, hosts, image, ps, log, forward, vnc, drop, stop and gc must come first (box drop --host <name>): after an option, as in box --host <name> drop,
 they are refused (exit 2); to run a program of that name in the box, write -- before it.
 Syncs the git worktree you are in to the build server, runs <command> in this worktree's own box (a podman
-container or, with --vm, a small virtual machine; the same box on every call) and passes its exit code through. Use sh -c '...' for shell syntax.
+container or, with --vm, a small virtual machine; the same box on every call) and passes its exit code through; once the command was handed to a server, the last line on standard error is "box: exit <code> on <host>" (not with --detach or --shards). Use sh -c '...' for shell syntax.
   --image <ref>    image for a new box (default debian:stable-slim); an existing box keeps its image when you
                    leave this out, naming another one needs --recreate
   --image-file <path>  build the box's image from this Containerfile (path inside the worktree, relative to its top
@@ -1817,6 +1817,9 @@ export function main(args, env = process.env, inner) {
         // alive; the answer is told with the reasons. Only servers from 0.4.41; one that fails or has room adds no line.
         // A server that answers 125 (the size never fits that host, 0.4.52) ends the wait when every server asked said so: the line is passed on.
         let final = 0;
+        // The last line of a foreground call that handed its command to a host: the code box exits with, and the host, for a wrapper that loses the code.
+        const last = (code, host) => { if (!run && !inner)
+            process.stderr.write(`box: exit ${code} on ${host}\n`); return code; };
         const queueLines = async (seen) => {
             let asked = 0, never = [];
             const lines = wait ? (await Promise.all(seen.map(async (h) => {
@@ -1929,7 +1932,7 @@ export function main(args, env = process.env, inner) {
                     process.stderr.write(`box: ${name} has no room; hosts that do: ${c.room.join(", ")}. Move this worktree with: ${move}\n`);
                 else if (c)
                     process.stderr.write(`box: no other build server has room\n${[...c.refusal, ...(c.wait ? roomHint(others, req, wait) : [])].map((l) => `  ${l}\n`).join("")}`);
-                return r.code;
+                return last(r.code, name);
             }
             if (inner && r.code === 0) {
                 inner.host = name;
@@ -1938,7 +1941,7 @@ export function main(args, env = process.env, inner) {
             const code = finish(r.code, name);
             if (r.code !== 255)
                 await collectInPassing(env, Number(env.BOXD_NOW) || Date.now()); // 255: ssh itself failed, the host was not reached
-            return code;
+            return last(code, name);
         }
     })();
     function finish(code, host) {

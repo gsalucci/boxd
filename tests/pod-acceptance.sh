@@ -235,7 +235,7 @@ s1() {
   med "$wt" -- sh -c 'echo made-in-call-one > /job/src/made.txt && apt-get update -qq >/dev/null && apt-get install -y -qq jq >/dev/null'; eq "call 1 writes a file and installs jq" 0 $?
   a=$(cid "$box")
   eq "call 2 sees the file and the package" "made-in-call-one jq-" \
-    "$(med "$wt" --no-sync -- sh -c 'cat /job/src/made.txt; jq --version | cut -c1-3' 2>&1 | paste -sd' ')"
+    "$(med "$wt" --no-sync -- sh -c 'cat /job/src/made.txt; jq --version | cut -c1-3' 2>&1 | grep -v '^box: exit ' | paste -sd' ')"
   b=$(cid "$box")
   eq "same container id in both calls" "$a" "$b"
   eq "the container id is not empty" yes "$([ -n "$a" ] && echo yes || echo no)"
@@ -289,7 +289,7 @@ s5() {
   want="it's /root
 a b
 \$HOME"
-  got=$(med "$wt" -- sh -c "$script" 2>&1)
+  got=$(med "$wt" -- sh -c "$script" 2>&1 | grep -v '^box: exit ')
   eq "multi-line shell with quotes and dollar survives" "$want" "$got"
 }
 
@@ -1166,7 +1166,7 @@ s45() {
   until ! bp "test -d $W/jobs/$box"; do sleep 5; done
   eq "unused past the limit: the reaper removed the folder and the box" 0 "$(count "$box")"
   has "evictions.log names the box and the reason" "$box	unused 14 days" "$(bp "tail -n 20 $W/cache/evictions.log")"
-  out=$(med "$wt" -- sh -c 'ls keep 2>/dev/null | wc -l' 2>&1)
+  out=$(med "$wt" -- sh -c 'ls keep 2>/dev/null | wc -l' 2>&1 | grep -v '^box: exit ')
   has "the next call says the folder was removed" "boxd-pod: the folder of this box was removed on $(date +%F) (unused 14 days); it starts empty" "$out"
   eq "and starts without the ignored files" 0 "$(printf '%s\n' "$out" | tail -1)"
   out=$(med "$wt" -- true 2>&1); eq "the call after that says nothing" "" "$out"

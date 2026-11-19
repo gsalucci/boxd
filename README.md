@@ -71,7 +71,7 @@ flowchart LR
 ```
 
 `box` syncs the files git counts as part of the worktree to the host, runs the command in the worktree's box and
-streams the output back with the command's exit code. On the host a dedicated sshd lets the build account run only
+streams the output back with the command's exit code; the last line on standard error is `box: exit <code> on <host>`. On the host a dedicated sshd lets the build account run only
 `boxd-pod`, which makes, runs, limits and removes boxes. The protocol between the two is written down in
 [`docs/pod-contract.md`](docs/pod-contract.md) and checked from both sides by the shared cases in
 `contract/cases.json`.

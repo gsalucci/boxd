@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.54
+
+- A foreground `box` call ends standard error with `box: exit <code> on <host>` once its command was handed to a build server (also when that server refused): the code `box` exits with and the host it ran on, so a wrapper that loses the exit code still shows it in its log. Not printed with `--detach` or `--shards`, by the other subcommands, or by a call that ended before a host was chosen. Standard output is unchanged.
+
 ## 0.4.53
 
 - A run's event record (`box log <run> --events`) has three more words. `guest_kills`: processes the kernel INSIDE a machine box killed for lack of memory during the run (counted from the guest's kernel log; a dash for a container box, whose `box_kills` says it). `job_disk_pct`: how full the file system behind `/job` was when the run ended. `disk_full`: `yes` from 99 percent. A run killed by its own machine's limits was invisible to the host before.
