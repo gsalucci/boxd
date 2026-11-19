@@ -775,6 +775,15 @@ pod "pod run x3 --vm --size xlarge -- $B64"; eq "xlarge: the commit rule refuses
 pod "pod status"; eq "xlarge: vm_fit_mb counts a running xlarge machine as 12288 MB" 4096 "$(tr '\t' '\n' < "$T/e/out" | grep '^vm_fit_mb=' | cut -d= -f2)"
 touch -d @100 "$W/jobs/x1/.last-used"
 pod "pod run x3 --vm --size xlarge -- $B64"; eq "xlarge: an idle machine is removed to make room for it" "0 no" "$rc $([ -e "$FAKE_VM_STATE/pod-x1" ] && echo yes || echo no)"
+# The engine's own memory: each other running machine adds 64 MB to the cap of the measured rule (2026-11-19: one xlarge machine
+# measured 12326 MB, and a second xlarge on a 24576 MB cap was refused though the sizes sum exactly to the cap).
+cg24() { setup; mkdir -p "$BOXD_CGROOT/boxd"; echo $((24576 * 1048576)) > "$BOXD_CGROOT/boxd/memory.max"; pod "pod run x1 --vm --size xlarge -- $B64"; printf 'anon %s\nshmem 0\n' $(($1 * 1048576)) > "$BOXD_CGROOT/boxd/memory.stat"; }
+cg24 12326; pod "pod run x2 --vm --size xlarge -- $B64"; eq "allowance: two xlarge machines that sum to the cap fit with 12326 MB measured" 0 "$rc"
+cg24 12353; pod "pod run x2 --vm --size xlarge -- $B64"
+eq "allowance: 64 MB per machine and not more, the text names the plain cap" "75 boxd-pod: no room for another virtual machine (12353 MB in use + 12288 MB asked > 24576 MB cap); wait for one to end or stop one" "$rc $(cat "$T/e/err")"
+cg24 12500; pod "pod status"; eq "allowance: vm_fit_mb includes the allowance (24576 + 64 - 12500)" 12140 "$(tr '\t' '\n' < "$T/e/out" | sed -n 's/^vm_fit_mb=//p')"
+cg24 0; pod "pod stop x1"; printf 'anon %s\nshmem 0\n' $((12289 * 1048576)) > "$BOXD_CGROOT/boxd/memory.stat"; pod "pod run x2 --vm --size xlarge -- $B64"
+eq "allowance: with no other machine running the cap is exact, one megabyte over is refused" "75 boxd-pod: no room for another virtual machine (12289 MB in use + 12288 MB asked > 24576 MB cap); wait for one to end or stop one" "$rc $(cat "$T/e/err")"
 # Idle machines give their room back (owner, 2026-11-16: an idle 8 GB machine held a slot on a full host for the reaper's 30
 # minutes). Idle: unused for BOXD_VM_IDLE_MIN seconds and no run or call in it. The longest unused goes first.
 hasvm() { [ -e "$FAKE_VM_STATE/pod-$1" ] && echo yes || echo no; }

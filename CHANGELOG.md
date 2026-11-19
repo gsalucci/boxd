@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.55
+
+- Two machines whose sizes sum exactly to the cap of a host fit again. A running machine measures its size plus a few megabytes of the engine's own memory (measured: 12312 to 12326 MB for a 12288 MB machine), so the measured rule refused the second one by 38 MB (`12326 MB in use + 12288 MB asked > 24576 MB cap`). The measured rule now allows 64 MB for each running machine; the rule on the sum of the sizes is unchanged.
+
 ## 0.4.54
 
 - A foreground `box` call ends standard error with `box: exit <code> on <host>` once its command was handed to a build server (also when that server refused): the code `box` exits with and the host it ran on, so a wrapper that loses the exit code still shows it in its log. Not printed with `--detach` or `--shards`, by the other subcommands, or by a call that ended before a host was chosen. Standard output is unchanged.

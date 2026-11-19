@@ -21,7 +21,7 @@ PROC=${BOXD_PROC:-/proc}   # test hook, like BOXD_MEMINFO: where `pod report` fi
 KVM=${BOXD_KVM:-/dev/kvm}   # test hook: the device a --kvm box gets
 ROUTE=${BOXD_ROUTE:-/proc/net/route}   # test hooks: the routing table and the network interface folder `pod report` reads
 NETDIR=${BOXD_NET:-/sys/class/net}
-VERSION=0.4.54
+VERSION=0.4.55
 # Keys that may only read, one "<type> <key> [comment]" per line (view_only below); and the largest answer of pod calls and pod log.
 VIEW_KEYS=${BOXD_VIEW_KEYS:-/etc/boxd/view_keys}
 READ_MAX=${BOXD_READ_MAX:-1048576}
@@ -397,6 +397,10 @@ lim_mb() { [[ $1 =~ -m\ ([0-9]+)([MG]) ]] || return 0; [ "${BASH_REMATCH[2]}" = 
 # admitted on a 28 GB cap). So the sizes of the running machines plus the asked size must also fit BOXD_VM_COMMIT
 # percent of the cap (100, the default since 0.4.8: no machine can ever push another into the cap; at 150 the tower took
 # 36 GB of machines on its 28 GB cap and the kernel killed one, with its runs, on 2026-11-15).
+# The measured rule allows 64 MB per running machine other than the asking one on top of the cap: the engine's own memory (2026-11-19:
+# one xlarge machine, 12288 MB, measured 12312 to 12326 MB in the cgroup, so a second xlarge was refused on a 24576 MB cap although the
+# sizes sum exactly to the cap and the commit rule allows it). The commit rule and vm_never are unchanged.
+# shortcut: a fixed 64 MB per machine, when an engine version measures more: read each machine process's memory
 VM_COMMIT=${BOXD_VM_COMMIT:-100}
 [[ $VM_COMMIT =~ ^[0-9]+$ ]] || die "BOXD_VM_COMMIT must be a number"
 # BOXD_BOX_RESERVE (megabytes, default 4096; 0 turns the rule off): container boxes are admitted like machines, by one number. A call
@@ -405,17 +409,17 @@ VM_COMMIT=${BOXD_VM_COMMIT:-100}
 # that began lately counts at least the reserve in those sums, as a young machine counts its size: it has not claimed its memory yet.
 BOX_RESERVE=${BOXD_BOX_RESERVE:-4096}
 [[ $BOX_RESERVE =~ ^[0-9]+$ ]] || die "BOXD_BOX_RESERVE must be a number"
-# vm_commit <own sandbox name>: megabytes of the sizes of the running machines, the asking one not counted.
+# vm_commit <own sandbox name>: prints "<megabytes> <count>": the sizes of the running machines and how many they are, the asking one not counted.
 vm_commit() {
-    local m=0 b st rows s
+    local m=0 k=0 b st rows s
     rows=$(vm_rows 2>/dev/null) || return 1
     while IFS=$'\t' read -r b _ st; do
         [ -n "$b" ] && [ "$b" != "${1:-}" ] && [ "$st" = running ] || continue
         [ -z "${SKIP_IDLE:-}" ] || ! vm_idle "$b" || continue
         s=$(cat "$WORK/jobs/${b#pod-}/.vm-size" 2>/dev/null); s=$(lim_mb "$(size_lim "${s:-large}")")
-        m=$((m + ${s:-0}))
+        m=$((m + ${s:-0})); k=$((k + 1))
     done <<<"$rows"
-    echo "$m"
+    echo "$m $k"
 }
 # ctr_use <box>: megabytes a running container box uses now (as vm_mem measures: anonymous, shared and swapped memory, no file
 # cache). One that cannot be read counts as its whole limit (BOXD_LIMITS --memory); with no limit it fails: never admit on an
@@ -494,12 +498,14 @@ vm_calm() {
 # stops at the first refusal, as `pod run` always did (no listings it does not need under the room lock); `pod status` passes
 # `all` for both words in one pass (2026-11-16: a --size medium user was told "no room" from the answer for the default size).
 vm_fit() {
-    local n max=$VM_MAX used_mb cap_mb com ctr cm="" a=${2:-} f c
+    local n max=$VM_MAX used_mb cap_mb com ctr cm="" a=${2:-} f c ov=0 cn cok=
     fit_mb=- fit_why=
     if [ -n "$a" ] && vm_mem; then
-        f=$((cap_mb - used_mb))
-        [ $((used_mb + a)) -le "$cap_mb" ] || { fit_why="$used_mb MB in use + $a MB asked > $cap_mb MB cap"; [ -n "${3:-}" ] || return 0; }
-        if com=$(vm_commit "${1:-}"); then
+        # The count of running machines is needed first, for the allowance (shortcut: see the header above).
+        if com=$(vm_commit "${1:-}"); then cok=1; cn=${com#* }; com=${com% *}; ov=$((64 * cn)); fi
+        f=$((cap_mb + ov - used_mb))
+        [ $((used_mb + a)) -le $((cap_mb + ov)) ] || { fit_why="$used_mb MB in use + $a MB asked > $cap_mb MB cap"; [ -n "${3:-}" ] || return 0; }
+        if [ -n "$cok" ]; then
             if ctr=$(ctr_commit); then
                 c=$((cap_mb * VM_COMMIT / 100 - com - ctr)); [ "$c" -ge "$f" ] || f=$c
                 fit_mb=$((f > 0 ? f : 0))
@@ -535,7 +541,7 @@ box_fit() {
     local com=0 ctr used_mb cap_mb lim own=0 need
     box_fit_mb=- box_why=
     [ "$BOX_RESERVE" -gt 0 ] && vm_mem || return 0
-    { ! have_msb || com=$(vm_commit); } && ctr=$(ctr_commit "${1:-}") || return 0
+    { ! have_msb || { com=$(vm_commit) && com=${com% *}; }; } && ctr=$(ctr_commit "${1:-}") || return 0
     lim=$((cap_mb * VM_COMMIT / 100))
     [ -z "${2:-}" ] || own=$(ctr_use "$1") || own=0
     need=$BOX_RESERVE; [ "$own" -le "$need" ] || need=$own
