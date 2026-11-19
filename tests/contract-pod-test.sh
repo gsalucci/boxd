@@ -1206,7 +1206,7 @@ eq "pressure: the reason names the fill level; the images no box uses went first
 eq "pressure: every named image goes except the built image of a box whose folder is here (images in use refuse by themselves), then the dangling layers" \
     "rmi docker.io/library/rust:1.83|rmi localhost/built-zz:latest|image prune -f|rmi localhost/built-b:latest" "$(grep -E '^(rmi|image prune)' "$FAKE_LOG" | paste -sd'|')"   # the last one: the built image of the folder evicted in this pass
 eq "pressure: the same for the machine engine's cached images, and the records of pushed images go" "image rm localhost/toolbox|image rm localhost/built-b:latest|no" "$(grep '^image rm' "$FAKE_MSB_LOG" | paste -sd'|')|$([ -e "$W/cache/pushed-vm-123" ] && echo yes || echo no)"
-eq "pressure: files of the shared package caches not written for the retention time go, fresh ones stay" "npm/fresh.tgz" "$(cd "$W/cache/pod" && find . -type f | sed 's|^\./||' | paste -sd' ')"
+eq "pressure: a package cache file with an old modification time that was just written stays (tools keep the upstream's times)" "m2/old/a.jar npm/fresh.tgz" "$(cd "$W/cache/pod" && find . -type f | sed 's|^\./||' | sort | paste -sd' ')"
 : > "$FAKE_LOG"
 echo 65 > "$FAKE_DF"; reapnow 100000; eq "pressure: it goes on between 60 and 70 once started" "a d live" "$(folders)"
 eq "pressure: images are taken once per episode, not on every pass (only the evicted folder's own built image)" "rmi localhost/built-c:latest" "$(grep -E '^rmi' "$FAKE_LOG")"
@@ -1216,6 +1216,13 @@ echo 65 > "$FAKE_DF"; reapnow 100000; eq "pressure: 65 percent does not start it
 echo 95 > "$FAKE_DF"; reapnow 100000; reapnow 100000; reapnow 100000
 eq "pressure: a folder used within the box lifetime is never taken, however full the disk" "live" "$(folders)"
 : > "$FAKE_DF"; reapnow 100000; eq "pressure: an unreadable fill level removes nothing and the reaper still exits 0" "0 live" "$rc $(folders)"
+unset FAKE_DF
+
+# A change time cannot be set, so the pass runs on the reaper's fake clock (--now): thirty days after the real time, what was written now is old.
+setup; export FAKE_DF=$T/e/df; : > "$BOXD_POD_CLEAN"; echo 70 > "$FAKE_DF"
+mkdir -p "$W/cache/pod/m2" "$W/jobs"; touch -d @100 "$W/cache/pod/m2/a.jar"; : > "$W/cache/pod/m2/b.jar"
+reapnow $(($(date +%s) + 5 * day)); eq "pressure: a file written on the host less than the retention time ago (5 days later on the fake clock) stays, however old its modification time" "m2/a.jar m2/b.jar" "$(cd "$W/cache/pod" && find . -type f | sed 's|^\./||' | sort | paste -sd' ')"
+rm -f "$W/cache/.evicting"; reapnow $(($(date +%s) + 30 * day)); eq "pressure: a file whose change time is older than the retention time goes, marker and content together" "" "$(cd "$W/cache/pod" && find . -type f | paste -sd' ')"
 unset FAKE_DF
 
 # Retention of the shared caches and images by age: once a day, at any fill level (evict_daily).
@@ -1237,18 +1244,21 @@ rm -f "$BOXD_POD_CLEAN"; reapnow $now
 eq "daily pass: nothing runs before the boot clear of the machines" "no|2|0" "$([ -e "$W/cache/.evicted-daily" ] && echo yes || echo no)|$(ls "$W/cache/pod/m2" | wc -l)|$(grep -c '^rmi' "$FAKE_LOG")"
 : > "$BOXD_POD_CLEAN"; : > "$FAKE_LOG"; : > "$FAKE_MSB_LOG"
 reapnow $now
-eq "daily pass: an old cache file goes without disk pressure, a newer one stays" "m2/new.jar" "$(cd "$W/cache/pod" && find . -type f | sed 's|^\./||' | paste -sd' ')"
+eq "daily pass: the shared package caches are not touched, whatever the modification time" "m2/new.jar m2/old.jar" "$(cd "$W/cache/pod" && find . -type f | sed 's|^\./||' | sort | paste -sd' ')"
 eq "daily pass: the old archive of a gone box and the old archive tied to no box go, the archive of an existing box and a young one stay" "built-gone2.tar built-live.tar" "$(ls "$W/cache/images" | paste -sd' ')"
 eq "daily pass: images by age: old unused ones go (an old image a box uses is refused and stays), the shared one with an archive, the built image of an existing box, a young one and one without a date stay" \
     "rmi docker.io/library/old:1|rmi localhost/built-gone:latest|rmi docker.io/library/used:1" "$(grep '^rmi' "$FAKE_LOG" | paste -sd'|')"
 eq "daily pass: the machine store the same (no dangling prune, no record removal by age)" "image rm docker.io/library/vmold:1|0" "$(grep '^image rm' "$FAKE_MSB_LOG" | paste -sd'|')|$(grep -c 'image prune' "$FAKE_LOG")"
-eq "daily pass: each kind is one line in evictions.log" "cache	older than 14 days, 1 files|image-archives	older than 14 days, 2 files|images	older than 14 days, 3 images" "$(cut -f2- "$W/cache/evictions.log" | paste -sd'|')"
+eq "daily pass: each kind is one line in evictions.log" "image-archives	older than 14 days, 2 files|images	older than 14 days, 3 images" "$(cut -f2- "$W/cache/evictions.log" | paste -sd'|')"
 eq "daily pass: the line's time is the reaper's clock" "$now" "$(head -1 "$W/cache/evictions.log" | cut -f1)"
 touch -d @100 "$W/cache/pod/m2/second.jar"; : > "$FAKE_LOG"; reapnow $((now + 60))
 eq "daily pass: not again within the day" "m2/second.jar yes" "$(cd "$W/cache/pod" && find . -name second.jar | sed 's|^\./||') $([ -z "$(grep '^rmi' "$FAKE_LOG")" ] && echo yes)"
 touch -d "@$((now - day - 1))" "$W/cache/.evicted-daily"; : > "$FAKE_LOG"; rm -r "$W/jobs/live" "$W/jobs/live2"; reapnow $((now + 60))
 eq "daily pass: an old image a box folder records stays (also recorded without a tag); once the folders are gone it goes" "rmi localhost/built-live:latest|rmi docker.io/library/kept:1|rmi docker.io/library/kept2:latest" "$(grep -E '^rmi .*(kept|built-live)' "$FAKE_LOG" | paste -sd'|')"
-eq "daily pass: again once the stamp is older than a day" "m2/new.jar" "$(cd "$W/cache/pod" && find . -type f | sed 's|^\./||' | paste -sd' ')"
+eq "daily pass: again once the stamp is older than a day (it writes no line for the package caches)" "m2/new.jar m2/old.jar m2/second.jar|no" "$(cd "$W/cache/pod" && find . -type f | sed 's|^\./||' | sort | paste -sd' ')|$(grep -q "	cache	" "$W/cache/evictions.log" && echo yes || echo no)"
+touch -d "@$((now + 100 * day))" "$W/cache/.evicted-daily"; : > "$FAKE_LOG"; rm -f "$W/cache/images/built-gone2.tar"; : > "$W/cache/images/built-gone3.tar"; touch -d @100 "$W/cache/images/built-gone3.tar"
+reapnow $((now + 5 * day))
+eq "daily pass: a stamp from the future lets the pass run, and it is rewritten with the present time" "no|$((now + 5 * day))" "$([ -e "$W/cache/images/built-gone3.tar" ] && echo yes || echo no)|$(stat -c %Y "$W/cache/.evicted-daily")"
 unset FAKE_DF FAKE_IMAGE_LIST FAKE_VM_IMAGE_LIST FAKE_RMI_REFUSE
 
 # pod drop: the client's collector removes the box and the folder of a worktree that is gone.

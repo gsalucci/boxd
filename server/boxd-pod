@@ -21,7 +21,7 @@ PROC=${BOXD_PROC:-/proc}   # test hook, like BOXD_MEMINFO: where `pod report` fi
 KVM=${BOXD_KVM:-/dev/kvm}   # test hook: the device a --kvm box gets
 ROUTE=${BOXD_ROUTE:-/proc/net/route}   # test hooks: the routing table and the network interface folder `pod report` reads
 NETDIR=${BOXD_NET:-/sys/class/net}
-VERSION=0.4.48
+VERSION=0.4.49
 # Keys that may only read, one "<type> <key> [comment]" per line (view_only below); and the largest answer of pod calls and pod log.
 VIEW_KEYS=${BOXD_VIEW_KEYS:-/etc/boxd/view_keys}
 READ_MAX=${BOXD_READ_MAX:-1048576}
@@ -706,8 +706,10 @@ evict_images() {
     done < <(vmx image ls </dev/null 2>/dev/null)
     [ -n "${1:-}" ] || find "$WORK/cache" -maxdepth 1 -name 'pushed-vm-*' -type f -delete
 }
-# The shared package caches: files not written for the retention time go (a tool downloads them again). One size per file on standard output.
-evict_caches() { [ ! -d "$WORK/cache/pod" ] || podman unshare find "$WORK/cache/pod" -type f -mtime "+$KEEP_DAYS" -printf '%s\n' -delete </dev/null 2>/dev/null; }
+# The shared package caches, under disk pressure only: files not written or changed on this host for the retention time go (the time of
+# the clock $1 is "now"). The change time, not the modification time: tools keep the upstream's old modification times on what they unpack,
+# and all files of one unpacked package are written together, so a folder goes whole, marker included, and the tool fetches it again.
+evict_caches() { [ ! -d "$WORK/cache/pod" ] || podman unshare find "$WORK/cache/pod" -type f ! -newerct "@$(($1 - KEEP_DAYS * 86400))" -delete </dev/null 2>/dev/null; }
 # The image archives of boxes (cache/images): built-<box>.tar belongs to the box <box> and stays while its folder is here; any
 # other archive (a pushed image's temporary file, an agent's own image) cannot be tied to a box, age alone decides.
 evict_archives() {
@@ -721,10 +723,9 @@ evict_archives() {
 # removed something is one line in evictions.log.
 evict_daily() {
     local now=$1 stamp=$WORK/cache/.evicted-daily n
-    [ ! -e "$stamp" ] || [ $((now - $(stat -c %Y "$stamp" 2>/dev/null || echo 0))) -ge 86400 ] || return 0
+    local age=$((now - $(stat -c %Y "$stamp" 2>/dev/null || echo 0)))
+    [ ! -e "$stamp" ] || [ "$age" -ge 86400 ] || [ "$age" -lt 0 ] || return 0   # a stamp from the future (a hand-set date) runs the pass
     touch -d "@$now" "$stamp" || return 0
-    n=$(evict_caches | wc -l)
-    [ "$n" -eq 0 ] || printf '%s\tcache\tolder than %s days, %s files\n' "$now" "$KEEP_DAYS" "$n" >> "$WORK/cache/evictions.log"
     n=$(evict_archives | wc -l)
     [ "$n" -eq 0 ] || printf '%s\timage-archives\tolder than %s days, %s files\n' "$now" "$KEEP_DAYS" "$n" >> "$WORK/cache/evictions.log"
     GONE=0 KEPT=$'\n'$(kept_images)$'\n'; evict_images "$KEEP_DAYS" "$now"; KEPT=
@@ -747,7 +748,7 @@ evict() {
     [[ $pct =~ ^[0-9]+$ ]] || return 0
     if [ "$pct" -ge "$EVICT_AT" ]; then
         if [ ! -e "$flag" ]; then   # once per episode of pressure
-            evict_images; evict_caches >/dev/null
+            evict_images; evict_caches "$now"
             printf '%s\timages\tdisk %s percent full\n' "$now" "$pct" >> "$WORK/cache/evictions.log"; echo "evicted images (disk $pct percent full)"
         fi
         : > "$flag"

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.49
+
+- Fixes a fault of 0.4.48 that removed live files from the shared package caches (`/cache` of the boxes). The daily pass of 0.4.48 judged a file by its modification time, and package tools keep the upstream's old times on files they unpack, so files written an hour before were removed: the content of unpacked cargo sources (their markers stayed, so builds failed with `failed to find <crate> in path source`) and parts of the Maven, npm, pnpm and Go caches. If a host ran 0.4.48: remove the folders under `cache/pod/cargo/registry/src` in its work area once, so cargo unpacks them again.
+- The daily pass no longer touches the package caches. They are cleaned only under disk pressure, as before 0.4.48, and now by the time a file was written on the host, so an unpacked package goes whole. The daily pass keeps the image archives of boxes that no longer exist and the unused images.
+
 ## 0.4.48
 
 - The shared caches and unused images are cleaned by age, once a day, without waiting for the disk to fill. Until now they went only under disk pressure, and some never. What goes when it is older than `BOXD_KEEP_DAYS`: files of the shared package caches (`/cache` of the boxes), saved image archives of boxes that no longer exist, and images that no box uses. What stays: the host's own shared images (those with an archive in `BOXD_IMAGES_DIR`), the built image of a box whose folder exists, and any image that an existing box folder names, so a stopped box does not pull its image again.
