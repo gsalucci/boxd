@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.45
+
+- `boxd-setup` on btrfs puts the image archive folder (`BOXD_IMAGES_DIR`, default `/var/lib/boxd/images`) into a subvolume of its own, `@boxd-images`, mounted by a line in `/etc/fstab`. Until now it sat inside the system's file system, so every snapshot of the system kept an old copy of the archives (about 4 GB per image rebuild). A folder that exists is moved without copying data and with its sizes and times kept, so no image is loaded again; a rerun changes nothing; it is skipped while an image build runs. `boxd-reset` leaves the subvolume alone.
+
 ## 0.4.44
 
 - A host whose work area shares its disk with the system no longer starts with cleanup levels meant for a disk of its own. `boxd-setup` now writes `BOXD_EVICT_AT` (the disk's fill plus 20 points, at most 70), `BOXD_EVICT_TO` (10 below) and `BOXD_KEEP_DAYS=3` into the settings file on such a disk, when none of them is set, and prints what that means in GB. On a laptop with one 954 GiB disk the defaults (70 and 60 percent, 14 days) had let build data grow to hundreds of GB before anything was removed.

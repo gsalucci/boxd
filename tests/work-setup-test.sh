@@ -34,4 +34,53 @@ out=$(run - 20 /dev/fake2); eq "a work area on a disk of its own gets nothing wr
 for v in BOXD_EVICT_AT=80 BOXD_EVICT_TO=50 BOXD_KEEP_DAYS=9 'export BOXD_KEEP_DAYS=9'; do
   out=$(run "$v" 20); eq "a settings file that sets $v is left alone" "$v|" "$(cat "$T/conf")|$out"
 done
+
+# The image archive folder (function images_subvolume): cut out of the script and run with fake btrfs, mount, mountpoint, cp
+# and pgrep on a scratch folder. The fake mount puts the subvolume's content on the folder and remembers the mount point.
+REALCP=$(command -v cp)
+cat > "$T/bin/btrfs" <<'FAKE'
+#!/bin/sh
+[ "$1 $2" = "subvolume create" ] && mkdir "$3"
+FAKE
+cat > "$T/bin/mountpoint" <<'FAKE'
+#!/bin/sh
+grep -qxF "$2" "$MOUNTS" 2>/dev/null
+FAKE
+cat > "$T/bin/mount" <<'FAKE'
+#!/bin/sh
+echo "$1" >> "$MOUNTS"; $REALCP -a "$TOP/@boxd-images/." "$1/"
+FAKE
+cat > "$T/bin/cp" <<'FAKE'
+#!/bin/sh
+for a; do shift; [ "$a" = --reflink=always ] || set -- "$@" "$a"; done
+$REALCP "$@" || exit 1
+# FAKE_SKEW: the copy comes out with another modification time
+[ -z "${FAKE_SKEW:-}" ] || touch -d @1 "$TOP/@boxd-images/a.tar"
+FAKE
+cat > "$T/bin/pgrep" <<'FAKE'
+#!/bin/sh
+[ -n "${FAKE_BUILD:-}" ]
+FAKE
+chmod +x "$T/bin/"*
+{ sed -n '/^# begin images subvolume/,/^# end images subvolume/p' server/work-setup
+  grep -m1 'fstab_line()' server/work-setup | sed "s|/etc/fstab|$T/fstab|g"; } > "$T/img.sh"
+img() { PATH="$T/bin:$PATH" REALCP=$REALCP TOP=$T/top IMAGES=$T/images uuid=U1 OPT=o MOUNTS=$T/mounts sh -c '. "$1"; images_subvolume' _ "$T/img.sh"; }
+fresh() { rm -rf "$T/top" "$T/images" "$T/images.moved" "$T/mounts" "$T/fstab"; mkdir "$T/top" "$T/images"; : > "$T/fstab"
+  echo data > "$T/images/a.tar"; touch -d @1700000000 "$T/images/a.tar"; }
+stamp() { stat -c '%s %Y' "$1"; }
+lines() { [ -e "$1" ] && wc -l < "$1" | tr -d ' ' || echo 0; }
+has() { [ -e "$1" ] && echo yes || echo no; }
+
+fresh; out=$(img); rc=$?
+eq "a folder with a file: the file is in the subvolume with the same size and time" "0 5 1700000000" "$rc $(stamp "$T/top/@boxd-images/a.tar")"
+eq "the folder is mounted with the file, the old folder is gone" "5 1700000000 no" "$(stamp "$T/images/a.tar") $(has "$T/images.moved")"
+eq "one fstab line, with the subvolume" "UUID=U1 $T/images btrfs o,subvol=@boxd-images 0 2" "$(cat "$T/fstab")"
+eq "one line printed" "image archives: $T/images is now the subvolume @boxd-images (snapshots of the system no longer keep a copy)" "$out"
+out=$(img); eq "a second run prints nothing and changes nothing" "|1|1" "$out|$(lines "$T/fstab")|$(lines "$T/mounts")"
+fresh; echo "$T/images" > "$T/mounts"; out=$(img); eq "a folder that is a mount point is left alone" "|no|0|1" "$out|$(has "$T/top/@boxd-images")|$(lines "$T/fstab")|$(lines "$T/mounts")"
+fresh; rm -r "$T/images"; out=$(img); eq "a missing folder is made as the mounted subvolume" "image archives: $T/images is the new subvolume @boxd-images|1|yes" "$out|$(lines "$T/fstab")|$(has "$T/images")"
+fresh; out=$(FAKE_SKEW=1 img 2>&1); rc=$?
+eq "a difference between the listings stops it: old folder kept, no fstab line, no mount" "1 1700000000 0 0 no" "$rc $(stamp "$T/images/a.tar" | cut -d' ' -f2) $(lines "$T/fstab") $(lines "$T/mounts") $(has "$T/images.moved")"
+eq "and says so" "work-setup: the copy of $T/images differs from the original: nothing was changed" "$out"
+fresh; out=$(FAKE_BUILD=1 img); eq "a running image build skips the move with one line" "work-setup: an image build is running: the image folder $T/images stays where it is until the next setup|no|0" "$out|$(has "$T/top/@boxd-images")|$(lines "$T/fstab")"
 [ "$fails" = 0 ] && echo "ALL OK" || { echo "$fails FAILED"; exit 1; }

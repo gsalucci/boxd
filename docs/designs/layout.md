@@ -20,7 +20,7 @@ then both sides. Names: product `boxd`, client command `box`. Anything machine s
 | /etc/boxd/storage.conf, /etc/boxd/containers.conf | server/ | podman settings; boxd-setup links them into /etc/containers |
 | /etc/sv/boxd/ | server/sv/boxd/ | the one service the owner controls: run starts boxd-sshd (and boxd-power when enabled), finish stops everything (boxes too) |
 | /etc/sv/boxd-sshd/ | server/sv/boxd-sshd/ | build sshd inside the capped cgroup (was sshd-build); ships with a `down` file, started by boxd |
-| /var/lib/boxd/images/ | (created by setup) | image archives that survive `boxd-reset all` |
+| /var/lib/boxd/images/ | (created by the package, mounted by setup) | image archives that survive `boxd-reset all`; on btrfs the subvolume @boxd-images |
 
 ## boxd-power (optional module, OFF by default)
 

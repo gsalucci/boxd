@@ -6,6 +6,8 @@
 #   no btrfs       a host whose work area is not on btrfs (BOXD_WORK_FS, see boxd.conf) keeps BOXD_WORK as a plain folder with
 #                  a marker file; the pristine copy is the folder "BOXD_WORK-clean" and boxd-reset refreshes the area from it with rsync
 #   @cache         BOXD_WORK/cache: download caches, kept by a plain reset
+#   @boxd-images   BOXD_IMAGES_DIR (btrfs mode): the image archives, mounted on their folder and not touched by boxd-reset; an existing
+#                  folder is moved into it by a reflink copy, checked, and removed (skipped while an image build runs)
 #   /var/tmp       memory-only, so the one world-writable folder on the system disk is gone
 #   podman         rootless for the build account: root inside a container, plain account outside; images
 #                  under BOXD_WORK/cache (XDG_DATA_HOME). Needs cgroups version 2 (CGROUP_MODE=unified, after a restart).
@@ -17,6 +19,7 @@ CONF=${BOXD_CONF:-/etc/boxd/boxd.conf}
 U=${BOXD_USER:-boxd}
 WORK=${BOXD_WORK:-/var/lib/boxd/work}
 ETC=${BOXD_ETC:-/etc/boxd}
+IMAGES=${BOXD_IMAGES_DIR:-/var/lib/boxd/images}
 FS=${BOXD_WORK_FS:-auto}
 MANAGER=${BOXD_MANAGER:-$([ -d /run/systemd/system ] && echo systemd || echo runit)}
 OPT=noatime,compress=zstd:1,ssd,space_cache=v2,discard=async
@@ -58,6 +61,40 @@ populate() {
     printf '. ~/.bashrc\n' > "$1/home/.profile"
     chown "$U:$U" "$1/home/.bashrc" "$1/home/.profile"
 }
+
+# begin images subvolume
+# btrfs mode: the image archives (about 4 GB, rewritten at every image rebuild) get a subvolume of their own, mounted on IMAGES,
+# so a snapshot of the system does not keep an old copy of each. Needs TOP (the mounted top level), uuid, OPT and fstab_line.
+# The copy is a reflink copy (no data is duplicated) that keeps sizes, times, owners and modes: the server records the size and
+# modification time of an archive. The old folder is removed only after both listings matched.
+images_listing() { (cd "$1" && find . -mindepth 1 -exec stat -c '%n %s %Y %U %a' {} + | sort); }
+images_subvolume() {
+    mountpoint -q "$IMAGES" && return 0
+    if pgrep -f '[i]mages-build' >/dev/null; then
+        echo "work-setup: an image build is running: the image folder $IMAGES stays where it is until the next setup"
+        return 0
+    fi
+    old=$IMAGES.moved
+    [ ! -e "$old" ] || { echo "work-setup: $old exists from an earlier run: check it and remove it, then run setup again" >&2; return 1; }
+    sub=$TOP/@boxd-images
+    [ -d "$sub" ] || { btrfs subvolume create "$sub" >/dev/null && chmod 755 "$sub"; }
+    if [ -d "$IMAGES" ] && [ -n "$(ls -A "$IMAGES")" ]; then
+        cp -a --reflink=always "$IMAGES/." "$sub/"
+        [ "$(images_listing "$IMAGES")" = "$(images_listing "$sub")" ] || { echo "work-setup: the copy of $IMAGES differs from the original: nothing was changed" >&2; return 1; }
+        mv "$IMAGES" "$old"
+    fi
+    install -d -m755 "$IMAGES"
+    fstab_line "$IMAGES" "UUID=$uuid $IMAGES btrfs $OPT,subvol=@boxd-images 0 2"
+    mount "$IMAGES" || { echo "work-setup: cannot mount $IMAGES: the old content is in $old" >&2; return 1; }
+    if [ -d "$old" ]; then
+        [ "$(images_listing "$old")" = "$(images_listing "$IMAGES")" ] || { echo "work-setup: the mounted $IMAGES differs from $old: $old is kept" >&2; return 1; }
+        rm -rf "$old"
+        echo "image archives: $IMAGES is now the subvolume @boxd-images (snapshots of the system no longer keep a copy)"
+    else
+        echo "image archives: $IMAGES is the new subvolume @boxd-images"
+    fi
+}
+# end images subvolume
 
 # Which kind of work area: one that exists already keeps its kind; else BOXD_WORK_FS; auto means btrfs when the file
 # system under the work area is btrfs (the nearest existing parent folder is asked: the work area may not exist yet).
@@ -109,6 +146,7 @@ else
     mkdir -p "$WORK"
     mountpoint -q "$WORK" || mount "$WORK"
     mountpoint -q "$WORK/cache" || mount "$WORK/cache"
+    images_subvolume
 fi
 
 # Void only: hardening and boot settings of the first host. A systemd host (Debian) already has cgroups version 2

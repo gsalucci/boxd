@@ -104,7 +104,7 @@ effect for new sessions only.
 
 ## The work area without btrfs
 
-Void hosts keep the work area as btrfs subvolumes (`@work`, `@work-clean`, `@cache`) so a reset takes milliseconds. A host whose root
+Void hosts keep the work area as btrfs subvolumes (`@work`, `@work-clean`, `@cache`) so a reset takes milliseconds; the image archive folder `/var/lib/boxd/images` becomes the subvolume `@boxd-images` too, mounted on its folder by `work-setup` (an existing folder is moved by a reflink copy, checked, then removed; not while an image build runs), so snapshots of the system keep no copy of the 4 GB archive and `boxd-reset` leaves it alone. A host whose root
 is ext4 (or anything but btrfs) cannot do that, so `work-setup` chooses **directory mode** (`BOXD_WORK_FS=auto`, or `dir`):
 
 - the work area is a plain folder, `/var/lib/boxd/work`, with a marker file `.boxd-dir-mode`; `cache/` inside it belongs to the build account;
@@ -174,7 +174,7 @@ installed, no podman, `uidmap`, `passt`, `crun`, `fuse-overlayfs`, `zram-tools`.
   edits `/etc/docker`. One overlap: both run containers, so memory pressure is shared; `BOXD_MEM_MAX` (85 percent of the memory by
   default) caps the build side only. Consider a lower `BOXD_MEM_MAX` there, for example `40G`.
 - **File system.** Run `findmnt -n -o FSTYPE /` first. btrfs gets subvolumes at the top of the file system (`@work`, `@cache`,
-  `@work-clean`) and two `fstab` lines, with `btrfs-progs`; anything else gets directory mode and no `fstab` change. Force one with
+  `@work-clean`, `@boxd-images` for the image archive folder) and three `fstab` lines, with `btrfs-progs`; anything else gets directory mode and no `fstab` change. Force one with
   `BOXD_WORK_FS`. With about 370 GB free, a reset in directory mode is limited by the size of the caches, not by the processor.
 - **Podman.** Debian's candidate is 5.4.2. All options pass (see Results). `crun` and `netavark` come with it; `fuse-overlayfs` is not
   needed and not wanted (`storage.conf` has no `mount_program`; the kernel's overlay is used rootless).
