@@ -34,7 +34,15 @@ echo 16
 FAKE
 cat > "$T/bin/df" <<'FAKE'
 #!/bin/sh
-case "$*" in *size,used*) printf '1K-blocks Used\n1000204288 710145024\n' ;; *) printf 'Use%%\n 71%%\n' ;; esac
+case "$*" in *output=source*) printf 'Filesystem\n'; case "$*" in *" /") echo /dev/fake1 ;; *) echo /dev/fake2 ;; esac ;; *size,used*) printf '1K-blocks Used\n1000204288 710145024\n' ;; *) printf 'Use%%\n 71%%\n' ;; esac
+FAKE
+# stat: the work area is a file system of its own on another disk than the system (work_own=yes, work_shared=no); the rest is the real stat
+cat > "$T/bin/stat" <<'FAKE'
+#!/bin/sh
+case "$*" in
+  "-c %d "*) case "$3" in */..) echo 1 ;; *) echo 2 ;; esac ;;
+  *) exec /usr/bin/stat "$@" ;;
+esac
 FAKE
 chmod +x "$T/bin/"*
 

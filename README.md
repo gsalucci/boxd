@@ -122,6 +122,11 @@ boxctl start
 machine boxes when the host can run them. It can be run again at any time. `boxctl` is the one command for the
 service: `start`, `stop`, `status`, `check`, `log`, `reload`.
 
+A host whose disk is shared with the system (a laptop with one disk): the cleanup levels are percents of the whole disk, so the
+defaults (from 70 percent) would let build data grow to hundreds of gigabytes. When the work area shares its disk with `/` and
+`/etc/boxd/boxd.conf` sets no level, `boxd-setup` writes `BOXD_EVICT_AT`, `BOXD_EVICT_TO` and `BOXD_KEEP_DAYS` that fit the disk
+and prints what they mean; change them there. Put the work area on a btrfs subvolume of its own (`boxd-setup` does) so the system's snapshots do not copy build data. The host report shows both (`work_own`, `work_shared`, `evict_at`) and `tools/host-watch` warns.
+
 ### 2. The agents' machine
 
 Install `boxd-client` the same way (`sudo xbps-install -S boxd-client`, or `sudo apt install ./boxd-client_*.deb`), then once per build server:

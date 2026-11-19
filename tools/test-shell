@@ -9,7 +9,7 @@
 # everything in its session and reported, so a stuck test can never hold a run for hours. That limit is a guard, not a wait.
 set -u
 cd "$(dirname "$0")/.." || exit 1
-[ $# -gt 0 ] || set -- tests/contract-pod-test.sh tests/pod-ps-test.sh tests/host-watch-test.sh tests/boxd-view-key-test.sh \
+[ $# -gt 0 ] || set -- tests/contract-pod-test.sh tests/pod-ps-test.sh tests/host-watch-test.sh tests/work-setup-test.sh tests/boxd-view-key-test.sh \
 	tests/boxd-idle-test.sh tests/boxd-service-test.sh tests/release-github-test.sh tests/release-version-test.sh
 limit=${BOXD_TEST_LIMIT:-600}
 log=$(mktemp)

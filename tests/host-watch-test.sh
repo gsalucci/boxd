@@ -43,6 +43,25 @@ has "run in a box that does not run" "run gone/r9 is listed as running" "$out"
 has "awake without work" "6	WARN	tower:awake	tower: awake without work" "$($W check tower "$T/awake" $NOW)"
 has "every finding names its host" "^[0-9]*	[A-Z]*	tower:" "$out"
 
+# The words of the disk budget (work_own, work_shared, evict_at): a report without them, from an older server, gives neither finding.
+budget_words() { sed "s/\\tttl=1800\\t/\\tttl=1800\\twork_own=$1\\twork_shared=$2\\tevict_at=$3\\tevict_to=60\\tkeep_days=14\\t/"; }
+{ host 9000 0 none 28 0 free | budget_words no yes 70; box c container running $((NOW - 100)) 12288 no 0; } > "$T/budget"
+out=$($W check tower "$T/budget" $NOW)
+has "a work area that is no file system of its own" "1	WARN	tower:workfs	tower: the work area is not a file system of its own: the system.s snapshots keep build data; run boxd-setup" "$out"
+has "a work area on the system disk with cleanup from 70 percent" "1	WARN	tower:budget	tower: the work area shares its disk with the system and cleanup starts only at 70 percent of that disk; set BOXD_EVICT_AT and BOXD_EVICT_TO in /etc/boxd/boxd.conf" "$out"
+{ host 9000 0 none 28 0 free | budget_words yes yes 60; } > "$T/budget60"
+out=$($W check tower "$T/budget60" $NOW)
+has "cleanup from exactly 60 percent still counts" "tower:budget" "$out"
+hasnot "a work area of its own raises no file system finding" "workfs" "$out"
+{ host 9000 0 none 28 0 free | budget_words yes yes 40; } > "$T/budget40"
+[ -z "$($W check tower "$T/budget40" $NOW)" ] && ok "levels under 60 percent on a shared disk are no finding" || bad "levels under 60 percent on a shared disk are no finding"
+{ host 9000 0 none 28 0 free | budget_words folder yes 40; } > "$T/budgetfolder"
+[ -z "$($W check tower "$T/budgetfolder" $NOW)" ] && ok "a plain folder in directory mode (work_own=folder) is no finding" || bad "a plain folder in directory mode (work_own=folder) is no finding"
+{ host 9000 0 none 28 0 free | budget_words yes no 70; } > "$T/budgetown"
+[ -z "$($W check tower "$T/budgetown" $NOW)" ] && ok "a disk of its own with the default levels is no finding" || bad "a disk of its own with the default levels is no finding"
+{ host 9000 0 none 28 0 free | budget_words - - -; } > "$T/budgetdash"
+[ -z "$($W check tower "$T/budgetdash" $NOW)" ] && ok "words that could not be read are no finding" || bad "words that could not be read are no finding"
+
 # Numbers are compared as numbers: 4096 is under 13377 (seen wrong on laptop with a comparison of texts).
 { host 3000 1 1 25 0 held | sed 's/group_mem_max_mb=24576/group_mem_max_mb=13377/'; box m vm running $((NOW - 60)) 4096 yes 1; } > "$T/small"
 [ -z "$($W check laptop "$T/small" $NOW)" ] && ok "one small machine under a five digit cap" || bad "one small machine under a five digit cap"

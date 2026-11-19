@@ -19,8 +19,9 @@
 #   memory        the kernel killed a process of the boxes; the group is at its cap; memory pressure; the network card
 #                 timed out sending (its stall time and link changes are only counted in the progress line)
 #   cleanup       an idle box older than the time limit is still there; a run is "running" in a box that is not;
-#                 the work area is above the eviction level; a host stays awake without work; a box whose worktree
-#                 is gone for hours is still recorded
+#                 the work area is above the eviction level; the work area is no file system of its own, or shares the
+#                 system's disk while cleanup starts at 60 percent or more (words work_own, work_shared, evict_at);
+#                 a host stays awake without work; a box whose worktree is gone for hours is still recorded
 #   hosts         a host that should answer does not; the hosts run different versions
 set -u
 D=${HOST_WATCH_DIR:-$HOME/.local/state/boxd/watch}
@@ -50,6 +51,9 @@ check() { # <host> <report file> <now>
       if (h["pressure_full60"] + 0 >= 10) out(2, "WARN", "pressure", "memory pressure of the boxes is " h["pressure_full60"] " percent (full, 60 seconds)")
       # Eviction starts at 70 percent and takes one folder a minute; 75 for 15 minutes means it does not keep up.
       if (h["disk_pct"] + 0 >= 75) out(3, "WARN", "disk", "the work area is " h["disk_pct"] " percent full, eviction should hold it under 70")
+      # The cleanup levels are percents of the whole disk: on a disk the system shares, 60 or more lets build data fill it. A report without the words (older server) gives neither finding.
+      if (h["work_own"] == "no") out(1, "WARN", "workfs", "the work area is not a file system of its own: the system'\''s snapshots keep build data; run boxd-setup")
+      if (h["work_shared"] == "yes" && h["evict_at"] ~ /^[0-9]+$/ && h["evict_at"] + 0 >= 60) out(1, "WARN", "budget", "the work area shares its disk with the system and cleanup starts only at " h["evict_at"] " percent of that disk; set BOXD_EVICT_AT and BOXD_EVICT_TO in /etc/boxd/boxd.conf")
       # The reaper runs every minute; ten minutes over the time limit is a reaper that does not work.
       for (b in idle) if (idle[b] > h["ttl"] + 600) out(2, "WARN", "idle-box:" b, "box " b " is idle for " int(idle[b] / 60) " minutes and still there (time limit " int(h["ttl"] / 60) ")")
       for (r in run) if (state[run[r]] != "running") out(2, "WARN", "stale-run:" r, "run " r " is listed as running but its box is not")

@@ -21,7 +21,7 @@ PROC=${BOXD_PROC:-/proc}   # test hook, like BOXD_MEMINFO: where `pod report` fi
 KVM=${BOXD_KVM:-/dev/kvm}   # test hook: the device a --kvm box gets
 ROUTE=${BOXD_ROUTE:-/proc/net/route}   # test hooks: the routing table and the network interface folder `pod report` reads
 NETDIR=${BOXD_NET:-/sys/class/net}
-VERSION=0.4.43
+VERSION=0.4.44
 # Keys that may only read, one "<type> <key> [comment]" per line (view_only below); and the largest answer of pod calls and pod log.
 VIEW_KEYS=${BOXD_VIEW_KEYS:-/etc/boxd/view_keys}
 READ_MAX=${BOXD_READ_MAX:-1048576}
@@ -1067,7 +1067,7 @@ events_write() { mkdir -p "${1%/*}" && events_snapshot "$2" "$3" >"$1.new" && mv
 # `pod status` also has come from it, so the two always agree.
 pod_report() {
     local st k v box image state engine bl mem user size lim j rl busy l5 l15 boot mt ma sw su gmax gcur oom dt du f
-    local mpk power=${BOXD_POWER:-off} ic="-" cnt="-" last="-" rat="-" ka=none lock=${BOXD_KEEPAWAKE_LOCK:-/run/boxd-keepawake.lock}
+    local wd pd fa fb own="-" shared="-" mpk power=${BOXD_POWER:-off} ic="-" cnt="-" last="-" rat="-" ka=none lock=${BOXD_KEEPAWAKE_LOCK:-/run/boxd-keepawake.lock}
     local ist=${BOXD_IDLE_STATE:-/run/boxd-idle} vmrows="" runs="" rows used_mb cap_mb psome pfull ntx nlc
     local -a pr
     local -A S
@@ -1083,6 +1083,12 @@ pod_report() {
     read -r psome pfull ntx nlc < <(stall_counters)
     read -r dt du < <(df --output=size,used "$WORK" 2>/dev/null | tail -n 1)
     [[ ${dt:-} =~ ^[0-9]+$ && ${du:-} =~ ^[0-9]+$ ]] && { dt=$((dt / 1024)); du=$((du / 1024)); } || { dt="-"; du="-"; }
+    # Own: another device number than the folder above it (a mount, or a btrfs subvolume); folder: the plain folder of directory mode. Shared: the same block device as /;
+    # the file system identity of stat -f is not used, the kernel mixes the subvolume into it, so two subvolumes of one btrfs differ.
+    if [ -e "$WORK/.boxd-dir-mode" ]; then own=folder
+    else wd=$(stat -c %d "$WORK" 2>/dev/null) && pd=$(stat -c %d "$WORK/.." 2>/dev/null) && { [ "$wd" = "$pd" ] && own=no || own=yes; }; fi
+    fa=$(df --output=source "$WORK" 2>/dev/null | tail -n 1); fb=$(df --output=source / 2>/dev/null | tail -n 1)
+    [ -z "$fa" ] || [ -z "$fb" ] || { [ "$fa" = "$fb" ] && shared=yes || shared=no; }
     [ "$power" = on ] || power=off
     if [ "$power" = on ]; then
         ic=${BOXD_IDLE_CHECKS:-20} rat=${BOXD_RESET_AT:-85}
@@ -1093,8 +1099,8 @@ pod_report() {
         "${S[version]}" "${S[engines]}" "${S[cpus]}" "${S[load1]}" "$l5" "$l15" "${boot:--}" "${mt:--}" "${ma:--}" "${sw:--}" "${su:--}"
     printf '\tgroup_mem_max_mb=%s\tgroup_mem_used_mb=%s\tpressure_some10=%s\tpressure_some60=%s\tpressure_full10=%s\tpressure_full60=%s\toom_kills=%s\tpressure_some_ms=%s\tpressure_full_ms=%s\tnet_tx_timeouts=%s\tnet_link_changes=%s' \
         "$gmax" "$gcur" "${pr[0]:--}" "${pr[1]:--}" "${pr[2]:--}" "${pr[3]:--}" "${oom:--}" "$psome" "$pfull" "$ntx" "$nlc"
-    printf '\tvm_used=%s\tvm_max=%s\tvm_room=%s\tvm_mem_mb=%s\tbox_mem_mb=%s\tdisk_pct=%s\tdisk_total_mb=%s\tdisk_used_mb=%s\tttl=%s' \
-        "${S[vm_used]}" "${S[vm_max]}" "${S[vm_room]}" "$(lim_mb "$VM_LIMITS")" "$(ctr_limit_mb)" "${S[disk_pct]}" "$dt" "$du" "$TTL"
+    printf '\tvm_used=%s\tvm_max=%s\tvm_room=%s\tvm_mem_mb=%s\tbox_mem_mb=%s\tdisk_pct=%s\tdisk_total_mb=%s\tdisk_used_mb=%s\tttl=%s\twork_own=%s\twork_shared=%s\tevict_at=%s\tevict_to=%s\tkeep_days=%s' \
+        "${S[vm_used]}" "${S[vm_max]}" "${S[vm_room]}" "$(lim_mb "$VM_LIMITS")" "$(ctr_limit_mb)" "${S[disk_pct]}" "$dt" "$du" "$TTL" "$own" "$shared" "$EVICT_AT" "$EVICT_TO" "$KEEP_DAYS"
     printf '\tpower=%s\tidle_checks=%s\tidle_count=%s\tidle_last=%s\treset_at=%s\tkeepawake=%s\twaiting=%s\n' "$power" "$ic" "${cnt:--}" "${last:--}" "$rat" "$ka" "${S[waiting]:-0}"
     have_msb && vmrows=1
     rows=$(box_rows $vmrows) || exit 125   # a failed engine listing is no list (see pod_list)

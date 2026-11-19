@@ -152,4 +152,25 @@ if [ "$FS" = btrfs ]; then
     mount --make-rprivate "$WORK"
     [ "$MANAGER" != runit ] || grep -q "make-rprivate $WORK" /etc/rc.local 2>/dev/null || echo "mount --make-rprivate $WORK" >> /etc/rc.local
 fi
+# begin disk budget
+# The cleanup levels are percents of the whole disk, so on a disk the system shares the defaults (70 and 60) would let build
+# data fill it: set levels that fit, once. A settings file that sets any of the three is left as it is.
+disk_budget() {
+    ! grep -Eq '^[[:space:]]*(export[[:space:]]+)?BOXD_(EVICT_AT|EVICT_TO|KEEP_DAYS)=' "$CONF" 2>/dev/null || return 0
+    # The block device, not the file system identity of stat -f: the kernel mixes the subvolume into that, so two subvolumes of one btrfs differ.
+    src=$(df --output=source "$WORK" | tail -n 1) && [ -n "$src" ] && [ "$src" = "$(df --output=source / | tail -n 1)" ] || return 0
+    set -- $(df -k --output=pcent,size "$WORK" | tail -n 1) || return 0
+    case ${1%\%} in ''|*[!0-9]*) return 0 ;; esac
+    case $2 in ''|*[!0-9]*) return 0 ;; esac
+    at=$(( (${1%\%} + 20 + 4) / 5 * 5 )); [ "$at" -le 70 ] || at=70
+    to=$((at - 10))
+    {
+        printf '\n# Written by boxd-setup: the work area shares its disk with the system, so these levels are percents of that whole disk.\n'
+        printf '# Idle box folders are removed from %s percent of the disk down to %s percent; a folder unused for 3 days goes at once.\n' "$at" "$to"
+        printf 'BOXD_EVICT_AT=%s\nBOXD_EVICT_TO=%s\nBOXD_KEEP_DAYS=3\n' "$at" "$to"
+    } >> "$CONF"
+    echo "boxd-setup: the work area shares its disk with the system: idle box folders are removed from $at percent of the disk (about $(($2 * at / 100 / 1048576)) GB) down to $to; change BOXD_EVICT_AT and BOXD_EVICT_TO in $CONF"
+}
+# end disk budget
+disk_budget
 echo "build area ready"

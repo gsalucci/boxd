@@ -176,7 +176,16 @@ FAKE
 cat > "$T/bin/df" <<'FAKE'
 #!/bin/sh
 # sizes in one-kilobyte blocks for --output=size,used (pod report), the percentage otherwise (37, or what a case wrote into FAKE_DF)
-case "$*" in *size,used*) printf '1K-blocks Used\n1000000000 370000000\n' ;; *) echo "Use%"; if [ -n "${FAKE_DF:-}" ]; then sed 's/$/%/' "$FAKE_DF"; else echo " 37%"; fi ;; esac
+case "$*" in *output=source*) [ -z "${FAKE_STAT_FAIL:-}" ] || exit 1; printf 'Filesystem\n'; case "$*" in *" /") echo /dev/fake1 ;; *) echo "${FAKE_WORK_SRC:-/dev/fake1}" ;; esac ;; *size,used*) printf '1K-blocks Used\n1000000000 370000000\n' ;; *) echo "Use%"; if [ -n "${FAKE_DF:-}" ]; then sed 's/$/%/' "$FAKE_DF"; else echo " 37%"; fi ;; esac
+FAKE
+# stat and df --output=source: by default the work area is on the device of its parent folder and on the block device of / (FAKE_WORK_DEV,
+# FAKE_WORK_SRC say otherwise, FAKE_STAT_FAIL: unreadable); everything else is the real stat
+cat > "$T/bin/stat" <<'FAKE'
+#!/bin/sh
+case "$*" in
+  "-c %d "*) [ -z "${FAKE_STAT_FAIL:-}" ] || exit 1; case "$3" in */..) echo 1 ;; *) echo "${FAKE_WORK_DEV:-1}" ;; esac ;;
+  *) exec /usr/bin/stat "$@" ;;
+esac
 FAKE
 cat > "$T/bin/boxd-keepawake" <<'FAKE'
 #!/bin/sh

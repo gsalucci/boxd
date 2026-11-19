@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.44
+
+- A host whose work area shares its disk with the system no longer starts with cleanup levels meant for a disk of its own. `boxd-setup` now writes `BOXD_EVICT_AT` (the disk's fill plus 20 points, at most 70), `BOXD_EVICT_TO` (10 below) and `BOXD_KEEP_DAYS=3` into the settings file on such a disk, when none of them is set, and prints what that means in GB. On a laptop with one 954 GiB disk the defaults (70 and 60 percent, 14 days) had let build data grow to hundreds of GB before anything was removed.
+- `pod report`: the host line gains `work_own` (the work area is a file system of its own: `yes`, `no`, or `folder` on a host without btrfs), `work_shared` (it sits on the same disk as the system) and the levels in force, `evict_at`, `evict_to`, `keep_days`.
+- `tools/host-watch` warns when a work area is not a file system of its own (the system's snapshots then keep build data) and when a shared disk still has a cleanup level of 60 percent or more.
+
 ## 0.4.43
 
 - A run ended with `box stop --run` always says so in its log: the line `boxd: ended by box stop --run` is written before the run is ended. In 0.4.42 it was missing whenever the run's own wrapper wrote the ending first, which on a real host was every time (exit 143 from a container box, 255 from a machine box).
