@@ -86,6 +86,7 @@ if [ -n "\${FAKE_HOSTS:-}" ]; then
       if [ -f "$FAKE_HOSTS/$h.report.$n" ]; then cat "$FAKE_HOSTS/$h.report.$n"; else cat "$FAKE_HOSTS/$h.report" 2>/dev/null; fi; exit 0;;
     *" pod log "*) r=\${*% *}; cat "$FAKE_HOSTS/$h.log.\${r##* }" 2>/dev/null; exit 0;;
     *" pod queue "*) echo x >> "$FAKE_HOSTS/$h.queues"; n=$(wc -l < "$FAKE_HOSTS/$h.queues" | tr -d ' ')   # the place: <alias>.queue.<n> or <alias>.queue (said, exit 75), else room
+      [ ! -f "$FAKE_HOSTS/$h.queue.final" ] || { cat "$FAKE_HOSTS/$h.queue.final"; exit 125; }   # the size never fits: final refusal
       for q in "$FAKE_HOSTS/$h.queue.$n" "$FAKE_HOSTS/$h.queue"; do [ ! -f "$q" ] || { cat "$q"; exit 75; }; done; exit 0;;
     *" pod list") cat "$FAKE_HOSTS/$h.list" 2>/dev/null; exit 0;;
     *" pod ps "*) cat "$FAKE_HOSTS/$h.ps.\${*##* }" 2>/dev/null; exit 0;;
@@ -2943,6 +2944,26 @@ test("--wait: while pod status shows no room the call asks the server for its pl
   assert.ok(r.calls.every((c) => !c.includes("boxd-laptop") || c.endsWith(" pod status")));
   assert.ok(r.calls.some((c) => c.endsWith(` pod queue ${rp.box} vm large`)));
   assert.deepEqual(rest(r.calls).filter((c) => !c.includes(" pod queue ")), [queued(rp, "tower", "--vm")]);
+});
+
+test("a size above the whole cap of a host never fits it: the host is skipped for another that fits, and alone it is a refusal that does not wait", () => {
+  const cap = (st: string, mb: number) => st.replace(/group_mem_max_mb=[^\t]*/, `group_mem_max_mb=${mb}`);
+  const small = cap(fits("0"), 11410), big = cap(fits("20000"), 28672);
+  const both = choose([{ name: "tower", state: "awake", status: small }, { name: "laptop", state: "awake", status: big }], { vm: true, size: "xlarge" });
+  assert.equal(both.host, "laptop");
+  const alone = one(small, { vm: true, size: "xlarge" });
+  assert.deepEqual([alone.refusal, alone.wait], [["tower: 12288 MB never fits, the cap is 11410 MB"], false]);
+  assert.equal(one(cap(fits("20000"), 12288), { vm: true, size: "xlarge" }).host, "tower", "equal to the cap fits");
+});
+
+test("--wait: a server that answers the final refusal (125) to pod queue ends the wait (when every server says so) with its line and code", () => {
+  const s = servers([{ name: "tower", status: V41(FULL) }, { name: "laptop", status: V41(FULL) }]), rp = newRepo(), line = "boxd-pod: a machine of size large (16384 MB) never fits this host: its cap is 8192 MB; use a smaller --size here or another host";
+  for (const h of ["tower", "laptop"]) hostFile(s, h, "queue.final", `${line}\n`);
+  const r = waits(rp, s, ["--no-sync", "--vm", "true"]);
+  assert.equal(r.code, 125, r.err + r.calls.join("\n"));
+  assert.ok(r.err.endsWith(`${line}\n`), r.err);
+  assert.equal(r.calls.filter((c) => c.includes(" pod queue ")).length, 2, "each server asked once, not again");
+  assert.ok(r.calls.every((c) => !c.includes(" pod run ")));
 });
 
 test("--wait: a refusal at the server with a place in it shows the place, and a changed place is a changed reason", () => {

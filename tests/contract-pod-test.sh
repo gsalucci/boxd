@@ -134,6 +134,8 @@ case $1 in
     exec)
         case "$*" in *boxd-call-cleanup*) [ -z "${FAKE_CLEAN:-}" ] || echo cleaned > "$FAKE_CLEAN"; exit 0 ;; esac
         case "$*" in *boxd-user-setup*) echo "${FAKE_USER_NAME:-box}"; exit "${FAKE_USER_EXIT:-0}" ;; esac
+        # the event record's read inside the machine: FAKE_GUEST_READS=<file>, one answer "<oom_kill> <percent of /job>" per line, the first line is used up by each read; no file or no line: the exec fails
+        case "$*" in *boxd-guest-read*) [ -s "${FAKE_GUEST_READS:-/nonexistent}" ] || exit 1; head -n 1 "$FAKE_GUEST_READS"; sed -i 1d "$FAKE_GUEST_READS"; exit 0 ;; esac
         shift; while :; do case $1 in -t|--stream) shift ;; -e|-u) shift 2 ;; *) break ;; esac; done
         # the docker start script runs with the working folder /, the command in /job/src
         if [ "$2" = / ]; then exit "${FAKE_STARTER_EXIT:-0}"; fi
@@ -980,6 +982,7 @@ pod "pod run $box -- $B64"
 eq "a later call without --user keeps the account and says nothing" 0 "$(grep -c '^boxd-pod: new ' "$T/e/err")"
 setup; pod "pod run $box --vm -- $B64"
 eq "a new machine box says it runs commands as root and that an account needs --user at creation" "boxd-pod: new machine box $box: commands run as root; an ordinary account needs --user at creation" "$(grep '^boxd-pod: new ' "$T/e/err")"
+eq "a new machine box says the memory and processors its size gives on this host" "boxd-pod: machine box $box: size large on this host is 8192 MB of memory and 4 processors (--size small, medium, large or xlarge at creation)" "$(grep 'on this host is' "$T/e/err")"
 setup; mkdir -p "$BOXD_CGROOT/boxd"; printf 'oom_kill 3\n' > "$BOXD_CGROOT/boxd/memory.events"
 export FAKE_EXEC_EXIT=137 FAKE_EXEC_CRASH=4 FAKE_BLOCK_EXEC=1
 pod "pod run $box --detach 20261115-140000-0001 -- $B64"; read -r _ <&3
@@ -1284,6 +1287,7 @@ printf 'from --platform=linux/amd64 localhost/shared:latest AS base\nRUN true\nF
 : > "$BOXD_IMAGES_DIR/shared.tar"
 pod "pod run $box --image-file Containerfile -- $B64"
 eq "image build: a localhost image absent from the store is loaded from its archive before the build" "0|load|build" "$rc|$(grep -E '^(load|build)' "$FAKE_LOG" | cut -d' ' -f1 | paste -sd'|')"
+eq "image build: the load of a removed image is said in one line" "boxd-pod: image localhost/shared:latest was no longer in this host's store; loaded again from its archive" "$(grep 'no longer in this host' "$T/e/err")"
 : > "$FAKE_LOG"; pod "pod run $box --image-file Containerfile -- $B64"
 eq "image build: an image already in the store is not loaded again" "0|0" "$rc|$(grep -c '^load' "$FAKE_LOG")"
 setup; mkdir -p "$W/jobs/$box/src"; echo "FROM localhost/nowhere:latest" > "$W/jobs/$box/src/Containerfile"
@@ -1499,7 +1503,7 @@ evsetup() {
 evwait() { [ -e "$W/jobs/$box/runs/$1.log" ] || { echo "FAIL event record: run $1 did not start: $(cat "$T/e/err" 2>/dev/null | head -n 1)"; return; }; until grep -q "^EXIT" "$W/jobs/$box/runs/$1.log" 2>/dev/null; do sleep 0.05; done; }   # the end record is written before EXIT
 evwords() { grep -v '^time=\|^boot=' "$1" | paste -sd'|'; }
 evsetup; pod "pod run $box --detach 20261118-100000-0001 -- $B64"; evwait 20261118-100000-0001; EV=$W/cache/events/$box
-want="engine=container|group_some_ms=2500|group_full_ms=1200|net_tx_timeouts=3|net_link_changes=7|group_kills=3|group_cap_kills=2|box_some_ms=700|box_full_ms=300|box_kills=5|box_limit_kills=4"
+want="engine=container|group_some_ms=2500|group_full_ms=1200|net_tx_timeouts=3|net_link_changes=7|group_kills=3|group_cap_kills=2|box_some_ms=700|box_full_ms=300|box_kills=5|box_limit_kills=4|guest_kills=-|job_disk_pct=37"
 eq "event record: the start snapshot of a container run" "$want" "$(evwords "$EV/20261118-100000-0001.start")"
 eq "event record: the end snapshot of a container run" "$want" "$(evwords "$EV/20261118-100000-0001.end")"
 eq "event record: time and boot are numbers" "2" "$(grep -c '^time=[0-9]\+$\|^boot=[0-9]\+$' "$EV/20261118-100000-0001.start")"
@@ -1551,12 +1555,29 @@ eq "pod end, wrapper ends first: the note, then the wrapper's own EXIT, and no o
 # a machine box: the four words of an own group are dashes
 setup; mkdir -p "$BOXD_CGROOT/boxd"; CASE_ENV=(BOXD_ROUTE="$T/e/noroute" BOXD_NET="$T/e/nonet"); printf 'oom 0\noom_kill 3\n' > "$BOXD_CGROOT/boxd/memory.events"
 pod "pod run $box --vm --detach 20261118-100000-0003 -- $B64"; evwait 20261118-100000-0003
-eq "event record: a machine run: engine vm, no own group, the build group's words, the unreadable ones dashes" "engine=vm|group_some_ms=-|group_full_ms=-|net_tx_timeouts=-|net_link_changes=-|group_kills=3|group_cap_kills=-|box_some_ms=-|box_full_ms=-|box_kills=-|box_limit_kills=-" "$(evwords "$W/cache/events/$box/20261118-100000-0003.end")"
+eq "event record: a machine run: engine vm, no own group, the build group's words, the unreadable ones dashes" "engine=vm|group_some_ms=-|group_full_ms=-|net_tx_timeouts=-|net_link_changes=-|group_kills=3|group_cap_kills=-|box_some_ms=-|box_full_ms=-|box_kills=-|box_limit_kills=-|guest_kills=-|job_disk_pct=-" "$(evwords "$W/cache/events/$box/20261118-100000-0003.end")"
 pod "pod events $box 20261118-100000-0003"
 eq "event record: a machine run whose build group cannot be read in full is not complete" "engine=vm complete=no why=counter-unreadable" "$(tr '\t' '\n' < "$T/e/out" | grep -E '^(engine|complete|why)=' | paste -sd' ')"
 # a view-only key may ask for it, and asking writes nothing
 before=$(find "$W" | sort | md5sum)
 eq "pod events writes nothing (no stamp, no lock, no folder, no call log line)" "$before" "$(pod "pod events $box 20261118-100000-0003"; find "$W" | sort | md5sum)"
+# a machine box: the guest's own kills and the disk of /job, read inside the machine at the start and at the end (one exec each)
+vmrun() { setup; mkdir -p "$BOXD_CGROOT/boxd"; CASE_ENV=(BOXD_ROUTE="$T/e/noroute" BOXD_NET="$T/e/nonet"); printf 'oom 0\noom_kill 3\n' > "$BOXD_CGROOT/boxd/memory.events"; export FAKE_GUEST_READS=$T/e/guest; printf '%b' "$1" > "$FAKE_GUEST_READS"
+    pod "pod run $box --vm --detach $2 -- $B64"; evwait "$2"; pod "pod events $box $2"; unset FAKE_GUEST_READS; }
+evw() { tr '\t' '\n' < "$T/e/out" | grep -E '^(guest_kills|job_disk_pct|disk_full)=' | paste -sd' '; }
+vmrun '1 10\n3 99\n' 20261120-100000-0001
+eq "event record: a machine run reads the guest's kill counter and /job at the start and at the end, one exec each" "guest_kills=1|job_disk_pct=10 guest_kills=3|job_disk_pct=99 2" "$(grep -h '^guest_kills\|^job_disk_pct' "$W/cache/events/$box/20261120-100000-0001.start" | paste -sd'|') $(grep -h '^guest_kills\|^job_disk_pct' "$W/cache/events/$box/20261120-100000-0001.end" | paste -sd'|') $(grep -c 'boxd-guest-read' "$FAKE_MSB_LOG")"
+eq "event record: guest kills are the difference of the counter, 99 percent of /job is full" "guest_kills=2 job_disk_pct=99 disk_full=yes" "$(evw)"
+eq "event record: the read inside the machine is no call: the call log has only the launch line" 1 "$(wc -l < "$W/cache/calls.log")"
+vmrun '1 10\n1 42\n' 20261120-100000-0002; eq "event record: 42 percent of /job is not full, no new kills is 0" "guest_kills=0 job_disk_pct=42 disk_full=no" "$(evw)"
+vmrun '1 10\n' 20261120-100000-0003; eq "event record: a read that fails at the end: dashes, the record still complete in the guest's words" "guest_kills=- job_disk_pct=- disk_full=-" "$(evw)"
+setup; mkdir -p "$BOXD_CGROOT/boxd"; export FAKE_GUEST_READS=$T/e/guest FAKE_EXEC_CRASH=4; printf '1 10\n' > "$FAKE_GUEST_READS"
+pod "pod run $box --vm --detach 20261120-100000-0005 -- $B64"; evwait 20261120-100000-0005; pod "pod events $box 20261120-100000-0005"; unset FAKE_GUEST_READS FAKE_EXEC_CRASH
+eq "event record: a machine that is gone at the end is not asked (a plain exec would start it again): dashes, one read only" "guest_kills=- job_disk_pct=- disk_full=- 1" "$(evw) $(grep -c 'boxd-guest-read' "$FAKE_MSB_LOG")"
+# a container box: no guest kills, the disk word comes from the box folder on the host
+setup; mkdir -p "$BOXD_CGROOT/boxd"; export FAKE_DF=$T/e/df; echo 99 > "$FAKE_DF"
+pod "pod run $box --detach 20261120-100000-0006 -- $B64"; evwait 20261120-100000-0006; pod "pod events $box 20261120-100000-0006"; unset FAKE_DF
+eq "event record: a container run: no guest kills, the host's df of the box folder, 99 percent is full" "guest_kills=- job_disk_pct=99 disk_full=yes" "$(evw)"
 # a box busy now, with a stamp not after the end of the window, was busy in it: a foreground call in progress is not in the call log yet
 evsetup; mkdir -p "$W/jobs/fg" "$EV"; : > "$W/jobs/fg/.running"; touch -d @1050 "$W/jobs/fg/.last-used"
 printf 'time=1000\nboot=5\nengine=container\n' > "$EV/r1.start"; printf 'time=1100\nboot=5\nengine=container\n' > "$EV/r1.end"; mkdir -p "$W/jobs/$box/runs" "$W/cache"; : > "$W/jobs/$box/runs/r1.log"
@@ -1614,6 +1635,15 @@ qroom; pod "pod queue y box"; eq "pod queue: no room, 75, the ticket is written,
 unhold; pod "pod queue y box"; eq "pod queue: room, exit 0 and the ticket is left as it was" "0 yes" "$rc $(have y)"
 rm -f "$W/cache/queue/"*; pod "pod queue y box"; eq "pod queue: room and no ticket writes none" "0 no" "$rc $(have y)"
 pod "pod queue y vm huge"; eq "pod queue: a bad size is refused" 125 "$rc"
+# A size above the whole cap never fits: final refusal (125), no ticket, nothing created, through pod run (also queued) and pod queue.
+NEVER="boxd-pod: a machine of size xlarge (12288 MB) never fits this host: its cap is 8192 MB; use a smaller --size here or another host"
+cg8; pod "pod queue nv vm xlarge"
+eq "never fits: pod queue, code, line and no ticket" "125 $NEVER no" "$rc $(cat "$T/e/out") $(have nv)"
+cg8; pod "pod run nv --vm --size xlarge --queued -- $B64"; eq "never fits: a queued pod run is refused for good, no ticket, no machine call" "125 $NEVER no 0" "$rc $(cat "$T/e/err") $(have nv) $(grep -cE "^(create|start|exec) " "$T/e/msb.log")"
+cg8; BOXD_VM_LIMITS="-c 4 -m 16G" pod "pod run nv --vm -- $B64"; eq "never fits: a default size above the cap is refused for good too" "125 boxd-pod: a machine of size large (16384 MB) never fits this host: its cap is 8192 MB; use a smaller --size here or another host" "$rc $(cat "$T/e/err")"
+cg8; BOXD_VM_COMMIT=50 pod "pod run nv --vm --size large -- $B64"; eq "never fits: the commit share is the bound when it is the tighter one" "125 boxd-pod: a machine of size large (8192 MB) never fits this host: its cap is 4096 MB; use a smaller --size here or another host" "$rc $(cat "$T/e/err")"
+cg8; printf 'anon %s\nshmem 0\n' $((6000 * 1048576)) > "$BOXD_CGROOT/boxd/memory.stat"; pod "pod queue nv vm large"; eq "never fits: a size within the cap that has no room now is still 75, with its ticket" "75 yes" "$rc $(have nv)"
+rm -f "$W/cache/queue/"*
 # the ticket is written although the top of the work area is not writable (on a real host it belongs to root)
 qroom; mkdir -p "$W/home" "$W/tmp" "$W/cache" "$W/jobs"; chmod 555 "$W"; pod "pod run y --queued -- $B64"; chmod 755 "$W"
 eq "waiting line: the ticket is written when the work area's top folder cannot be written, and the call is refused, not hung" "75 yes" "$rc $(have y)"

@@ -44,7 +44,7 @@ session and every box is under the total cap. The main sshd (port 22) refuses `b
 | `pod log <box> <run> [<offset>]` | Read only: a detached run's log from a byte offset, the same windows; the box is not started (see "The reading verbs"). |
 | `pod events <box> <run>` | Read only: the host's own record of what could have disturbed a detached run during its window, one line (see "The event record of a detached run"). |
 | `pod end <box> <run>` | Ends one detached run and nothing else; not allowed for a key that may only read (see "Ending a detached run"). |
-| `pod queue <box> box\|vm <size>` | Since 0.4.41. Asks for a place in the waiting line and starts nothing (see "The waiting line"). `<size>` is `small`, `medium`, `large` or `xlarge`. Exit 0 when the call would be admitted now (nothing is written). Otherwise exit 75, the ticket of the box written or refreshed, and one line on standard output `boxd-pod: no room for another <busy box|virtual machine> now; <place>; busy now: <boxes>`. Takes the room lock and writes only the ticket; not allowed for keys that may only read. |
+| `pod queue <box> box\|vm <size>` | Since 0.4.41. Asks for a place in the waiting line and starts nothing (see "The waiting line"). `<size>` is `small`, `medium`, `large` or `xlarge`. Exit 125 and the line of the final refusal above on standard output, no ticket, when the size alone never fits the host (since 0.4.52). Exit 0 when the call would be admitted now (nothing is written). Otherwise exit 75, the ticket of the box written or refreshed, and one line on standard output `boxd-pod: no room for another <busy box|virtual machine> now; <place>; busy now: <boxes>`. Takes the room lock and writes only the ticket; not allowed for keys that may only read. |
 | `pod help` | Since 0.4.10. Read only, one line per command the server accepts over ssh with a few words each, exit 0; no lock, no stamp, no call log line; allowed for keys that may only read. Extra words: exit 125, `boxd-pod: unknown command`. |
 | anything else | Exit 125, `boxd-pod: unknown command` on stderr (the text stays as it is: the client and the dashboard match it to detect a server older than the command; `pod help` lists the commands). `pod report`, `pod calls` and `pod log` with more words than shown are unknown commands too. |
 
@@ -258,6 +258,7 @@ the file keeps its limit, silently. The real fix is a guest kernel not built sma
         down); equal to the cap passes. `anon` and `shmem` are what machines really use (guest memory is anonymous memory
         of the `msb` process); file cache is reclaimable and does not count. Refused with exit **75**,
         `boxd-pod: no room for another virtual machine (<used> MB in use + <asked> MB asked > <cap> MB cap); wait for one to end or stop one`.
+        A size that could never fit is refused for good first (since 0.4.52): when the asked memory alone is larger than the cap, or larger than the commit share of it (below), nothing running changes the answer, so the call ends with exit **125**, `boxd-pod: a machine of size <size word, or default> (<asked> MB) never fits this host: its cap is <the smaller of the two> MB; use a smaller --size here or another host`, no ticket and nothing created. It applies to `--size xlarge` on a small host and to a default size above the cap (a misconfigured host); never to the size the server picks from a past need, which is never above the default. A host whose memory cannot be measured has no such bound.
       - **Commitment** (with the measured rule, since 0.4.7): a young machine has not claimed its memory yet, so the
         measure alone admits too many. The sizes of the running sandboxes named `pod-*` (each from its box's `.vm-size`,
         `large` without a record; the asked box itself not included) plus the asked memory must not exceed
@@ -336,7 +337,7 @@ the file keeps its limit, silently. The real fix is a guest kernel not built sma
         not written on the host for `BOXD_KEEP_DAYS` are removed (under disk pressure only, since 0.4.49; see "Retention").
 
    d. **vm only:** the docker start script of "Engines". It also runs `git config --system --replace-all safe.directory /job/src` (when `git` exists in the image): the guest's root is not the owner of the synced files (the mirror of the build account's ids), and git refuses a repository owned by another account ("dubious ownership"), so `git status` in `/job/src` would fail after `--git` or `--snapshot`. It trusts that one folder, inside the machine only; the host's configuration is untouched. In a container box the files belong to the account that runs commands (container root maps to the build account; `--user` uses `--userns=keep-id`), so nothing is needed there.
-6. Touch `/work/jobs/<box>/.last-used`. When this call made the box (a first call, `--recreate`, or a replacement because the image build changed), one line goes to standard error, after the box exists, after the refusals of the call and the snapshot, and before the command, saying which account commands run as: `boxd-pod: new container box <box>: commands run as root; an ordinary account needs --user at creation`, `boxd-pod: new container box <box>: commands run as an ordinary account (--user)`, or `boxd-pod: new machine box <box>: commands run as an ordinary account (--user)` / `boxd-pod: new machine box <box>: commands run as root; an ordinary account needs --user at creation`. A later call into the same box prints none, and nothing goes to standard output. The server says it because only the server knows that the call made the box; a refusal (exit 125 or 75) comes before it, so a refusal still has exactly one `boxd-pod:` line. The line is plain text for people; a client never parses it.
+6. Touch `/work/jobs/<box>/.last-used`. When this call made the box (a first call, `--recreate`, or a replacement because the image build changed), one line goes to standard error, after the box exists, after the refusals of the call and the snapshot, and before the command, saying which account commands run as: `boxd-pod: new container box <box>: commands run as root; an ordinary account needs --user at creation`, `boxd-pod: new container box <box>: commands run as an ordinary account (--user)`, or `boxd-pod: new machine box <box>: commands run as an ordinary account (--user)` / `boxd-pod: new machine box <box>: commands run as root; an ordinary account needs --user at creation`. A later call into the same box prints none, and nothing goes to standard output. The server says it because only the server knows that the call made the box; a refusal (exit 125 or 75) comes before it, so a refusal still has exactly one `boxd-pod:` line. The line is plain text for people; a client never parses it. Since 0.4.51 a new machine box adds `boxd-pod: machine box <box>: size <size> on this host is <n> MB of memory and <n> processors (--size small, medium, large or xlarge at creation)` (the size `large` is the host's own default and differs between hosts), and a `localhost/` image that had to be loaded again into podman's store says `boxd-pod: image <ref> was no longer in this host's store; loaded again from its archive`.
 7. `--snapshot`: on the host, in `/work/jobs/<box>/src`: `git init -q` if no `.git`, `git add -A`, commit as
    `boxd <boxd@localhost>` (a repository for tests that need one; the sync never carries `.git`). The repository is made on the host by the account that owns the files, so git never meets a foreign owner while it is made. `--git` (client only, see "Client") gives a repository at the worktree's own commit instead; the two cannot go together.
 8. Foreground (no `--detach`), exit code the command's, `.last-used` touched again at the end:
@@ -556,7 +557,13 @@ milliseconds: `pressure_some_ms`, `pressure_full_ms` of `pod report`), `net_tx_t
 a container box only, `box_some_ms`, `box_full_ms` (the pressure totals of the box's own group, found from its init process as
 `box_mem_mb` is), `box_kills` and `box_limit_kills` (`oom_kill` of its `memory.events` and `oom` of its `memory.events.local`: its own
 limit). A machine box has no group of its own, so those four are `-`; every other value that cannot be read is `-`.
-A run started by a server older than this word has no snapshot.
+Since 0.4.53 a snapshot also has `guest_kills` and `job_disk_pct`. `guest_kills`: the count of `Out of memory: Killed process` lines in the kernel log (`dmesg`) INSIDE a machine box (the processes its own kernel
+killed for memory so far; the engine's guest kernel has no such counter in `/proc/vmstat`; `-` when the image has no `dmesg`; `-` for a container box, whose `box_kills` says it). `job_disk_pct`: how full the file system behind `/job` is, a whole number: for a machine
+box read inside it, for a container box by `df` on the host's box folder `$BOXD_WORK/jobs/<box>`. Both machine values come from one exec into the running machine
+(`msb exec -w / pod-<box> -- sh -c ...`: plain `sh`, `dmesg` and `df -P /job`, bounded by `timeout 10`, no input), taken by the wrapper at the start and at the end.
+That exec is not a call: no `.last-used` stamp, no call log line, no lock of the box. A machine that is not running at that moment is not asked (an exec would start it
+again), and a failed or late exec is no error: both values are `-`. A run ended by `box stop --run` writes its end snapshot after its processes ended, so the same rule applies.
+A run started by a server older than this word has no snapshot, and a snapshot of an older server has neither word: they read as `-`.
 
 **`pod events <box> <run>`** validates as `pod log` does (exit 125: `boxd-pod: bad box name`, `boxd-pod: bad run id`, `boxd-pod: no run <run> in box <box>`;
 extra words: `unknown command`). Exit 0 whenever it could answer; the client decides its own exit code from `complete`. One line, tab
@@ -574,7 +581,7 @@ separated: `events`, then these words in this order:
 - The end minus the start, each a dash when either snapshot has a dash there (and every one after `host-restarted`, `running`, `no-start-record`,
   `no-end-record`): `group_stall_ms` (`group_full_ms`: milliseconds in which every runnable task of the boxes waited for memory),
   `group_stall_some_ms` (`group_some_ms`: milliseconds in which at least one did), `kills` (`group_kills`), `kills_by_cap` (`group_cap_kills`),
-  `box_stall_ms`, `box_stall_some_ms`, `box_kills`, `box_limit_kills` (the box's own, `-` for a machine box; a container's own group that
+  `box_stall_ms`, `box_stall_some_ms`, `box_kills`, `box_limit_kills` (the box's own, `-` for a machine box, whose own kills are `guest_kills` below; a container's own group that
   could not be read, for example because the box was already gone at the end, gives dashes and does not make the record incomplete),
   `net_tx_timeouts` (times the network card stalled while sending), `net_link_changes` (times its link went up or down).
 - `others`: the names of the OTHER boxes that were busy at any moment of the window, sorted, comma separated, `-` for none and when the
@@ -586,9 +593,14 @@ separated: `events`, then these words in this order:
 - `siblings`: the other detached runs of THIS box whose window overlaps this run's, run ids sorted, comma separated, `-` for none and when
   the window is not known. Each window is taken as for `others` (start snapshot or log birth to the log's last write, or now while it runs). It never changes `complete`.
   Appended after `others`: a reader that takes the words by key is not disturbed, and a server older than this word sends none.
+- Since 0.4.53, after `siblings`, the run's own box limits (a run killed by them says so):
+  `guest_kills` (machine box: the end minus the start of the guest's `oom_kill`, processes the machine's own kernel killed for memory during the run; `-` for a container box, when either
+  read failed, and when the end value is lower than the start value, which means the machine restarted during the run and its counter began again: the kills before the restart are not known, so never a guess),
+  `job_disk_pct` (how full `/job` was at the END, a whole number, both engines; a level, so it is given after `host-restarted` too; `-` with no end record or when unreadable) and
+  `disk_full` (`yes` when `job_disk_pct` is 99 or more, `no` below, `-` when unknown). A dash in these three never changes `complete` or `why`.
 
-What is NOT given: the name of the killed process; the times of network stalls (counts only); kills made by the guest kernel inside a
-machine box (they show only in that run's log, `GUEST_KILLS`); a stall of one machine, because all machines of the host sit in one
+What is NOT given: the name of the killed process; the times of network stalls (counts only); names of the processes the guest kernel inside a
+machine box killed (the count is `guest_kills`, the lines are in that run's log, `GUEST_KILLS`); a disk that filled and was emptied again within the run (only the level at the end is read); a stall of one machine, because all machines of the host sit in one
 memory group (only the whole group of boxes has a stall counter and a kill counter); what the other busy boxes did.
 
 **Keys that may only read.** The build sshd's settings (`/etc/boxd/sshd_config`) carry `ExposeAuthInfo yes`, so that sshd writes the

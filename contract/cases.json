@@ -1892,7 +1892,7 @@
       "containers": {},
       "sandboxes": {},
       "exit": 0,
-      "stderr": "boxd-pod: new machine box boxd-2889387319: commands run as an ordinary account (--user)",
+      "stderr": "boxd-pod: new machine box boxd-2889387319: commands run as an ordinary account (--user)\nboxd-pod: machine box boxd-2889387319: size large on this host is 8192 MB of memory and 4 processors (--size small, medium, large or xlarge at creation)",
       "msb_calls": [
         "^create --name pod-boxd-2889387319 --mount-dir /work/jobs/boxd-2889387319:/job:host-perms=mirror,uid=1000,gid=1000,quota=64G --mount-dir /work/cache/pod:/cache:host-perms=mirror,uid=1000,gid=1000,quota=64G ",
         "^exec -w / pod-boxd-2889387319 -- sh -c .*pid_max",
@@ -1913,7 +1913,7 @@
         ".vm-user": ""
       },
       "exit": 0,
-      "stderr": "boxd-pod: new machine box boxd-2889387319: commands run as an ordinary account (--user)",
+      "stderr": "boxd-pod: new machine box boxd-2889387319: commands run as an ordinary account (--user)\nboxd-pod: machine box boxd-2889387319: size large on this host is 8192 MB of memory and 4 processors (--size small, medium, large or xlarge at creation)",
       "msb_calls": [
         "^create --name pod-boxd-2889387319 --mount-dir /work/jobs/boxd-2889387319:/job:host-perms=mirror,uid=1000,gid=1000,quota=64G --mount-dir /work/cache/pod:/cache:host-perms=mirror,uid=1000,gid=1000,quota=64G ",
         "^exec -w / pod-boxd-2889387319 -- sh -c : boxd-user-setup ",
@@ -1944,7 +1944,7 @@
         "BOXD_VM_CACHE_DISK": "5G"
       },
       "exit": 0,
-      "stderr": "boxd-pod: new machine box boxd-2889387319: commands run as an ordinary account (--user)",
+      "stderr": "boxd-pod: new machine box boxd-2889387319: commands run as an ordinary account (--user)\nboxd-pod: machine box boxd-2889387319: size large on this host is 8192 MB of memory and 4 processors (--size small, medium, large or xlarge at creation)",
       "msb_calls": [
         "^create --name pod-boxd-2889387319 --mount-dir /work/jobs/boxd-2889387319:/job:host-perms=mirror,uid=1000,gid=1000,quota=10G --mount-dir /work/cache/pod:/cache:host-perms=mirror,uid=1000,gid=1000,quota=5G "
       ],
@@ -2067,7 +2067,7 @@
         }
       },
       "exit": 0,
-      "stderr": "boxd-pod: new machine box boxd-2889387319: commands run as an ordinary account (--user)",
+      "stderr": "boxd-pod: new machine box boxd-2889387319: commands run as an ordinary account (--user)\nboxd-pod: machine box boxd-2889387319: size large on this host is 8192 MB of memory and 4 processors (--size small, medium, large or xlarge at creation)",
       "msb_calls": [
         "^rm -f pod-boxd-2889387319$",
         "^create --name pod-boxd-2889387319 --mount-dir /work/jobs/boxd-2889387319:/job:host-perms=mirror,uid=1000,gid=1000,quota=64G --mount-dir /work/cache/pod:/cache:host-perms=mirror,uid=1000,gid=1000,quota=64G ",
@@ -2092,7 +2092,7 @@
         ".vm-user": ""
       },
       "exit": 0,
-      "stderr": "boxd-pod: new machine box boxd-2889387319: commands run as an ordinary account (--user)",
+      "stderr": "boxd-pod: new machine box boxd-2889387319: commands run as an ordinary account (--user)\nboxd-pod: machine box boxd-2889387319: size large on this host is 8192 MB of memory and 4 processors (--size small, medium, large or xlarge at creation)",
       "msb_calls": [
         "^rm -f pod-boxd-2889387319$",
         "^create --name pod-boxd-2889387319 --mount-dir /work/jobs/boxd-2889387319:/job:host-perms=mirror,uid=1000,gid=1000,quota=64G --mount-dir /work/cache/pod:/cache:host-perms=mirror,uid=1000,gid=1000,quota=64G ",
@@ -2882,7 +2882,7 @@
       ]
     },
     {
-      "name": "admission: a cap that cannot hold 12288 MB refuses an xlarge machine with the numbers",
+      "name": "admission: a cap that cannot hold 12288 MB refuses an xlarge machine for good (125), with the numbers",
       "command": "pod run boxd-2889387319 --vm --size xlarge -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
       "containers": {},
       "sandboxes": {},
@@ -2890,8 +2890,8 @@
         "memory.stat": "anon 0\nfile 0\nshmem 0\nslab 1000\n",
         "memory.max": "8589934592\n"
       },
-      "exit": 75,
-      "stderr": "boxd-pod: no room for another virtual machine (0 MB in use + 12288 MB asked > 8192 MB cap); wait for one to end or stop one",
+      "exit": 125,
+      "stderr": "boxd-pod: a machine of size xlarge (12288 MB) never fits this host: its cap is 8192 MB; use a smaller --size here or another host",
       "msb_calls_absent": [
         "^create",
         "^start",
@@ -3431,7 +3431,7 @@
       "command": "pod status",
       "msb": false,
       "exit": 0,
-      "stdout_re": "^version=0\\.4\\.50\tengines=container\tcpus=8\tload1=[0-9]+\\.[0-9]+\tvm_used=0\tvm_max=3\tvm_room=no\tboxes=0\tdisk_pct=37\tmem_free_mb=unknown\timages=\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=-\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096\twaiting=0$"
+      "stdout_re": "^version=0\\.4\\.53\tengines=container\tcpus=8\tload1=[0-9]+\\.[0-9]+\tvm_used=0\tvm_max=3\tvm_room=no\tboxes=0\tdisk_pct=37\tmem_free_mb=unknown\timages=\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=-\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096\twaiting=0$"
     },
     {
       "name": "pod status: one of three machines running, room for another; boxes counts both engines",
@@ -3453,7 +3453,7 @@
           "state": "stopped"
         }
       },
-      "stdout_re": "^version=0\\.4\\.50\tengines=container,vm\tcpus=8\tload1=[0-9]+\\.[0-9]+\tvm_used=1\tvm_max=3\tvm_room=yes\tboxes=3\tdisk_pct=37\tmem_free_mb=unknown\timages=\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=-\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096\twaiting=0$"
+      "stdout_re": "^version=0\\.4\\.53\tengines=container,vm\tcpus=8\tload1=[0-9]+\\.[0-9]+\tvm_used=1\tvm_max=3\tvm_room=yes\tboxes=3\tdisk_pct=37\tmem_free_mb=unknown\timages=\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=-\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096\twaiting=0$"
     },
     {
       "name": "pod status: all machines used, no room (vm_room is the server's own answer)",
@@ -4023,7 +4023,7 @@
         "jobs/a/.mem-peak": "700",
         "jobs/b/.vm-user": ""
       },
-      "stdout_re": "^host\tversion=0\\.4\\.50\tengines=container,vm\tcpus=8\tload1=[0-9]+\\.[0-9]+\tload5=[0-9]+\\.[0-9]+\tload15=[0-9]+\\.[0-9]+\tboot=[0-9]+\tmem_total_mb=32000\tmem_avail_mb=9000\tswap_total_mb=8000\tswap_used_mb=1200\tgroup_mem_max_mb=32768\tgroup_mem_used_mb=1024\tpressure_some10=2\\.31\tpressure_some60=1\\.12\tpressure_full10=0\\.40\tpressure_full60=0\\.18\toom_kills=1\tpressure_some_ms=1234\tpressure_full_ms=7654\tnet_tx_timeouts=8\tnet_link_changes=4\tvm_used=0\tvm_max=none\tvm_room=yes\tvm_mem_mb=8192\tbox_mem_mb=12288\tdisk_pct=37\tdisk_total_mb=976562\tdisk_used_mb=361328\tttl=1800\twork_own=no\twork_shared=yes\tevict_at=70\tevict_to=60\tkeep_days=14\tpower=on\tidle_checks=20\tidle_count=7\tidle_last=idle\treset_at=85\tkeepawake=free\twaiting=0\nbox\tbox=a\tengine=container\timage=docker\\.io/library/rust:1\tstate=running\tlast_used=0\tuser=no\tsize=-\tmem_limit_mb=12288\tmem_mb=(-|[0-9]+)\tbusy=no\truns=1\tmem_peak_mb=-\nbox\tbox=b\tengine=vm\timage=localhost/toolbox:latest\tstate=stopped\tlast_used=0\tuser=yes\tsize=small\tmem_limit_mb=2048\tmem_mb=-\tbusy=no\truns=0\tmem_peak_mb=2900\nrun\tbox=a\tid=r1\tstate=ended\texit=3\tbytes=11\tchanged=[0-9]+\nrun\tbox=a\tid=r2\tstate=running\texit=-\tbytes=4\tchanged=[0-9]+\nimage\tname=toolbox\tbytes=0\tbuilt=[0-9]+\tvm_loaded=-$",
+      "stdout_re": "^host\tversion=0\\.4\\.53\tengines=container,vm\tcpus=8\tload1=[0-9]+\\.[0-9]+\tload5=[0-9]+\\.[0-9]+\tload15=[0-9]+\\.[0-9]+\tboot=[0-9]+\tmem_total_mb=32000\tmem_avail_mb=9000\tswap_total_mb=8000\tswap_used_mb=1200\tgroup_mem_max_mb=32768\tgroup_mem_used_mb=1024\tpressure_some10=2\\.31\tpressure_some60=1\\.12\tpressure_full10=0\\.40\tpressure_full60=0\\.18\toom_kills=1\tpressure_some_ms=1234\tpressure_full_ms=7654\tnet_tx_timeouts=8\tnet_link_changes=4\tvm_used=0\tvm_max=none\tvm_room=yes\tvm_mem_mb=8192\tbox_mem_mb=12288\tdisk_pct=37\tdisk_total_mb=976562\tdisk_used_mb=361328\tttl=1800\twork_own=no\twork_shared=yes\tevict_at=70\tevict_to=60\tkeep_days=14\tpower=on\tidle_checks=20\tidle_count=7\tidle_last=idle\treset_at=85\tkeepawake=free\twaiting=0\nbox\tbox=a\tengine=container\timage=docker\\.io/library/rust:1\tstate=running\tlast_used=0\tuser=no\tsize=-\tmem_limit_mb=12288\tmem_mb=(-|[0-9]+)\tbusy=no\truns=1\tmem_peak_mb=-\nbox\tbox=b\tengine=vm\timage=localhost/toolbox:latest\tstate=stopped\tlast_used=0\tuser=yes\tsize=small\tmem_limit_mb=2048\tmem_mb=-\tbusy=no\truns=0\tmem_peak_mb=2900\nrun\tbox=a\tid=r1\tstate=ended\texit=3\tbytes=11\tchanged=[0-9]+\nrun\tbox=a\tid=r2\tstate=running\texit=-\tbytes=4\tchanged=[0-9]+\nimage\tname=toolbox\tbytes=0\tbuilt=[0-9]+\tvm_loaded=-$",
       "podman_calls_absent": [
         "^run",
         "^start",
@@ -4059,7 +4059,7 @@
         "BOXD_IDLE_STATE": "/work/no-idle",
         "FAKE_STAT_FAIL": "1"
       },
-      "stdout_re": "^host\tversion=0\\.4\\.50\tengines=container\tcpus=8\t.*\tgroup_mem_max_mb=-\tgroup_mem_used_mb=-\tpressure_some10=-\tpressure_some60=-\tpressure_full10=-\tpressure_full60=-\toom_kills=-\tpressure_some_ms=-\tpressure_full_ms=-\tnet_tx_timeouts=-\tnet_link_changes=-\tvm_used=0\tvm_max=3\tvm_room=no\tvm_mem_mb=8192\tbox_mem_mb=12288\tdisk_pct=37\tdisk_total_mb=976562\tdisk_used_mb=361328\tttl=1800\twork_own=-\twork_shared=-\tevict_at=70\tevict_to=60\tkeep_days=14\tpower=off\tidle_checks=-\tidle_count=-\tidle_last=-\treset_at=-\tkeepawake=none\twaiting=0$"
+      "stdout_re": "^host\tversion=0\\.4\\.53\tengines=container\tcpus=8\t.*\tgroup_mem_max_mb=-\tgroup_mem_used_mb=-\tpressure_some10=-\tpressure_some60=-\tpressure_full10=-\tpressure_full60=-\toom_kills=-\tpressure_some_ms=-\tpressure_full_ms=-\tnet_tx_timeouts=-\tnet_link_changes=-\tvm_used=0\tvm_max=3\tvm_room=no\tvm_mem_mb=8192\tbox_mem_mb=12288\tdisk_pct=37\tdisk_total_mb=976562\tdisk_used_mb=361328\tttl=1800\twork_own=-\twork_shared=-\tevict_at=70\tevict_to=60\tkeep_days=14\tpower=off\tidle_checks=-\tidle_count=-\tidle_last=-\treset_at=-\tkeepawake=none\twaiting=0$"
     },
     {
       "name": "pod report: a work area that is a file system of its own, on another disk than the system, shows the levels in force",
@@ -4197,7 +4197,7 @@
         "cache/calls.log": "900000000\tboxd-2889387319\tcontainer\t0\tdetached\t5\t\tr1\tsleep\n"
       },
       "exit": 0,
-      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=ended\tcomplete=yes\twhy=-\tstart=1000\tend=1100\tseconds=100\texit=0\tgroup_stall_ms=5\tgroup_stall_some_ms=60\tkills=2\tkills_by_cap=1\tbox_stall_ms=10\tbox_stall_some_ms=50\tbox_kills=1\tbox_limit_kills=0\tnet_tx_timeouts=0\tnet_link_changes=1\tothers=-\tsiblings=-"
+      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=ended\tcomplete=yes\twhy=-\tstart=1000\tend=1100\tseconds=100\texit=0\tgroup_stall_ms=5\tgroup_stall_some_ms=60\tkills=2\tkills_by_cap=1\tbox_stall_ms=10\tbox_stall_some_ms=50\tbox_kills=1\tbox_limit_kills=0\tnet_tx_timeouts=0\tnet_link_changes=1\tothers=-\tsiblings=-\tguest_kills=-\tjob_disk_pct=-\tdisk_full=-"
     },
     {
       "name": "pod events, machine box: the four words of the box's own group are dashes and the record is complete",
@@ -4211,7 +4211,63 @@
         "cache/calls.log": "900000000\tboxd-2889387319\tcontainer\t0\tdetached\t5\t\tr1\tsleep\n"
       },
       "exit": 0,
-      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=vm\tstate=ended\tcomplete=yes\twhy=-\tstart=1000\tend=1100\tseconds=100\texit=0\tgroup_stall_ms=5\tgroup_stall_some_ms=60\tkills=2\tkills_by_cap=1\tbox_stall_ms=-\tbox_stall_some_ms=-\tbox_kills=-\tbox_limit_kills=-\tnet_tx_timeouts=0\tnet_link_changes=1\tothers=-\tsiblings=-"
+      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=vm\tstate=ended\tcomplete=yes\twhy=-\tstart=1000\tend=1100\tseconds=100\texit=0\tgroup_stall_ms=5\tgroup_stall_some_ms=60\tkills=2\tkills_by_cap=1\tbox_stall_ms=-\tbox_stall_some_ms=-\tbox_kills=-\tbox_limit_kills=-\tnet_tx_timeouts=0\tnet_link_changes=1\tothers=-\tsiblings=-\tguest_kills=-\tjob_disk_pct=-\tdisk_full=-"
+    },
+    {
+      "name": "pod events, machine box: the guest's kills are the end minus the start, a full /job is told",
+      "command": "pod events boxd-2889387319 r1",
+      "job_files": {
+        "runs/r1.log": "EXIT 0\n"
+      },
+      "work_files": {
+        "cache/events/boxd-2889387319/r1.start": "engine=vm\ntime=1000\nboot=500\ngroup_some_ms=100\ngroup_full_ms=40\nnet_tx_timeouts=2\nnet_link_changes=4\ngroup_kills=1\ngroup_cap_kills=0\nbox_some_ms=-\nbox_full_ms=-\nbox_kills=-\nbox_limit_kills=-\nguest_kills=1\njob_disk_pct=10\n",
+        "cache/events/boxd-2889387319/r1.end": "engine=vm\ntime=1100\nboot=500\ngroup_some_ms=160\ngroup_full_ms=45\nnet_tx_timeouts=2\nnet_link_changes=5\ngroup_kills=3\ngroup_cap_kills=1\nbox_some_ms=-\nbox_full_ms=-\nbox_kills=-\nbox_limit_kills=-\nguest_kills=3\njob_disk_pct=99\n",
+        "cache/calls.log": "900000000\tboxd-2889387319\tcontainer\t0\tdetached\t5\t\tr1\tsleep\n"
+      },
+      "exit": 0,
+      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=vm\tstate=ended\tcomplete=yes\twhy=-\tstart=1000\tend=1100\tseconds=100\texit=0\tgroup_stall_ms=5\tgroup_stall_some_ms=60\tkills=2\tkills_by_cap=1\tbox_stall_ms=-\tbox_stall_some_ms=-\tbox_kills=-\tbox_limit_kills=-\tnet_tx_timeouts=0\tnet_link_changes=1\tothers=-\tsiblings=-\tguest_kills=2\tjob_disk_pct=99\tdisk_full=yes"
+    },
+    {
+      "name": "pod events, machine box: the guest's counter lower at the end (the machine restarted) is a dash, 98 percent is not full",
+      "command": "pod events boxd-2889387319 r1",
+      "job_files": {
+        "runs/r1.log": "EXIT 0\n"
+      },
+      "work_files": {
+        "cache/events/boxd-2889387319/r1.start": "engine=vm\ntime=1000\nboot=500\ngroup_some_ms=100\ngroup_full_ms=40\nnet_tx_timeouts=2\nnet_link_changes=4\ngroup_kills=1\ngroup_cap_kills=0\nbox_some_ms=-\nbox_full_ms=-\nbox_kills=-\nbox_limit_kills=-\nguest_kills=5\njob_disk_pct=10\n",
+        "cache/events/boxd-2889387319/r1.end": "engine=vm\ntime=1100\nboot=500\ngroup_some_ms=160\ngroup_full_ms=45\nnet_tx_timeouts=2\nnet_link_changes=5\ngroup_kills=3\ngroup_cap_kills=1\nbox_some_ms=-\nbox_full_ms=-\nbox_kills=-\nbox_limit_kills=-\nguest_kills=2\njob_disk_pct=98\n",
+        "cache/calls.log": "900000000\tboxd-2889387319\tcontainer\t0\tdetached\t5\t\tr1\tsleep\n"
+      },
+      "exit": 0,
+      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=vm\tstate=ended\tcomplete=yes\twhy=-\tstart=1000\tend=1100\tseconds=100\texit=0\tgroup_stall_ms=5\tgroup_stall_some_ms=60\tkills=2\tkills_by_cap=1\tbox_stall_ms=-\tbox_stall_some_ms=-\tbox_kills=-\tbox_limit_kills=-\tnet_tx_timeouts=0\tnet_link_changes=1\tothers=-\tsiblings=-\tguest_kills=-\tjob_disk_pct=98\tdisk_full=no"
+    },
+    {
+      "name": "pod events, container box: no guest kills, the disk word from the box folder, 42 percent is not full",
+      "command": "pod events boxd-2889387319 r1",
+      "job_files": {
+        "runs/r1.log": "EXIT 0\n"
+      },
+      "work_files": {
+        "cache/events/boxd-2889387319/r1.start": "engine=container\ntime=1000\nboot=500\ngroup_some_ms=100\ngroup_full_ms=40\nnet_tx_timeouts=2\nnet_link_changes=4\ngroup_kills=1\ngroup_cap_kills=0\nbox_some_ms=-\nbox_full_ms=-\nbox_kills=-\nbox_limit_kills=-\nguest_kills=-\njob_disk_pct=40\n",
+        "cache/events/boxd-2889387319/r1.end": "engine=container\ntime=1100\nboot=500\ngroup_some_ms=160\ngroup_full_ms=45\nnet_tx_timeouts=2\nnet_link_changes=5\ngroup_kills=3\ngroup_cap_kills=1\nbox_some_ms=-\nbox_full_ms=-\nbox_kills=-\nbox_limit_kills=-\nguest_kills=-\njob_disk_pct=42\n",
+        "cache/calls.log": "900000000\tboxd-2889387319\tcontainer\t0\tdetached\t5\t\tr1\tsleep\n"
+      },
+      "exit": 0,
+      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=ended\tcomplete=yes\twhy=-\tstart=1000\tend=1100\tseconds=100\texit=0\tgroup_stall_ms=5\tgroup_stall_some_ms=60\tkills=2\tkills_by_cap=1\tbox_stall_ms=-\tbox_stall_some_ms=-\tbox_kills=-\tbox_limit_kills=-\tnet_tx_timeouts=0\tnet_link_changes=1\tothers=-\tsiblings=-\tguest_kills=-\tjob_disk_pct=42\tdisk_full=no"
+    },
+    {
+      "name": "pod events: a guest that could not be read at the end gives dashes and leaves the record complete",
+      "command": "pod events boxd-2889387319 r1",
+      "job_files": {
+        "runs/r1.log": "EXIT 0\n"
+      },
+      "work_files": {
+        "cache/events/boxd-2889387319/r1.start": "engine=vm\ntime=1000\nboot=500\ngroup_some_ms=100\ngroup_full_ms=40\nnet_tx_timeouts=2\nnet_link_changes=4\ngroup_kills=1\ngroup_cap_kills=0\nbox_some_ms=-\nbox_full_ms=-\nbox_kills=-\nbox_limit_kills=-\nguest_kills=1\njob_disk_pct=10\n",
+        "cache/events/boxd-2889387319/r1.end": "engine=vm\ntime=1100\nboot=500\ngroup_some_ms=160\ngroup_full_ms=45\nnet_tx_timeouts=2\nnet_link_changes=5\ngroup_kills=3\ngroup_cap_kills=1\nbox_some_ms=-\nbox_full_ms=-\nbox_kills=-\nbox_limit_kills=-\nguest_kills=-\njob_disk_pct=-\n",
+        "cache/calls.log": "900000000\tboxd-2889387319\tcontainer\t0\tdetached\t5\t\tr1\tsleep\n"
+      },
+      "exit": 0,
+      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=vm\tstate=ended\tcomplete=yes\twhy=-\tstart=1000\tend=1100\tseconds=100\texit=0\tgroup_stall_ms=5\tgroup_stall_some_ms=60\tkills=2\tkills_by_cap=1\tbox_stall_ms=-\tbox_stall_some_ms=-\tbox_kills=-\tbox_limit_kills=-\tnet_tx_timeouts=0\tnet_link_changes=1\tothers=-\tsiblings=-\tguest_kills=-\tjob_disk_pct=-\tdisk_full=-"
     },
     {
       "name": "pod events of a run that still runs: not complete, why running, every difference a dash",
@@ -4225,7 +4281,7 @@
         "cache/calls.log": "900000000\tboxd-2889387319\tcontainer\t0\tdetached\t5\t\tr1\tsleep\n"
       },
       "exit": 0,
-      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=running\tcomplete=no\twhy=running\tstart=1000\tend=-\tseconds=-\texit=-\tgroup_stall_ms=-\tgroup_stall_some_ms=-\tkills=-\tkills_by_cap=-\tbox_stall_ms=-\tbox_stall_some_ms=-\tbox_kills=-\tbox_limit_kills=-\tnet_tx_timeouts=-\tnet_link_changes=-\tothers=-\tsiblings=-"
+      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=running\tcomplete=no\twhy=running\tstart=1000\tend=-\tseconds=-\texit=-\tgroup_stall_ms=-\tgroup_stall_some_ms=-\tkills=-\tkills_by_cap=-\tbox_stall_ms=-\tbox_stall_some_ms=-\tbox_kills=-\tbox_limit_kills=-\tnet_tx_timeouts=-\tnet_link_changes=-\tothers=-\tsiblings=-\tguest_kills=-\tjob_disk_pct=-\tdisk_full=-"
     },
     {
       "name": "pod events of a run started by an older server (no snapshot): not complete, why no-start-record; the engine from the call log",
@@ -4237,7 +4293,7 @@
         "cache/calls.log": "900000000\tboxd-2889387319\tcontainer\t0\tdetached\t5\t\tr1\tsleep\n"
       },
       "exit": 0,
-      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=ended\tcomplete=no\twhy=no-start-record\tstart=-\tend=-\tseconds=-\texit=0\tgroup_stall_ms=-\tgroup_stall_some_ms=-\tkills=-\tkills_by_cap=-\tbox_stall_ms=-\tbox_stall_some_ms=-\tbox_kills=-\tbox_limit_kills=-\tnet_tx_timeouts=-\tnet_link_changes=-\tothers=-\tsiblings=-"
+      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=ended\tcomplete=no\twhy=no-start-record\tstart=-\tend=-\tseconds=-\texit=0\tgroup_stall_ms=-\tgroup_stall_some_ms=-\tkills=-\tkills_by_cap=-\tbox_stall_ms=-\tbox_stall_some_ms=-\tbox_kills=-\tbox_limit_kills=-\tnet_tx_timeouts=-\tnet_link_changes=-\tothers=-\tsiblings=-\tguest_kills=-\tjob_disk_pct=-\tdisk_full=-"
     },
     {
       "name": "pod events of a run whose end record was never written: not complete, why no-end-record",
@@ -4250,7 +4306,7 @@
         "cache/calls.log": "900000000\tboxd-2889387319\tcontainer\t0\tdetached\t5\t\tr1\tsleep\n"
       },
       "exit": 0,
-      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=ended\tcomplete=no\twhy=no-end-record\tstart=1000\tend=-\tseconds=-\texit=0\tgroup_stall_ms=-\tgroup_stall_some_ms=-\tkills=-\tkills_by_cap=-\tbox_stall_ms=-\tbox_stall_some_ms=-\tbox_kills=-\tbox_limit_kills=-\tnet_tx_timeouts=-\tnet_link_changes=-\tothers=-\tsiblings=-"
+      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=ended\tcomplete=no\twhy=no-end-record\tstart=1000\tend=-\tseconds=-\texit=0\tgroup_stall_ms=-\tgroup_stall_some_ms=-\tkills=-\tkills_by_cap=-\tbox_stall_ms=-\tbox_stall_some_ms=-\tbox_kills=-\tbox_limit_kills=-\tnet_tx_timeouts=-\tnet_link_changes=-\tothers=-\tsiblings=-\tguest_kills=-\tjob_disk_pct=-\tdisk_full=-"
     },
     {
       "name": "pod events, the host restarted between the snapshots: not complete, why host-restarted, the times known and the counters dashes",
@@ -4264,7 +4320,7 @@
         "cache/calls.log": "900000000\tboxd-2889387319\tcontainer\t0\tdetached\t5\t\tr1\tsleep\n"
       },
       "exit": 0,
-      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=ended\tcomplete=no\twhy=host-restarted\tstart=1000\tend=1100\tseconds=100\texit=0\tgroup_stall_ms=-\tgroup_stall_some_ms=-\tkills=-\tkills_by_cap=-\tbox_stall_ms=-\tbox_stall_some_ms=-\tbox_kills=-\tbox_limit_kills=-\tnet_tx_timeouts=-\tnet_link_changes=-\tothers=-\tsiblings=-"
+      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=ended\tcomplete=no\twhy=host-restarted\tstart=1000\tend=1100\tseconds=100\texit=0\tgroup_stall_ms=-\tgroup_stall_some_ms=-\tkills=-\tkills_by_cap=-\tbox_stall_ms=-\tbox_stall_some_ms=-\tbox_kills=-\tbox_limit_kills=-\tnet_tx_timeouts=-\tnet_link_changes=-\tothers=-\tsiblings=-\tguest_kills=-\tjob_disk_pct=-\tdisk_full=-"
     },
     {
       "name": "pod events: a group counter that is a dash in a snapshot makes the record incomplete, the others are given",
@@ -4278,7 +4334,7 @@
         "cache/calls.log": "900000000\tboxd-2889387319\tcontainer\t0\tdetached\t5\t\tr1\tsleep\n"
       },
       "exit": 0,
-      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=ended\tcomplete=no\twhy=counter-unreadable\tstart=1000\tend=1100\tseconds=100\texit=0\tgroup_stall_ms=5\tgroup_stall_some_ms=60\tkills=-\tkills_by_cap=1\tbox_stall_ms=10\tbox_stall_some_ms=50\tbox_kills=1\tbox_limit_kills=0\tnet_tx_timeouts=0\tnet_link_changes=1\tothers=-\tsiblings=-"
+      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=ended\tcomplete=no\twhy=counter-unreadable\tstart=1000\tend=1100\tseconds=100\texit=0\tgroup_stall_ms=5\tgroup_stall_some_ms=60\tkills=-\tkills_by_cap=1\tbox_stall_ms=10\tbox_stall_some_ms=50\tbox_kills=1\tbox_limit_kills=0\tnet_tx_timeouts=0\tnet_link_changes=1\tothers=-\tsiblings=-\tguest_kills=-\tjob_disk_pct=-\tdisk_full=-"
     },
     {
       "name": "pod events: a container's own group that could not be read at the end gives dashes and leaves the record complete",
@@ -4292,7 +4348,7 @@
         "cache/calls.log": "900000000\tboxd-2889387319\tcontainer\t0\tdetached\t5\t\tr1\tsleep\n"
       },
       "exit": 0,
-      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=ended\tcomplete=yes\twhy=-\tstart=1000\tend=1100\tseconds=100\texit=0\tgroup_stall_ms=5\tgroup_stall_some_ms=60\tkills=2\tkills_by_cap=1\tbox_stall_ms=-\tbox_stall_some_ms=-\tbox_kills=-\tbox_limit_kills=-\tnet_tx_timeouts=0\tnet_link_changes=1\tothers=-\tsiblings=-"
+      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=ended\tcomplete=yes\twhy=-\tstart=1000\tend=1100\tseconds=100\texit=0\tgroup_stall_ms=5\tgroup_stall_some_ms=60\tkills=2\tkills_by_cap=1\tbox_stall_ms=-\tbox_stall_some_ms=-\tbox_kills=-\tbox_limit_kills=-\tnet_tx_timeouts=0\tnet_link_changes=1\tothers=-\tsiblings=-\tguest_kills=-\tjob_disk_pct=-\tdisk_full=-"
     },
     {
       "name": "pod events: others are the boxes busy at any moment of the window (foreground calls, detached runs), not those that ended before it or began after it, not this box, not a launch line",
@@ -4320,7 +4376,7 @@
         "/work/jobs/dtafter/runs/r5.log": 1300
       },
       "exit": 0,
-      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=ended\tcomplete=yes\twhy=-\tstart=1000\tend=1100\tseconds=100\texit=0\tgroup_stall_ms=5\tgroup_stall_some_ms=60\tkills=2\tkills_by_cap=1\tbox_stall_ms=10\tbox_stall_some_ms=50\tbox_kills=1\tbox_limit_kills=0\tnet_tx_timeouts=0\tnet_link_changes=1\tothers=dt,dtrun,fg,fgedge\tsiblings=-"
+      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=ended\tcomplete=yes\twhy=-\tstart=1000\tend=1100\tseconds=100\texit=0\tgroup_stall_ms=5\tgroup_stall_some_ms=60\tkills=2\tkills_by_cap=1\tbox_stall_ms=10\tbox_stall_some_ms=50\tbox_kills=1\tbox_limit_kills=0\tnet_tx_timeouts=0\tnet_link_changes=1\tothers=dt,dtrun,fg,fgedge\tsiblings=-\tguest_kills=-\tjob_disk_pct=-\tdisk_full=-"
     },
     {
       "name": "pod events: a call log whose first line is younger than the start of the window: not complete, why calls-log-short, the rest given",
@@ -4334,7 +4390,7 @@
         "cache/calls.log": "1050000000\tfg\tcontainer\t0\t0\t10\t\t\tmake\n1020000000\tfgold\tcontainer\t0\t0\t10\t\t\tmake\n"
       },
       "exit": 0,
-      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=ended\tcomplete=no\twhy=calls-log-short\tstart=1000\tend=1100\tseconds=100\texit=0\tgroup_stall_ms=5\tgroup_stall_some_ms=60\tkills=2\tkills_by_cap=1\tbox_stall_ms=10\tbox_stall_some_ms=50\tbox_kills=1\tbox_limit_kills=0\tnet_tx_timeouts=0\tnet_link_changes=1\tothers=fg,fgold\tsiblings=-"
+      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=ended\tcomplete=no\twhy=calls-log-short\tstart=1000\tend=1100\tseconds=100\texit=0\tgroup_stall_ms=5\tgroup_stall_some_ms=60\tkills=2\tkills_by_cap=1\tbox_stall_ms=10\tbox_stall_some_ms=50\tbox_kills=1\tbox_limit_kills=0\tnet_tx_timeouts=0\tnet_link_changes=1\tothers=fg,fgold\tsiblings=-\tguest_kills=-\tjob_disk_pct=-\tdisk_full=-"
     },
     {
       "name": "pod events on a host with no call log: not complete, why calls-log-short",
@@ -4347,7 +4403,7 @@
         "cache/events/boxd-2889387319/r1.end": "engine=container\ntime=1100\nboot=500\ngroup_some_ms=160\ngroup_full_ms=45\nnet_tx_timeouts=2\nnet_link_changes=5\ngroup_kills=3\ngroup_cap_kills=1\nbox_some_ms=80\nbox_full_ms=20\nbox_kills=2\nbox_limit_kills=1\n"
       },
       "exit": 0,
-      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=ended\tcomplete=no\twhy=calls-log-short\tstart=1000\tend=1100\tseconds=100\texit=0\tgroup_stall_ms=5\tgroup_stall_some_ms=60\tkills=2\tkills_by_cap=1\tbox_stall_ms=10\tbox_stall_some_ms=50\tbox_kills=1\tbox_limit_kills=0\tnet_tx_timeouts=0\tnet_link_changes=1\tothers=-\tsiblings=-"
+      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=ended\tcomplete=no\twhy=calls-log-short\tstart=1000\tend=1100\tseconds=100\texit=0\tgroup_stall_ms=5\tgroup_stall_some_ms=60\tkills=2\tkills_by_cap=1\tbox_stall_ms=10\tbox_stall_some_ms=50\tbox_kills=1\tbox_limit_kills=0\tnet_tx_timeouts=0\tnet_link_changes=1\tothers=-\tsiblings=-\tguest_kills=-\tjob_disk_pct=-\tdisk_full=-"
     },
     {
       "name": "pod events: the other runs of the same box whose window overlaps (an ended one, a running one) are siblings, sorted; one that ended before the window and one that began after it are not, and complete stays yes",
@@ -4375,7 +4431,7 @@
         "/work/jobs/boxd-2889387319/runs/r5.log": 200
       },
       "exit": 0,
-      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=ended\tcomplete=yes\twhy=-\tstart=1000\tend=1100\tseconds=100\texit=0\tgroup_stall_ms=5\tgroup_stall_some_ms=60\tkills=2\tkills_by_cap=1\tbox_stall_ms=10\tbox_stall_some_ms=50\tbox_kills=1\tbox_limit_kills=0\tnet_tx_timeouts=0\tnet_link_changes=1\tothers=-\tsiblings=r2,r3"
+      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=ended\tcomplete=yes\twhy=-\tstart=1000\tend=1100\tseconds=100\texit=0\tgroup_stall_ms=5\tgroup_stall_some_ms=60\tkills=2\tkills_by_cap=1\tbox_stall_ms=10\tbox_stall_some_ms=50\tbox_kills=1\tbox_limit_kills=0\tnet_tx_timeouts=0\tnet_link_changes=1\tothers=-\tsiblings=r2,r3\tguest_kills=-\tjob_disk_pct=-\tdisk_full=-"
     },
     {
       "name": "pod events: a sibling that ended before the window began is no sibling (the run itself never is)",
@@ -4395,7 +4451,7 @@
         "/work/jobs/boxd-2889387319/runs/r4.log": 1300
       },
       "exit": 0,
-      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=ended\tcomplete=yes\twhy=-\tstart=1000\tend=1100\tseconds=100\texit=0\tgroup_stall_ms=5\tgroup_stall_some_ms=60\tkills=2\tkills_by_cap=1\tbox_stall_ms=10\tbox_stall_some_ms=50\tbox_kills=1\tbox_limit_kills=0\tnet_tx_timeouts=0\tnet_link_changes=1\tothers=-\tsiblings=-"
+      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=ended\tcomplete=yes\twhy=-\tstart=1000\tend=1100\tseconds=100\texit=0\tgroup_stall_ms=5\tgroup_stall_some_ms=60\tkills=2\tkills_by_cap=1\tbox_stall_ms=10\tbox_stall_some_ms=50\tbox_kills=1\tbox_limit_kills=0\tnet_tx_timeouts=0\tnet_link_changes=1\tothers=-\tsiblings=-\tguest_kills=-\tjob_disk_pct=-\tdisk_full=-"
     },
     {
       "name": "pod end of a run that is not running: one line, exit 0, nothing changed and no engine call",
@@ -5354,7 +5410,7 @@
       "containers": {},
       "sandboxes": {},
       "exit": 0,
-      "stderr": "boxd-pod: new machine box boxd-2889387319: commands run as root; an ordinary account needs --user at creation",
+      "stderr": "boxd-pod: new machine box boxd-2889387319: commands run as root; an ordinary account needs --user at creation\nboxd-pod: machine box boxd-2889387319: size xlarge on this host is 12288 MB of memory and 8 processors (--size small, medium, large or xlarge at creation)",
       "job_files": {
         ".mem-peak": "11000",
         ".vm-size": "xlarge"
@@ -5369,7 +5425,7 @@
       "containers": {},
       "sandboxes": {},
       "exit": 0,
-      "stderr": "boxd-pod: new machine box boxd-2889387319: commands run as root; an ordinary account needs --user at creation",
+      "stderr": "boxd-pod: new machine box boxd-2889387319: commands run as root; an ordinary account needs --user at creation\nboxd-pod: machine box boxd-2889387319: size large on this host is 8192 MB of memory and 4 processors (--size small, medium, large or xlarge at creation)",
       "job_files": {
         ".mem-peak": "6554"
       },
@@ -5386,7 +5442,7 @@
       "containers": {},
       "sandboxes": {},
       "exit": 0,
-      "stderr": "boxd-pod: new machine box boxd-2889387319: commands run as root; an ordinary account needs --user at creation",
+      "stderr": "boxd-pod: new machine box boxd-2889387319: commands run as root; an ordinary account needs --user at creation\nboxd-pod: machine box boxd-2889387319: size large on this host is 8192 MB of memory and 4 processors (--size small, medium, large or xlarge at creation)",
       "job_files": {
         ".mem-peak": "1000"
       },
@@ -5400,7 +5456,7 @@
       "containers": {},
       "sandboxes": {},
       "exit": 0,
-      "stderr": "boxd-pod: new machine box boxd-2889387319: commands run as root; an ordinary account needs --user at creation",
+      "stderr": "boxd-pod: new machine box boxd-2889387319: commands run as root; an ordinary account needs --user at creation\nboxd-pod: machine box boxd-2889387319: size large on this host is 8192 MB of memory and 4 processors (--size small, medium, large or xlarge at creation)",
       "job_files": {
         ".mem-peak": "12x"
       },
@@ -5419,7 +5475,7 @@
         }
       },
       "exit": 0,
-      "stderr": "boxd-pod: new machine box boxd-2889387319: commands run as root; an ordinary account needs --user at creation",
+      "stderr": "boxd-pod: new machine box boxd-2889387319: commands run as root; an ordinary account needs --user at creation\nboxd-pod: machine box boxd-2889387319: size large on this host is 8192 MB of memory and 4 processors (--size small, medium, large or xlarge at creation)",
       "job_files": {
         ".mem-peak": "1000"
       },
@@ -5465,7 +5521,7 @@
       "containers": {},
       "sandboxes": {},
       "exit": 0,
-      "stderr": "boxd-pod: new machine box boxd-2889387319: commands run as root; an ordinary account needs --user at creation",
+      "stderr": "boxd-pod: new machine box boxd-2889387319: commands run as root; an ordinary account needs --user at creation\nboxd-pod: machine box boxd-2889387319: size large on this host is 2048 MB of memory and 2 processors (--size small, medium, large or xlarge at creation)",
       "env": {
         "BOXD_VM_LIMITS": "-c 2 -m 2G"
       },
@@ -5616,7 +5672,7 @@
         ".vm-size": "small"
       },
       "exit": 0,
-      "stderr": "boxd-pod: new machine box boxd-2889387319: commands run as an ordinary account (--user)",
+      "stderr": "boxd-pod: new machine box boxd-2889387319: commands run as an ordinary account (--user)\nboxd-pod: machine box boxd-2889387319: size small on this host is 2048 MB of memory and 2 processors (--size small, medium, large or xlarge at creation)",
       "msb_calls": [
         "^create --name pod-boxd-2889387319 --mount-dir /work/jobs/boxd-2889387319:/job:host-perms=mirror,uid=1000,gid=1000,quota=64G ",
         "^exec -w / pod-boxd-2889387319 -- sh -c : boxd-user-setup ",

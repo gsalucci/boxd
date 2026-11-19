@@ -21,7 +21,7 @@ PROC=${BOXD_PROC:-/proc}   # test hook, like BOXD_MEMINFO: where `pod report` fi
 KVM=${BOXD_KVM:-/dev/kvm}   # test hook: the device a --kvm box gets
 ROUTE=${BOXD_ROUTE:-/proc/net/route}   # test hooks: the routing table and the network interface folder `pod report` reads
 NETDIR=${BOXD_NET:-/sys/class/net}
-VERSION=0.4.50
+VERSION=0.4.53
 # Keys that may only read, one "<type> <key> [comment]" per line (view_only below); and the largest answer of pod calls and pod log.
 VIEW_KEYS=${BOXD_VIEW_KEYS:-/etc/boxd/view_keys}
 READ_MAX=${BOXD_READ_MAX:-1048576}
@@ -311,6 +311,7 @@ ensure_image() {
     [ -n "$ar" ] || die "image $ref is not in storage and $IMAGES/$name.tar is missing; run boxd-setup --images"
     image_load "$1" "$ar" 4>&-
     image_have "$1" "$ref" || die "loading $ar did not give $ref"
+    [ "$1" = vm ] || echo "boxd-pod: image $ref was no longer in this host's store; loaded again from its archive" >&2
     [ -z "$rec" ] || printf %s "$id" >"$rec"
     exec 4>&-
 }
@@ -513,6 +514,13 @@ vm_fit() {
     [ -n "$max" ] || return 0
     n=$(vm_used "${1:-}") || { [ -n "$fit_why" ] || fit_why="the running machines cannot be counted now"; return 0; }
     [ "$n" -lt "$max" ] || { fit_mb=0; [ -n "$fit_why" ] || fit_why="$n of $max running"; }
+}
+# vm_never <size word> <megabytes asked>: when the asked machine alone is larger than the host could ever give (the cap, or the commit
+# share of it when that is smaller, with nothing else running), prints the final refusal; nothing when it can fit or the cap is unknown.
+vm_never() {
+    local used_mb cap_mb b; [[ ${2:-} =~ ^[0-9]+$ ]] && vm_mem || return 0
+    b=$((cap_mb * VM_COMMIT / 100)); [ "$b" -le "$cap_mb" ] || b=$cap_mb
+    [ "$2" -le "$b" ] || echo "a machine of size ${1:-default} ($2 MB) never fits this host: its cap is $b MB; use a smaller --size here or another host"
 }
 vm_refusal() { local fit_mb fit_why; vm_fit "$@"; [ -z "$fit_why" ] || echo "$fit_why"; }
 # Room for one more machine of the default (large) size.
@@ -943,7 +951,7 @@ snap_read() {
     [[ ${a[time]:-} =~ ^[0-9]+$ ]]
 }
 pod_events() {
-    local box=${1:-} id=${2:-} f ev st=ended ex=- why=- eng=- s=- e=- sec=- k b i l first=- cn now oth=- sib=- os oe hs= he= full=yes
+    local box=${1:-} id=${2:-} f ev st=ended ex=- why=- eng=- s=- e=- sec=- k b i l first=- cn now oth=- sib=- os oe hs= he= full=yes jp=- jf=-
     local -A S=() E=() X=() O=() D=() B=()
     [[ $box =~ $BOX_RE ]] || die "bad box name"
     [[ $id =~ $RUN_RE ]] || die "bad run id"
@@ -989,14 +997,16 @@ pod_events() {
         [ ${#B[@]} -eq 0 ] || sib=$(printf '%s\n' "${!B[@]}" | sort | paste -sd,)
     fi
     # The end minus the start; a dash when either is not a number, and for every word after a restart (the counters began again).
-    for k in group_full_ms group_some_ms group_kills group_cap_kills box_full_ms box_some_ms box_kills box_limit_kills net_tx_timeouts net_link_changes; do
+    for k in group_full_ms group_some_ms group_kills group_cap_kills box_full_ms box_some_ms box_kills box_limit_kills net_tx_timeouts net_link_changes guest_kills; do
         D[$k]=-
         [ -n "$hs" ] && [ -n "$he" ] && [ "$why" != host-restarted ] && [[ ${S[$k]:-} =~ ^[0-9]+$ && ${E[$k]:-} =~ ^[0-9]+$ ]] && [ "${E[$k]}" -ge "${S[$k]}" ] && D[$k]=$((E[$k] - S[$k]))
     done
+    # How full /job was at the end, a level and not a difference, so it stands after a restart; a dash with no end record or no reading.
+    [ -n "$he" ] && [[ ${E[job_disk_pct]:-} =~ ^[0-9]+$ ]] && { jp=${E[job_disk_pct]}; [ "$jp" -ge 99 ] && jf=yes || jf=no; }
     [ "$why" = - ] || full=no
     printf 'events\tbox=%s\tid=%s\tengine=%s\tstate=%s\tcomplete=%s\twhy=%s\tstart=%s\tend=%s\tseconds=%s\texit=%s' "$box" "$id" "$eng" "$st" "$full" "$why" "$s" "$e" "$sec" "$ex"
-    printf '\tgroup_stall_ms=%s\tgroup_stall_some_ms=%s\tkills=%s\tkills_by_cap=%s\tbox_stall_ms=%s\tbox_stall_some_ms=%s\tbox_kills=%s\tbox_limit_kills=%s\tnet_tx_timeouts=%s\tnet_link_changes=%s\tothers=%s\tsiblings=%s\n' \
-        "${D[group_full_ms]}" "${D[group_some_ms]}" "${D[group_kills]}" "${D[group_cap_kills]}" "${D[box_full_ms]}" "${D[box_some_ms]}" "${D[box_kills]}" "${D[box_limit_kills]}" "${D[net_tx_timeouts]}" "${D[net_link_changes]}" "$oth" "$sib"
+    printf '\tgroup_stall_ms=%s\tgroup_stall_some_ms=%s\tkills=%s\tkills_by_cap=%s\tbox_stall_ms=%s\tbox_stall_some_ms=%s\tbox_kills=%s\tbox_limit_kills=%s\tnet_tx_timeouts=%s\tnet_link_changes=%s\tothers=%s\tsiblings=%s\tguest_kills=%s\tjob_disk_pct=%s\tdisk_full=%s\n' \
+        "${D[group_full_ms]}" "${D[group_some_ms]}" "${D[group_kills]}" "${D[group_cap_kills]}" "${D[box_full_ms]}" "${D[box_some_ms]}" "${D[box_kills]}" "${D[box_limit_kills]}" "${D[net_tx_timeouts]}" "${D[net_link_changes]}" "$oth" "$sib" "${D[guest_kills]}" "$jp" "$jf"
 }
 
 # pod end <box> <run>: ends one detached run and nothing else (docs/pod-contract.md, "Ending a detached run"). Its processes carry
@@ -1098,20 +1108,30 @@ stall_counters() {
 
 # event_count <events file> <key>: the number after <key> in a cgroup events file, a dash when the file or the key is not there.
 event_count() { [ -r "$1" ] && awk -v k="$2" '$1 == k && $2 ~ /^[0-9]+$/ { print $2; f = 1 } END { if (!f) print "-" }' "$1" || echo -; }
+# guest_read <box>: "<kill lines in the guest kernel's log (the engine's kernel has no oom_kill counter in /proc/vmstat, measured 2026-11-19)> <percent of /job in use>" read inside the running machine of the box, in one exec, plain sh
+# (a minimal image has no awk). Dashes when the machine is not running (a plain exec would start it again), the exec fails or takes over 10 s.
+# Not a call: no stamp, no call log line, no lock. The exec is the engine's own, as pod end's, with no input.
+guest_read() {
+    local o
+    vm_alive "pod-$1" && o=$(timeout 10 msb exec -w / "pod-$1" -- sh -c 'set -f; : boxd-guest-read; if k=$(dmesg 2>/dev/null); then v=$(printf "%s\n" "$k" | grep -c "ut of memory: Killed process"); fi
+set -- $(df -P /job | tail -n 1); d=${5%\%}; echo "${v:--} ${d:--}"' </dev/null 2>/dev/null) && [[ $o =~ ^([0-9]+|-)\ ([0-9]+|-)$ ]] && echo "$o" || echo "- -"
+}
 # events_snapshot <box> <vm|container>: what `pod events` differences, one key=value line each, a dash when unreadable (docs/pod-contract.md).
 # All counters only grow, so the end minus the start is what happened in between. A machine has no group of its own: every box word is a dash.
 events_snapshot() {
-    local some full ntx nlc bl pid c g="" bs=- bf=- bk=- bc=- boot
+    local some full ntx nlc bl pid c g="" bs=- bf=- bk=- bc=- boot gk=- jd=-
     read -r some full ntx nlc < <(stall_counters)
     if [ "$2" != vm ]; then
         bl=$(podman container inspect --format '{{.State.Pid}} {{.Config.Labels}}' "pod-$1" </dev/null 2>/dev/null); pid=${bl%% *}
         [[ $pid =~ ^[1-9][0-9]*$ ]] && c=$(sed -n 's/^0:://p' "$PROC/$pid/cgroup" 2>/dev/null) && [ -n "$c" ] && g=$CGROOT$c
+        jd=$(df --output=pcent "$WORK/jobs/$1" 2>/dev/null | tail -n 1 | tr -dc 0-9); jd=${jd:--}
         [ -z "$g" ] || { read -r bs bf < <(pressure_ms "$g"); bk=$(event_count "$g/memory.events" oom_kill); bc=$(event_count "$g/memory.events.local" oom); }
     fi
+    [ "$2" != vm ] || read -r gk jd < <(guest_read "$1")
     boot=$(awk '$1 == "btime" { print $2 }' /proc/stat)
     printf 'engine=%s\ntime=%s\nboot=%s\ngroup_some_ms=%s\ngroup_full_ms=%s\nnet_tx_timeouts=%s\nnet_link_changes=%s\ngroup_kills=%s\ngroup_cap_kills=%s\n' \
         "$2" "$(date +%s)" "${boot:--}" "$some" "$full" "$ntx" "$nlc" "$(event_count "$CGROUP/memory.events" oom_kill)" "$(event_count "$CGROUP/memory.events.local" oom)"
-    printf 'box_some_ms=%s\nbox_full_ms=%s\nbox_kills=%s\nbox_limit_kills=%s\n' "$bs" "$bf" "$bk" "$bc"
+    printf 'box_some_ms=%s\nbox_full_ms=%s\nbox_kills=%s\nbox_limit_kills=%s\nguest_kills=%s\njob_disk_pct=%s\n' "$bs" "$bf" "$bk" "$bc" "$gk" "$jd"
 }
 # events_write <file> <box> <vm|container>: the snapshot under a temporary name, then renamed, so a reader never sees half of it.
 events_write() { mkdir -p "${1%/*}" && events_snapshot "$2" "$3" >"$1.new" && mv -f "$1.new" "$1"; }
@@ -1463,6 +1483,9 @@ pod_run() {
         done
     fi
     if [ -n "$vm" ] && [ -n "$start" ]; then
+        out=$(vm_never "$size" "$(lim_mb "$lim")"); [ -z "$out" ] || die "$out"
+    fi
+    if [ -n "$vm" ] && [ -n "$start" ]; then
         # One admission at a time: the lock is held until the sandbox exists, so two first calls cannot both take the last room.
         exec 7>"$WORK/cache/vm-room.lock"
         flock 7
@@ -1601,6 +1624,8 @@ pod_run() {
         if [ -n "$vm" ]; then
             if [ -n "$user" ]; then echo "boxd-pod: new machine box $box: commands run as an ordinary account (--user)" >&2
             else echo "boxd-pod: new machine box $box: commands run as root; an ordinary account needs --user at creation" >&2; fi
+            # What the machine really got: "large" is the host's own default and differs between hosts (a run sized for 8 GB got 4 GB unnoticed).
+            [[ $lim =~ -c\ ([0-9]+) ]] && echo "boxd-pod: machine box $box: size $size on this host is $(lim_mb "$lim") MB of memory and ${BASH_REMATCH[1]} processors (--size small, medium, large or xlarge at creation)" >&2
             [ -z "$chosen" ] || echo "boxd-pod: machine box $box: size $size chosen from its past need of $chosen MB (give --size to choose yourself)" >&2
         elif [ -n "$user" ]; then echo "boxd-pod: new container box $box: commands run as an ordinary account (--user)" >&2
         else echo "boxd-pod: new container box $box: commands run as root; an ordinary account needs --user at creation" >&2; fi
@@ -1633,7 +1658,7 @@ pod_run() {
         # The wrapper's own words are fixed (with this script's functions for the note of a machine that ended); the client's
         # words travel as arguments only. The shared lock on .running tells reap this box is busy.
         # The event record (pod events) goes to $WORK/cache/events, which no mount of the box shows: the box folder is mounted whole.
-        CGROOT=$CGROOT PROC=$PROC ROUTE=$ROUTE NETDIR=$NETDIR setsid bash -c "$(declare -f vm_alive oom_kills vm_end_note ctr_end_note stall_counters pressure_ms event_count events_snapshot events_write)"'
+        CGROOT=$CGROOT PROC=$PROC ROUTE=$ROUTE NETDIR=$NETDIR WORK=$WORK setsid bash -c "$(declare -f vm_alive oom_kills vm_end_note ctr_end_note stall_counters pressure_ms event_count guest_read events_snapshot events_write)"'
             j=$1; log=$2; CGROUP=$3; sb=$4; bx=$5; ev=$6; shift 6
             echo $$ > "${log%.log}.pid"
             k0=$(oom_kills)
@@ -1761,14 +1786,15 @@ pod_forward() {
 # One line per command the dispatcher below accepts over ssh. Read only: no lock, no stamp, no call log line.
 # pod queue <box> box | vm <size>: a waiting call asks for its place without starting anything (the client sends it while no room shows in
 # `pod status`, which cannot write). Exit 0: the room is there now, ask with pod run. Exit 75: no room, with the ticket written or
-# refreshed and the place and the busy boxes in the line. shortcut: a machine is counted at the size word asked (large when none), not at
-# the smaller size `pod run` may pick from the measured need; upgrade when a ticket for a machine that never fits is seen.
+# refreshed and the place and the busy boxes in the line. Exit 125, no ticket, when the size alone never fits the host (vm_never).
+# shortcut: a machine is counted at the size word asked (large when none), not at the smaller size `pod run` may pick from the
+# measured need; upgrade when that difference makes a ticket wrong.
 pod_queue() {
-    local box=${1:-} what=${2:-} size=${3:-} queued=1 need
+    local box=${1:-} what=${2:-} size=${3:-} queued=1 need out
     [[ $box =~ $BOX_RE ]] || die "bad box name"
     case "$what $size" in
         "box ") need=box ;;
-        "vm small"|"vm medium"|"vm large"|"vm xlarge") have_msb || die "virtual machines are not installed on this host"; need="vm $(lim_mb "$(size_lim "$size")")" ;;
+        "vm small"|"vm medium"|"vm large"|"vm xlarge") have_msb || die "virtual machines are not installed on this host"; need="vm $(lim_mb "$(size_lim "$size")")"; out=$(vm_never "$size" "${need#vm }"); [ -z "$out" ] || die "$out" 2>&1 ;;   # standard output: the client reads that
         *) die "unknown command" ;;
     esac
     mkdir -p "$WORK/cache" || die "cannot create $WORK/cache"

@@ -22,7 +22,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-export const VERSION = "0.4.50";
+export const VERSION = "0.4.53";
 const BOX = /^[a-z0-9][a-z0-9_.-]{0,62}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const MAC = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i;
@@ -58,7 +58,7 @@ export const HELP = `usage: box [options] [--] <command...>
                                        "box log <run> --follow --tail 20" shows how an ended run ended, and exits with its code
        box log <run> --events [--pod <name>] [--host <name>]
                                        after a --detach run ended: the server's own record of what could have disturbed it (memory stalls, kills
-                                       for memory, network card stalls, other boxes busy, other runs of the same box: siblings), one key=value per line; exit 0 when the record covers the
+                                       for memory, in a machine box guest_kills, a full /job: disk_full, network card stalls, other boxes busy, other runs of the same box: siblings), one key=value per line; exit 0 when the record covers the
                                        whole run, 3 when it does not (the reason on standard error, the lines still printed); excludes --follow, --tail, --state
        box forward [--host <name>] [--pod <name>] <local-port> <box-port>
                                        reach a port of this worktree's running container box (loopback inside it) on the loopback address here
@@ -419,6 +419,7 @@ export function choose(hosts: HostState[], req: Request): Choice {
     else if (h.state === "asleep") room.push({ name: h.name, free: Infinity });
     else if (!s) late.push(h.name);
     else if (req.vm && !(s.engines ?? "").split(",").includes("vm")) no = "no virtual machines";
+    else if (req.vm && need !== undefined && /^\d+$/.test(s.group_mem_max_mb ?? "") && need > Number(s.group_mem_max_mb)) no = `${need} MB never fits, the cap is ${s.group_mem_max_mb} MB`;   // from 0.4.52 the server refuses such a size for good; a wait could never end
     else if (req.vm && (need !== undefined && /^\d+$/.test(s.vm_fit_mb ?? "") ? Number(s.vm_fit_mb) < need : s.vm_room !== "yes")) { no = need !== undefined && /^\d+$/.test(s.vm_fit_mb ?? "") ? `${s.vm_fit_mb} MB fit, ${need} MB asked` : s.vm_why || (Number(s.vm_used) >= Number(s.vm_max) ? `${s.vm_used} of ${s.vm_max} machines` : `no memory for another machine (${s.vm_used} running)`); waitable = true; }   // the server's own reason (0.4.11), else the count ceiling, else the memory rule
     else if (want && !(s.images ?? "").split(",").includes(want)) no = `image ${want} missing`;
     else if (!req.vm && s.box_room === "no") { no = `no memory for another busy box (${s.box_fit_mb} MB fit, ${s.box_reserve_mb} MB wanted)`; waitable = true; }
@@ -1386,6 +1387,7 @@ export function main(args: string[], env: Env = process.env, inner?: { run: stri
     // call it also ends with its starter (looked at after each sleep). Returns true when it did.
     const starter = process.ppid, waitMs = Number(env.BOXD_WAIT_MS ?? 30_000);
     const hold = async (lines: string[]): Promise<boolean> => {
+      if (final) return true;
       const text = lines.join("; ");
       if (!waiting) process.stderr.write(`box: waiting for room, asking every ${waitMs / 1000} seconds:\n${lines.map((l) => `  ${l}\n`).join("")}`);
       else if (text !== shown) process.stderr.write(`box: the reasons changed: ${text}\n`);
@@ -1397,12 +1399,17 @@ export function main(args: string[], env: Env = process.env, inner?: { run: stri
     };
     // While pod status shows no room (it cannot write), the call asks each such server for its place with pod queue, which keeps its ticket
     // alive; the answer is told with the reasons. Only servers from 0.4.41; one that fails or has room adds no line.
-    const queueLines = async (seen: HostState[]): Promise<string[]> => wait ? (await Promise.all(seen.map(async (h) => {
+    // A server that answers 125 (the size never fits that host, 0.4.52) ends the wait when every server asked said so: the line is passed on.
+    let final = 0;
+    const queueLines = async (seen: HostState[]): Promise<string[]> => { let asked = 0, never: string[] = []; const lines = wait ? (await Promise.all(seen.map(async (h) => {
       const c = h.state === "awake" && h.status !== undefined && atLeast(parseStatus(h.status).version, PLACE_FROM) ? choose([h], req) : undefined;
       if (!c || !("refusal" in c) || !c.wait) return "";
       const r = await ask(h.name, `pod queue ${box} ${req.vm ? `vm ${req.size ?? "large"}` : "box"}`), told = r.code === 75 ? placeOf(r.out) : undefined;
+      asked++; if (r.code === 125) never.push(r.out.trim().split("\n").pop() ?? "");
       return told ? `${h.name}: ${told}` : "";
     }))).filter(Boolean) : [];
+      if (asked && never.length === asked) { final = 125; process.stderr.write(never[0] + "\n"); }
+      return lines; };
     // A placed worktree whose own host has no room moves by itself (owner decision 2026-11-17), as --host would: the placement is
     // recorded and "moved" logged. Only when another host has room for this call and nothing of this box would be lost or stranded
     // on the old host: a machine or container of it in any state, or a run of it, running or ended (its log and results are there),
@@ -1430,7 +1437,7 @@ export function main(args: string[], env: Env = process.env, inner?: { run: stri
       if ("refusal" in c) {
         if (!c.wait) { process.stderr.write(`box: no build server has room for this call\n${c.refusal.map((l) => `  ${l}\n`).join("")}`); return NO_ROOM; }
         if (await autoMove(name)) continue; // moving is tried first, each round
-        if (await hold([...c.refusal, ...await queueLines([seen])])) return 129;
+        if (await hold([...c.refusal, ...await queueLines([seen])])) return final || 129;
         continue;
       }
     }
@@ -1439,7 +1446,7 @@ export function main(args: string[], env: Env = process.env, inner?: { run: stri
       if (placed !== undefined) rmSync(placedFile, { force: true }); // it names a host that is no longer registered
       const seen = await Promise.all(order.map((n) => probe(n, env))), c = choose(seen, req);
       if ("refusal" in c) {
-        if (wait && c.wait) { if (await hold([...c.refusal, ...await queueLines(seen)])) return 129; continue; }
+        if (wait && c.wait) { if (await hold([...c.refusal, ...await queueLines(seen)])) return final || 129; continue; }
         process.stderr.write(`box: no build server has room for this call\n${[...c.refusal, ...(c.wait ? roomHint(seen, req, wait) : [])].map((l) => `  ${l}\n`).join("")}`);
         return NO_ROOM;
       }
@@ -1461,7 +1468,7 @@ export function main(args: string[], env: Env = process.env, inner?: { run: stri
       if (wait) { // ask again: everybody for a worktree this call placed, only its own host for a placed one
         const refusedBy = name, seen = await Promise.all((fresh ? order : [name]).map((n) => probe(n, env))), c = choose(seen, req), told = placeOf(r.err);
         if (fresh) { name = undefined; spare = []; }
-        if (await hold("refusal" in c ? [...c.refusal, ...await queueLines(seen)] : [`${refusedBy}: no room (the server refused the call)${told ? `; ${told}` : ""}`])) return 129;
+        if (await hold("refusal" in c ? [...c.refusal, ...await queueLines(seen)] : [`${refusedBy}: no room (the server refused the call)${told ? `; ${told}` : ""}`])) return final || 129;
         continue;
       }
       const others = await Promise.all(order.filter((n) => n !== name).map((n) => probe(n, env)));

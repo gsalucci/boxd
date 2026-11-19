@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.53
+
+- A run's event record (`box log <run> --events`) has three more words. `guest_kills`: processes the kernel INSIDE a machine box killed for lack of memory during the run (counted from the guest's kernel log; a dash for a container box, whose `box_kills` says it). `job_disk_pct`: how full the file system behind `/job` was when the run ended. `disk_full`: `yes` from 99 percent. A run killed by its own machine's limits was invisible to the host before.
+
+## 0.4.52
+
+- A machine size that can never fit a host is refused for good: `boxd-pod: a machine of size xlarge (12288 MB) never fits this host: its cap is 11410 MB; use a smaller --size here or another host`, exit 125, from `pod run` and from `pod queue`. Before, the answer was `no room ... yet` (exit 75) and a call with `--wait` waited for ever.
+- The client skips a host whose cap is below the asked size when another host fits, and a `--wait` ends with the server's line when every server asked says the size never fits.
+
+## 0.4.51
+
+- A new machine box says what its size gives on this host: `boxd-pod: machine box <box>: size large on this host is 4096 MB of memory and 4 processors (--size small, medium, large or xlarge at creation)`. The size `large` is each host's own default, so the same call got 8 GB on one host and 4 GB on another without a word.
+- A shared image that the disk pressure pass removed and a call had to load again says so in one line: `boxd-pod: image <ref> was no longer in this host's store; loaded again from its archive`.
+
 ## 0.4.50
 
 - The client's collector no longer removes a box while a run or a call is going in it. It sends `pod drop <box> idle` to a server from 0.4.50; the server keeps a busy box (exit 75) and the collector says `kept until it ends` and asks again at its next pass. Before, the removal was forced: on 2026-11-19 a box with a detached run was removed because a worktree had been deleted. `box drop` (an explicit order) still removes at once.
