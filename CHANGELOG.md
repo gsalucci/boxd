@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.47
+
+- A detached run started in a box that already has a detached run going says so: `boxd-pod: run <id> is still going in this box; both use the same /job/src`. The run starts as before. Two runs in one box share its source folder, and nothing told the caller.
+- The build of a box's own image (`--image-file`) is quiet. Until now every call printed the whole build output on standard error, also when nothing had changed. Now: nothing when the image is unchanged; one line `boxd-pod: built the box's image from <image file> (<n> s)` when it is new or changed; the build's output only when the build fails; and `boxd-pod: building the box's image, <n> s so far` every 20 seconds while a long build runs.
+
 ## 0.4.46
 
 - In a machine box `/job` and `/cache` could hold only 4 GiB: the machine engine gives a mounted host folder that quota when none is named, and boxd named none. A run that wrote more ended with "No space left on device". The quota is now set: 64 GiB each by default, new settings `BOXD_VM_JOB_DISK` and `BOXD_VM_CACHE_DISK`. Container boxes were never limited.

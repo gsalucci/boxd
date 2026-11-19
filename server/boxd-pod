@@ -21,7 +21,7 @@ PROC=${BOXD_PROC:-/proc}   # test hook, like BOXD_MEMINFO: where `pod report` fi
 KVM=${BOXD_KVM:-/dev/kvm}   # test hook: the device a --kvm box gets
 ROUTE=${BOXD_ROUTE:-/proc/net/route}   # test hooks: the routing table and the network interface folder `pod report` reads
 NETDIR=${BOXD_NET:-/sys/class/net}
-VERSION=0.4.46
+VERSION=0.4.47
 # Keys that may only read, one "<type> <key> [comment]" per line (view_only below); and the largest answer of pod calls and pod log.
 VIEW_KEYS=${BOXD_VIEW_KEYS:-/etc/boxd/view_keys}
 READ_MAX=${BOXD_READ_MAX:-1048576}
@@ -1277,7 +1277,17 @@ pod_run() {
         # realpath: a link inside the worktree must not point the build at a file outside it.
         full=$(realpath -e "$J/src/$imgfile" 2>/dev/null) && [ -f "$full" ] && [[ $full == "$(realpath "$J/src")"/* ]] || die "image file $imgfile not found"
         image=localhost/built-$box:latest
-        podman build -f "$full" -t "$image" "$(dirname "$full")" </dev/null 9>&- 1>&2 || die "image build failed"
+        # The build's output goes to a file in the cache folder (the box folder is mounted into the box), not to the caller: it is
+        # noise on every call, and names the tags of other boxes that share an image id. A failed build prints it; a long one says so.
+        bl=$WORK/cache/build-$box.log bt=$SECONDS   # the file is not under cache/pod: boxes see that folder as /cache
+        ( trap 'kill $s 2>/dev/null; exit' TERM
+          while :; do sleep "${BOXD_BUILD_NOTE:-20}" & s=$!; wait $s; echo "boxd-pod: building the box's image, $((SECONDS - bt)) s so far" >&2; done ) </dev/null 9>&- >/dev/null &
+        lp=$!
+        podman build -f "$full" -t "$image" "$(dirname "$full")" </dev/null 9>&- >"$bl" 2>&1 && brc=0 || brc=$?
+        kill "$lp" 2>/dev/null; wait "$lp" 2>/dev/null
+        bt=$((SECONDS - bt))
+        [ "$brc" = 0 ] || { cat "$bl" >&2; rm -f "$bl"; die "image build failed"; }
+        rm -f "$bl"
         podman image prune -f </dev/null 9>&- >/dev/null 2>&1 || true
         newid=$(podman image inspect --format '{{.Id}}' "$image" </dev/null) && [ -n "$newid" ] || die "cannot read the id of the built image"
         [ "$newid" = "$(cat "$J/.built-id" 2>/dev/null)" ] || changed=1
@@ -1548,7 +1558,13 @@ pod_run() {
     local -a mk=(); [ -z "$run" ] || mk=(-e "BOXD_CALL=run-$run")
     if [ -n "$vm" ]; then eng=(msb exec --stream "${vu[@]}" "${ev[@]}" "${mk[@]}" -w /job/src "$name" --); else eng=(podman exec "${eu[@]}" "${ev[@]}" "${mk[@]}" -w /job/src "$name"); fi
 
+    # Said here, not at the build: a refusal further on stays the only boxd-pod line of its call.
+    [ -z "$changed" ] || [ -z "$imgfile" ] || echo "boxd-pod: built the box's image from $imgfile ($bt s)" >&2
     if [ -n "$run" ]; then
+        # Two runs of a box share /job/src: the caller is told, the run starts as before.
+        local rp live=()
+        while IFS= read -r rp; do run_alive "$J/runs/$rp.pid" && live+=("$rp"); done < <(find "$J/runs" -maxdepth 1 -name "*.pid" -type f -printf "%f\n" 2>/dev/null | sed "s/\.pid$//" | sort)
+        [ ${#live[@]} = 0 ] || echo "boxd-pod: run ${live[0]} is still going in this box${live[1]:+ (and $((${#live[@]} - 1)) more)}; both use the same /job/src" >&2
         : > "$J/runs/$run.log"
         # The shared lock is taken here and the wrapper inherits it (it also takes its own below): the box is busy from now on, so the
         # next admission, which gets the room lock back at once, counts it.

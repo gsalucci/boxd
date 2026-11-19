@@ -26,7 +26,7 @@ queue around `box`; a refusal waiting cannot fix, like a missing image, still ex
   A box keeps one image; to change it add `--recreate` (files stay). When the host's shared image was rebuilt after the box was made, the first call into the box afterwards prints `boxd-pod: box <box> runs an older copy of localhost/<name> ...` once: a tool missing from the box may be only missing from the old copy, and `--recreate` gives the new one. Install extra tools inside (`apt-get install -y ...`).
 - Your own image: put a Containerfile in the worktree and run `box --image-file <path> <command...>` (path relative to the worktree's
   top folder, no `..`; not with `--image`). The server builds it on every call (unchanged builds are fast) and replaces the box by itself
-  when the built image changed; files under `/job` stay. A failed build exits 125 with the build output on stderr and the old box stays.
+  when the built image changed; files under `/job` stay. A failed build exits 125 with the build output on stderr and the old box stays; a build that changed nothing is silent, a changed image adds one line.
   Later calls without `--image-file` keep the box's image. The allowed-registries list does not apply to `FROM` lines or downloads in the build.
 - Image of a private registry: the server holds no registry login. On your own machine, where you are logged in, run
   `box image push [--vm] <ref>` (full reference, an allowed registry), then use `box --image <ref> ...`; nothing is sent when the server already has it.
@@ -49,6 +49,7 @@ queue around `box`; a refusal waiting cannot fix, like a missing image, still ex
   reading until the run ended and exits with its code; the log ends with `EXIT <code>`; the printed command already repeats
   `--host` and `--pod`). `box log` reads from the server and never starts a stopped box, unlike `box cat /job/runs/<id>.log`,
   which makes a new empty one. With the power module on, the server stays awake until the run ends.
+  A box takes one detached run at a time unless the runs share no files: all runs of a box use `/job/src`, and the server says on stderr when one is already going.
   `--pull` does nothing with `--detach`. **A detached run's results must be under `/job/src`** (files elsewhere, like `/tmp`, go when the idle box
   is removed); fetch them later with `box --no-sync --pull <path> true`. `box log <id>` keeps the full output on the server, so a long test
   output need not pass through you: read the end of it (`box log <id> | tail -n 50`) instead of printing it in the call.

@@ -365,6 +365,9 @@ the file keeps its limit, silently. The real fix is a guest kernel not built sma
    for its whole life: `boxd-keepawake podman exec [--user <uid>:<gid> -e HOME=/job/home, with --user] -w /job/src pod-<box> <command words> > /work/jobs/<box>/runs/<run>.log 2>&1`
    (vm: `boxd-keepawake msb exec --stream -w /job/src pod-<box> -- sh -c <script> _ <command words>`, same log; the script is described under "The guest kernel's kill lines" below), then append `EXIT <code>` to
    that log. **The log of a run in a machine box grows while it runs**: every `msb exec` that runs the user's command without a terminal (the detached run and the foreground call without a terminal) gets `--stream` (bidirectional streams without a terminal, no echo and no line translation; it conflicts with `--tty`, so the call with a terminal keeps `-t` and has no `--stream`). Without it microsandbox 0.7.15 held all output until the command ended (`bytes=0` in `pod report` and an empty `pod log` for the whole run, and the output was lost with a machine that died). The option is in 0.7.15, the packaged engine and the minimum; the server does not check the engine's version, and an engine without the option would refuse the call. The server's own helper commands in the guest (process list, start-up script, cleanup) do not use it. Print `<run>` on stdout, exit 0 at once. The client reads the log with
+   When the box already has one or more detached runs running (a live `runs/<id>.pid`), `pod run --detach` first prints one line on stderr:
+   `boxd-pod: run <oldest id> is still going in this box`, with ` (and <n> more)` when there are more, then `; both use the same /job/src`. The run starts as before; exit
+   code and stdout (the run id) are unchanged, and a foreground call prints nothing of the kind.
    `box log <run>` (`pod log`, which does not start or recreate the box; a plain `box -- cat /job/runs/<run>.log` is a normal foreground
    run and makes a stopped box again).
    **Words about a kill** (stderr of a foreground call, the run log before `EXIT <code>` of a detached one; since 0.4.8 for machines,
@@ -731,6 +734,13 @@ without `--image-file` removes it). With an existing box on the asked engine:
 The build runs on every `--image-file` call; podman's layer cache makes an unchanged one fast. A later call without
 `--image-file` keeps the box's image (the sticky rule). A box that was removed (the reaper, `pod stop`) and is then
 asked for without `--image-file` gets the default image, as for any other image.
+
+The build's own output never reaches the caller while it goes well: it is written to `/work/cache/build-<box>.log` (never under `cache/pod`, which boxes see as `/cache`, and never into the box folder, which the box
+mounts as `/job`), and the file is removed on every path. A failed build prints that output on stderr, then `boxd-pod: image build failed` (125). A build that
+succeeded with the image id the box already records (`.built-id`) prints nothing. One that made a new or different image prints one line,
+`boxd-pod: built the box's image from <path> (<n> s)`, together with the other notes of the call, before the command starts. While a build runs, a line
+`boxd-pod: building the box's image, <n> s so far` goes to stderr every 20 seconds (`BOXD_BUILD_NOTE`, in seconds, is a test hook), so a long build does not look like a
+hang; the line stops when the build ends. Standard output stays the command's alone.
 
 **vm engine.** The microsandbox store is separate from podman's. When the build is new for a box that is to be
 created (id differs from `.built-id`, or there is none), the host runs `podman save -o /work/cache/images/built-<box>.tar

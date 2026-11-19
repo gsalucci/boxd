@@ -54,6 +54,7 @@ case $1 in
         # build -f <file> -t <tag> <context>: the image id is id-<cksum of the file>; build output goes to stdout like podman's
         while [ $# -gt 0 ]; do case $1 in -f) f=$2 ;; -t) t=$2 ;; esac; shift; done
         echo "STEP 1/1: build output"
+        [ -z "${FAKE_BLOCK_BUILD:-}" ] || block build-blocked
         [ "${FAKE_BUILD_EXIT:-0}" = 0 ] || exit "$FAKE_BUILD_EXIT"
         echo "id-$(cksum < "$f" | cut -d' ' -f1)" > "$FAKE_IMAGES/$(echo "$t" | tr / _)" ;;
     save) [ "$2" = -o ] || exit 1
@@ -219,7 +220,7 @@ setup() {
     : > "$FAKE_MSB_LOG"; : > "$FAKE_MSB_ENV"
     mkfifo "$FAKE_EV" "$FAKE_REL"
     exec 3<>"$FAKE_EV"
-    unset FAKE_EXEC_EXIT FAKE_EXEC_OUT FAKE_BLOCK_EXEC SSH_TTY FAKE_STARTER_EXIT
+    unset FAKE_EXEC_EXIT FAKE_EXEC_OUT FAKE_BLOCK_EXEC FAKE_BLOCK_BUILD BOXD_BUILD_NOTE SSH_TTY FAKE_STARTER_EXIT
     export PATH=$PATH_MSB
     : > "$FAKE_LOG"
 }
@@ -484,6 +485,49 @@ eq "detach: exec has no -i and no terminal" "exec -e BOXD_CALL=run-$run -w /job/
 eq "detach: last-used refreshed when the run ends" yes "$([ "$(stat -c %Y "$W/jobs/$box/.last-used")" -gt 100 ] && echo yes || echo no)"
 unset FAKE_EXEC_OUT FAKE_EXEC_EXIT FAKE_BLOCK_EXEC
 
+
+# The build of the box's own image is silent unless it changed, failed or runs long; its output file never outlives the call.
+setup; mkdir -p "$W/jobs/$box/src"; echo "FROM scratch" > "$W/jobs/$box/src/Containerfile"
+bf=$W/cache/build-$box.log
+pod "pod run $box --image-file Containerfile -- $B64"
+eq "image build: a changed image says so in one line, none of the build output" "1 0" "$(grep -Ec "^boxd-pod: built the box.s image from Containerfile \([0-9]+ s\)$" "$T/e/err") $(grep -c STEP "$T/e/err")"
+eq "image build: the changed-image line is the only line" 1 "$(grep -c "^boxd-pod: built" "$T/e/err")"
+eq "image build: the output file is gone after a changed build" no "$([ -e "$bf" ] && echo yes || echo no)"
+pod "pod run $box --image-file Containerfile -- $B64"
+eq "image build: an unchanged image prints nothing" "" "$(cat "$T/e/err")"
+eq "image build: the output file is gone after an unchanged build" no "$([ -e "$bf" ] && echo yes || echo no)"
+echo "FROM scratch # v2" > "$W/jobs/$box/src/Containerfile"
+CASE_ENV=(FAKE_BUILD_EXIT=1); pod "pod run $box --image-file Containerfile -- $B64"; CASE_ENV=()
+eq "image build: a failed build prints its output, then the failure" "125 STEP 1/1: build output|boxd-pod: image build failed" "$rc $(paste -sd"|" "$T/e/err")"
+eq "image build: the output file is gone after a failed build" no "$([ -e "$bf" ] && echo yes || echo no)"
+# a long build: progress lines while it runs (the interval is shortened), none after it ended, the output file only while it runs
+echo "FROM scratch # v3" > "$W/jobs/$box/src/Containerfile"
+FAKE_BLOCK_BUILD=1 BOXD_BUILD_NOTE=0.2 SSH_ORIGINAL_COMMAND="pod run $box --image-file Containerfile -- $B64" bash "$POD" </dev/null >/dev/null 2>"$T/e/err" &
+bp=$!; read -r ev <&3; eq "image build: the build reached the engine" build-blocked "$ev"
+until grep -q "so far" "$T/e/err"; do read -r -t 0.05 <>"$T/poll"; done
+eq "image build: progress line while the build runs" yes "$(grep -Eq "^boxd-pod: building the box.s image, [0-9]+ s so far$" "$T/e/err" && echo yes || echo no)"
+eq "image build: the output file exists while it runs" yes "$([ -e "$bf" ] && echo yes || echo no)"
+echo go > "$FAKE_REL"; wait "$bp"
+n1=$(grep -c "so far" "$T/e/err"); i=0; while left && [ $((i++)) -lt 100 ]; do read -r -t 0.05 <>"$T/poll"; done
+eq "image build: no progress line after the build ended, no process left" "$n1 no" "$(grep -c "so far" "$T/e/err") $(left && echo yes || echo no)"
+eq "image build: the output file is gone after a long build" no "$([ -e "$bf" ] && echo yes || echo no)"
+
+# A detached start in a box that already has running detached runs says so on stderr; the run id stays alone on stdout.
+setup; mkdir -p "$W/jobs/$box/runs"
+started() { until grep -q "^EXIT" "$W/jobs/$box/runs/$1.log"; do read -r -t 0.05 <>"$T/poll"; done; }
+echo 99999999 > "$W/jobs/$box/runs/20261113-010000-dead.pid"; : > "$W/jobs/$box/runs/20261113-010000-dead.log"
+pod "pod run $box --detach 20261113-050000-n1 -- $B64"; started 20261113-050000-n1
+eq "detached start: no note with no run going (a record of an ended run does not count)" "0 20261113-050000-n1 0" "$rc $(cat "$T/e/out") $(grep -c "still going" "$T/e/err")"
+setsid sleep 300 & p1=$!; setsid sleep 300 & p2=$!
+echo $p1 > "$W/jobs/$box/runs/20261113-020000-aa.pid"
+pod "pod run $box --detach 20261113-050001-n2 -- $B64"; started 20261113-050001-n2
+eq "detached start: one run going, the note names it" "0 20261113-050001-n2 boxd-pod: run 20261113-020000-aa is still going in this box; both use the same /job/src" "$rc $(cat "$T/e/out") $(cat "$T/e/err")"
+echo $p2 > "$W/jobs/$box/runs/20261113-030000-bb.pid"
+pod "pod run $box --detach 20261113-050002-n3 -- $B64"; started 20261113-050002-n3
+eq "detached start: two runs going, the note names the oldest and counts the other" "boxd-pod: run 20261113-020000-aa is still going in this box (and 1 more); both use the same /job/src" "$(cat "$T/e/err")"
+pod "pod run $box -- $B64"
+eq "a foreground call in a box with detached runs prints nothing new" "" "$(cat "$T/e/err")"
+kill $p1 $p2; wait $p1 $p2 2>/dev/null
 
 # A foreground run ends with the session that started it. The starter stands for sshd's session process: killing it
 # re-parents the dispatcher. Every wait is on an event (the fake engine's fifos, the dispatcher's closed error stream).
