@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.46
+
+- In a machine box `/job` and `/cache` could hold only 4 GiB: the machine engine gives a mounted host folder that quota when none is named, and boxd named none. A run that wrote more ended with "No space left on device". The quota is now set: 64 GiB each by default, new settings `BOXD_VM_JOB_DISK` and `BOXD_VM_CACHE_DISK`. Container boxes were never limited.
+- A machine made by an older server keeps its 4 GiB until it is made again. A call into such a machine says so once: `boxd-pod: machine box <box> was made with a 4 GiB limit on /job and /cache (an older server); --recreate gives it 64G and 64G (files stay)`.
+
 ## 0.4.45
 
 - `boxd-setup` on btrfs puts the image archive folder (`BOXD_IMAGES_DIR`, default `/var/lib/boxd/images`) into a subvolume of its own, `@boxd-images`, mounted by a line in `/etc/fstab`. Until now it sat inside the system's file system, so every snapshot of the system kept an old copy of the archives (about 4 GB per image rebuild). A folder that exists is moved without copying data and with its sizes and times kept, so no image is loaded again; a rerun changes nothing; it is skipped while an image build runs. `boxd-reset` leaves the subvolume alone.

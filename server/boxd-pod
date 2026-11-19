@@ -21,7 +21,7 @@ PROC=${BOXD_PROC:-/proc}   # test hook, like BOXD_MEMINFO: where `pod report` fi
 KVM=${BOXD_KVM:-/dev/kvm}   # test hook: the device a --kvm box gets
 ROUTE=${BOXD_ROUTE:-/proc/net/route}   # test hooks: the routing table and the network interface folder `pod report` reads
 NETDIR=${BOXD_NET:-/sys/class/net}
-VERSION=0.4.45
+VERSION=0.4.46
 # Keys that may only read, one "<type> <key> [comment]" per line (view_only below); and the largest answer of pod calls and pod log.
 VIEW_KEYS=${BOXD_VIEW_KEYS:-/etc/boxd/view_keys}
 READ_MAX=${BOXD_READ_MAX:-1048576}
@@ -32,6 +32,10 @@ VM_ENGINE_DISK=${BOXD_VM_ENGINE_DISK:-32G}
 # The guest root has about 4G free; /tmp gets its own sparse disk so tools that check free space (or write large
 # temporary files) find room without settings. Unused space costs nothing on the host.
 VM_TMP_DISK=${BOXD_VM_TMP_DISK:-64G}
+# The engine gives each host folder mounted into a machine a quota of 4G when none is named, and a write past it fails with
+# "No space left on device": /job and /cache are named larger (a quota is only a limit, unused space costs nothing).
+VM_JOB_DISK=${BOXD_VM_JOB_DISK:-64G}
+VM_CACHE_DISK=${BOXD_VM_CACHE_DISK:-64G}
 # Home-network services a vm box may reach besides the public internet (microsandbox blocks the home network by
 # default). Admin setting only, never from the client: words <address or address/bits>:<tcp|udp>:<port or a-b>.
 VM_NET_ALLOW=${BOXD_VM_NET_ALLOW:-}
@@ -1433,7 +1437,7 @@ pod_run() {
             # --user: both mounts present their files as the account (uid and gid VM_UID), see GUEST_USER; no --user: the line as it was.
             local mo=""; [ -z "$user" ] || mo=",uid=$VM_UID,gid=$VM_UID"
             vmx create --name "$name" \
-                --mount-dir "$J:/job:host-perms=mirror$mo" --mount-dir "$WORK/cache/pod:/cache:host-perms=mirror$mo" \
+                --mount-dir "$J:/job:host-perms=mirror$mo,quota=$VM_JOB_DISK" --mount-dir "$WORK/cache/pod:/cache:host-perms=mirror$mo,quota=$VM_CACHE_DISK" \
                 --mount-owned /var/lib/docker:kind=disk,size=$VM_ENGINE_DISK --mount-owned /var/lib/containers:kind=disk,size=$VM_ENGINE_DISK \
                 --mount-owned /tmp:kind=disk,size=$VM_TMP_DISK \
                 "${CACHE_ENV[@]}" \
@@ -1473,6 +1477,8 @@ pod_run() {
     if [ -n "$create" ]; then
         if [ -n "$vm" ]; then printf %s "$size" >"$J/.vm-size"; else rm -f "$J/.vm-size"; fi
         if [ -n "$vm" ] && [ -n "$user" ]; then : >"$J/.vm-user"; else rm -f "$J/.vm-user"; fi
+        # The quotas the machine was made with (a machine made before 0.4.46 has none: 4G, told once below).
+        if [ -n "$vm" ]; then echo "$VM_JOB_DISK $VM_CACHE_DISK" >"$J/.vm-quota"; else rm -f "$J/.vm-quota"; fi
         # The copy of the shared image the box is made from (a machine: the archive stamp its store was loaded from; a container's
         # id is read from podman later) and the told-once marker start over.
         rm -f "$J/.image-told" "$J/.vm-image"
@@ -1492,6 +1498,11 @@ pod_run() {
     if [ -z "$create" ] && [ -n "$mine" ] && [ -z "$imgfile" ] && sc=$(image_stale_now "$engine" "$image" "$J" "$cid") && [ "$sc" != "$(cat "$J/.image-told" 2>/dev/null)" ]; then
         echo "boxd-pod: box $box runs an older copy of ${image%%:*} (the image was rebuilt since the box was made); --recreate gives it the new one" >&2
         printf %s "$sc" >"$J/.image-told"
+    fi
+    # A machine made by an older server has a 4G quota on /job and /cache that only --recreate changes: said once, then recorded.
+    if [ -z "$create" ] && [ -n "$vm" ] && [ -n "$mine" ] && [ ! -e "$J/.vm-quota" ]; then
+        echo "boxd-pod: machine box $box was made with a 4 GiB limit on /job and /cache (an older server); --recreate gives it $VM_JOB_DISK and $VM_CACHE_DISK (files stay)" >&2
+        echo "4G 4G" >"$J/.vm-quota"
     fi
     exec 9>&-
 
