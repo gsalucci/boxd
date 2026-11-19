@@ -963,6 +963,9 @@ test("box log --follow asks again from the returned offset until the run ended a
   const r = logRun(["log", "run-1", "--follow"], [`${head(2, 0, 2, "running")}a\n`, head(2, 2, 2, "running"), `${head(10, 2, 10, "ended", "3")}b\nEXIT 3\n`]);
   assert.equal(r.out, "a\nb\nEXIT 3\n");
   assert.equal(r.code, 3);
+  assert.equal(r.err, "box: run run-1 exit 3 on test\n"); // the last line names the code and the host
+  assert.equal(logRun(["log", "run-1"], [`${head(6, 0, 6, "ended", "3")}hello\n`]).err, ""); // not without --follow
+  assert.match(logRun(["log", "run-1", "--follow"], [`${head(2, 0, 2, "ended")}a\n`]).err, /ended without an exit code.*\nbox: run run-1 exit 129 on test\n$/);
   assert.deepEqual(r.calls, [0, 2, 2].map((o) => `ssh boxd-test pod log ${box} run-1 ${o}`));
 });
 
@@ -1372,7 +1375,7 @@ test("box log --follow on a run that ended without an exit code (its box or host
   const x = runBox(["log", "run-1", "--follow"], { env: { FAKE_LOGDIR: dir, BOXD_LOG_POLL_MS: "1" } });
   assert.equal(x.code, 129);
   assert.equal(x.out, "half\n");
-  assert.equal(x.err, "box log: run run-1 ended without an exit code: its box or the build server went down under it\n");
+  assert.equal(x.err, "box log: run run-1 ended without an exit code: its box or the build server went down under it\nbox: run run-1 exit 129 on test\n");
 });
 // box forward / box vnc: the client is a long-running process, so these run it with spawn and wait on its output and its
 // exit, never on a clock. PATH is the fakes plus basics only (no real xdg-open, no git: the box is named with --pod); the fake ssh relays with cat.

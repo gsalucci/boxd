@@ -21,7 +21,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-export const VERSION = "0.4.55";
+export const VERSION = "0.4.56";
 const BOX = /^[a-z0-9][a-z0-9_.-]{0,62}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const MAC = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i;
@@ -49,7 +49,7 @@ export const HELP = `usage: box [options] [--] <command...>
                                        age, processor time and working folder: spots a hung command; changes nothing
        box log <run> [--pod <name>] [--host <name>] [--follow] [--tail <n>] [--state]
                                        the log of a --detach run, read from the server without starting the box (a stopped box
-                                       stays stopped); --follow keeps reading until the run ended and exits with its code; --tail <n> (0 to 100000) prints only the
+                                       stays stopped); --follow keeps reading until the run ended and exits with its code (last line on standard error then: "box: run <run> exit <code> on <host>"); --tail <n> (0 to 100000) prints only the
                                        last <n> lines of what the log holds at first (then, with --follow, all that comes after); --state prints no log, only one line
                                        <run> state=running|ended exit=<code> (exit=- while running or when the run ended without a code), tab separated; an ended run adds
                                        ended=<time in UTC, like 2026-11-16T17:48:47Z> and, when the server knows when the run began, seconds=<wall seconds>:
@@ -933,11 +933,13 @@ export async function logCall(args, env) {
         if (!follow)
             return 0;
         if (kv.state === "ended") {
+            // The last line, as a foreground call ends with its own: a wrapper that loses the exit code still shows it in its log.
+            const last = (code) => { process.stderr.write(`box: run ${run} exit ${code} on ${t.HOST.replace(/^boxd-/, "")}\n`); return code; };
             if (/^\d{1,3}$/.test(kv.exit ?? ""))
-                return Number(kv.exit);
+                return last(Number(kv.exit));
             // 129 as for a call ended from outside: the command did not end by itself.
             process.stderr.write(`box log: run ${run} ended without an exit code: its box or the build server went down under it\n`);
-            return 129;
+            return last(129);
         }
         await new Promise((res) => setTimeout(res, poll));
     }

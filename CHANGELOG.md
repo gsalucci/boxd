@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.56
+
+- `box log <run> --follow` ends standard error with `box: run <run> exit <code> on <host>` once the run has ended (also with 129, when the run ended without a code), as a foreground call ends with `box: exit <code> on <host>` since 0.4.54: long work goes detached, and that is where a wrapper that loses the exit code needs it in its log. Not printed without `--follow`. Standard output is unchanged.
+
 ## 0.4.55
 
 - Two machines whose sizes sum exactly to the cap of a host fit again. A running machine measures its size plus a few megabytes of the engine's own memory (measured: 12312 to 12326 MB for a 12288 MB machine), so the measured rule refused the second one by 38 MB (`12326 MB in use + 12288 MB asked > 24576 MB cap`). The measured rule now allows 64 MB for each running machine; the rule on the sum of the sizes is unchanged.
