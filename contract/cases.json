@@ -3362,7 +3362,7 @@
       "command": "pod status",
       "msb": false,
       "exit": 0,
-      "stdout_re": "^version=0\\.4\\.41\tengines=container\tcpus=8\tload1=[0-9]+\\.[0-9]+\tvm_used=0\tvm_max=3\tvm_room=no\tboxes=0\tdisk_pct=37\tmem_free_mb=unknown\timages=\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=-\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096\twaiting=0$"
+      "stdout_re": "^version=0\\.4\\.43\tengines=container\tcpus=8\tload1=[0-9]+\\.[0-9]+\tvm_used=0\tvm_max=3\tvm_room=no\tboxes=0\tdisk_pct=37\tmem_free_mb=unknown\timages=\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=-\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096\twaiting=0$"
     },
     {
       "name": "pod status: one of three machines running, room for another; boxes counts both engines",
@@ -3384,7 +3384,7 @@
           "state": "stopped"
         }
       },
-      "stdout_re": "^version=0\\.4\\.41\tengines=container,vm\tcpus=8\tload1=[0-9]+\\.[0-9]+\tvm_used=1\tvm_max=3\tvm_room=yes\tboxes=3\tdisk_pct=37\tmem_free_mb=unknown\timages=\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=-\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096\twaiting=0$"
+      "stdout_re": "^version=0\\.4\\.43\tengines=container,vm\tcpus=8\tload1=[0-9]+\\.[0-9]+\tvm_used=1\tvm_max=3\tvm_room=yes\tboxes=3\tdisk_pct=37\tmem_free_mb=unknown\timages=\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=-\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096\twaiting=0$"
     },
     {
       "name": "pod status: all machines used, no room (vm_room is the server's own answer)",
@@ -3954,7 +3954,7 @@
         "jobs/a/.mem-peak": "700",
         "jobs/b/.vm-user": ""
       },
-      "stdout_re": "^host\tversion=0\\.4\\.41\tengines=container,vm\tcpus=8\tload1=[0-9]+\\.[0-9]+\tload5=[0-9]+\\.[0-9]+\tload15=[0-9]+\\.[0-9]+\tboot=[0-9]+\tmem_total_mb=32000\tmem_avail_mb=9000\tswap_total_mb=8000\tswap_used_mb=1200\tgroup_mem_max_mb=32768\tgroup_mem_used_mb=1024\tpressure_some10=2\\.31\tpressure_some60=1\\.12\tpressure_full10=0\\.40\tpressure_full60=0\\.18\toom_kills=1\tpressure_some_ms=1234\tpressure_full_ms=7654\tnet_tx_timeouts=8\tnet_link_changes=4\tvm_used=0\tvm_max=none\tvm_room=yes\tvm_mem_mb=8192\tbox_mem_mb=12288\tdisk_pct=37\tdisk_total_mb=976562\tdisk_used_mb=361328\tttl=1800\tpower=on\tidle_checks=20\tidle_count=7\tidle_last=idle\treset_at=85\tkeepawake=free\twaiting=0\nbox\tbox=a\tengine=container\timage=docker\\.io/library/rust:1\tstate=running\tlast_used=0\tuser=no\tsize=-\tmem_limit_mb=12288\tmem_mb=(-|[0-9]+)\tbusy=no\truns=1\tmem_peak_mb=-\nbox\tbox=b\tengine=vm\timage=localhost/toolbox:latest\tstate=stopped\tlast_used=0\tuser=yes\tsize=small\tmem_limit_mb=2048\tmem_mb=-\tbusy=no\truns=0\tmem_peak_mb=2900\nrun\tbox=a\tid=r1\tstate=ended\texit=3\tbytes=11\tchanged=[0-9]+\nrun\tbox=a\tid=r2\tstate=running\texit=-\tbytes=4\tchanged=[0-9]+\nimage\tname=toolbox\tbytes=0\tbuilt=[0-9]+\tvm_loaded=-$",
+      "stdout_re": "^host\tversion=0\\.4\\.43\tengines=container,vm\tcpus=8\tload1=[0-9]+\\.[0-9]+\tload5=[0-9]+\\.[0-9]+\tload15=[0-9]+\\.[0-9]+\tboot=[0-9]+\tmem_total_mb=32000\tmem_avail_mb=9000\tswap_total_mb=8000\tswap_used_mb=1200\tgroup_mem_max_mb=32768\tgroup_mem_used_mb=1024\tpressure_some10=2\\.31\tpressure_some60=1\\.12\tpressure_full10=0\\.40\tpressure_full60=0\\.18\toom_kills=1\tpressure_some_ms=1234\tpressure_full_ms=7654\tnet_tx_timeouts=8\tnet_link_changes=4\tvm_used=0\tvm_max=none\tvm_room=yes\tvm_mem_mb=8192\tbox_mem_mb=12288\tdisk_pct=37\tdisk_total_mb=976562\tdisk_used_mb=361328\tttl=1800\tpower=on\tidle_checks=20\tidle_count=7\tidle_last=idle\treset_at=85\tkeepawake=free\twaiting=0\nbox\tbox=a\tengine=container\timage=docker\\.io/library/rust:1\tstate=running\tlast_used=0\tuser=no\tsize=-\tmem_limit_mb=12288\tmem_mb=(-|[0-9]+)\tbusy=no\truns=1\tmem_peak_mb=-\nbox\tbox=b\tengine=vm\timage=localhost/toolbox:latest\tstate=stopped\tlast_used=0\tuser=yes\tsize=small\tmem_limit_mb=2048\tmem_mb=-\tbusy=no\truns=0\tmem_peak_mb=2900\nrun\tbox=a\tid=r1\tstate=ended\texit=3\tbytes=11\tchanged=[0-9]+\nrun\tbox=a\tid=r2\tstate=running\texit=-\tbytes=4\tchanged=[0-9]+\nimage\tname=toolbox\tbytes=0\tbuilt=[0-9]+\tvm_loaded=-$",
       "podman_calls_absent": [
         "^run",
         "^start",
@@ -3989,7 +3989,7 @@
         "BOXD_NET": "/work/no-net",
         "BOXD_IDLE_STATE": "/work/no-idle"
       },
-      "stdout_re": "^host\tversion=0\\.4\\.41\tengines=container\tcpus=8\t.*\tgroup_mem_max_mb=-\tgroup_mem_used_mb=-\tpressure_some10=-\tpressure_some60=-\tpressure_full10=-\tpressure_full60=-\toom_kills=-\tpressure_some_ms=-\tpressure_full_ms=-\tnet_tx_timeouts=-\tnet_link_changes=-\tvm_used=0\tvm_max=3\tvm_room=no\tvm_mem_mb=8192\tbox_mem_mb=12288\tdisk_pct=37\tdisk_total_mb=976562\tdisk_used_mb=361328\tttl=1800\tpower=off\tidle_checks=-\tidle_count=-\tidle_last=-\treset_at=-\tkeepawake=none\twaiting=0$"
+      "stdout_re": "^host\tversion=0\\.4\\.43\tengines=container\tcpus=8\t.*\tgroup_mem_max_mb=-\tgroup_mem_used_mb=-\tpressure_some10=-\tpressure_some60=-\tpressure_full10=-\tpressure_full60=-\toom_kills=-\tpressure_some_ms=-\tpressure_full_ms=-\tnet_tx_timeouts=-\tnet_link_changes=-\tvm_used=0\tvm_max=3\tvm_room=no\tvm_mem_mb=8192\tbox_mem_mb=12288\tdisk_pct=37\tdisk_total_mb=976562\tdisk_used_mb=361328\tttl=1800\tpower=off\tidle_checks=-\tidle_count=-\tidle_last=-\treset_at=-\tkeepawake=none\twaiting=0$"
     },
     {
       "name": "pod report lists every running run and, of the ended ones, the three with the greatest ids per box",
@@ -4100,7 +4100,7 @@
         "cache/calls.log": "900000000\tboxd-2889387319\tcontainer\t0\tdetached\t5\t\tr1\tsleep\n"
       },
       "exit": 0,
-      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=ended\tcomplete=yes\twhy=-\tstart=1000\tend=1100\tseconds=100\texit=0\tgroup_stall_ms=5\tgroup_stall_some_ms=60\tkills=2\tkills_by_cap=1\tbox_stall_ms=10\tbox_stall_some_ms=50\tbox_kills=1\tbox_limit_kills=0\tnet_tx_timeouts=0\tnet_link_changes=1\tothers=-"
+      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=ended\tcomplete=yes\twhy=-\tstart=1000\tend=1100\tseconds=100\texit=0\tgroup_stall_ms=5\tgroup_stall_some_ms=60\tkills=2\tkills_by_cap=1\tbox_stall_ms=10\tbox_stall_some_ms=50\tbox_kills=1\tbox_limit_kills=0\tnet_tx_timeouts=0\tnet_link_changes=1\tothers=-\tsiblings=-"
     },
     {
       "name": "pod events, machine box: the four words of the box's own group are dashes and the record is complete",
@@ -4114,7 +4114,7 @@
         "cache/calls.log": "900000000\tboxd-2889387319\tcontainer\t0\tdetached\t5\t\tr1\tsleep\n"
       },
       "exit": 0,
-      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=vm\tstate=ended\tcomplete=yes\twhy=-\tstart=1000\tend=1100\tseconds=100\texit=0\tgroup_stall_ms=5\tgroup_stall_some_ms=60\tkills=2\tkills_by_cap=1\tbox_stall_ms=-\tbox_stall_some_ms=-\tbox_kills=-\tbox_limit_kills=-\tnet_tx_timeouts=0\tnet_link_changes=1\tothers=-"
+      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=vm\tstate=ended\tcomplete=yes\twhy=-\tstart=1000\tend=1100\tseconds=100\texit=0\tgroup_stall_ms=5\tgroup_stall_some_ms=60\tkills=2\tkills_by_cap=1\tbox_stall_ms=-\tbox_stall_some_ms=-\tbox_kills=-\tbox_limit_kills=-\tnet_tx_timeouts=0\tnet_link_changes=1\tothers=-\tsiblings=-"
     },
     {
       "name": "pod events of a run that still runs: not complete, why running, every difference a dash",
@@ -4128,7 +4128,7 @@
         "cache/calls.log": "900000000\tboxd-2889387319\tcontainer\t0\tdetached\t5\t\tr1\tsleep\n"
       },
       "exit": 0,
-      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=running\tcomplete=no\twhy=running\tstart=1000\tend=-\tseconds=-\texit=-\tgroup_stall_ms=-\tgroup_stall_some_ms=-\tkills=-\tkills_by_cap=-\tbox_stall_ms=-\tbox_stall_some_ms=-\tbox_kills=-\tbox_limit_kills=-\tnet_tx_timeouts=-\tnet_link_changes=-\tothers=-"
+      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=running\tcomplete=no\twhy=running\tstart=1000\tend=-\tseconds=-\texit=-\tgroup_stall_ms=-\tgroup_stall_some_ms=-\tkills=-\tkills_by_cap=-\tbox_stall_ms=-\tbox_stall_some_ms=-\tbox_kills=-\tbox_limit_kills=-\tnet_tx_timeouts=-\tnet_link_changes=-\tothers=-\tsiblings=-"
     },
     {
       "name": "pod events of a run started by an older server (no snapshot): not complete, why no-start-record; the engine from the call log",
@@ -4140,7 +4140,7 @@
         "cache/calls.log": "900000000\tboxd-2889387319\tcontainer\t0\tdetached\t5\t\tr1\tsleep\n"
       },
       "exit": 0,
-      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=ended\tcomplete=no\twhy=no-start-record\tstart=-\tend=-\tseconds=-\texit=0\tgroup_stall_ms=-\tgroup_stall_some_ms=-\tkills=-\tkills_by_cap=-\tbox_stall_ms=-\tbox_stall_some_ms=-\tbox_kills=-\tbox_limit_kills=-\tnet_tx_timeouts=-\tnet_link_changes=-\tothers=-"
+      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=ended\tcomplete=no\twhy=no-start-record\tstart=-\tend=-\tseconds=-\texit=0\tgroup_stall_ms=-\tgroup_stall_some_ms=-\tkills=-\tkills_by_cap=-\tbox_stall_ms=-\tbox_stall_some_ms=-\tbox_kills=-\tbox_limit_kills=-\tnet_tx_timeouts=-\tnet_link_changes=-\tothers=-\tsiblings=-"
     },
     {
       "name": "pod events of a run whose end record was never written: not complete, why no-end-record",
@@ -4153,7 +4153,7 @@
         "cache/calls.log": "900000000\tboxd-2889387319\tcontainer\t0\tdetached\t5\t\tr1\tsleep\n"
       },
       "exit": 0,
-      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=ended\tcomplete=no\twhy=no-end-record\tstart=1000\tend=-\tseconds=-\texit=0\tgroup_stall_ms=-\tgroup_stall_some_ms=-\tkills=-\tkills_by_cap=-\tbox_stall_ms=-\tbox_stall_some_ms=-\tbox_kills=-\tbox_limit_kills=-\tnet_tx_timeouts=-\tnet_link_changes=-\tothers=-"
+      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=ended\tcomplete=no\twhy=no-end-record\tstart=1000\tend=-\tseconds=-\texit=0\tgroup_stall_ms=-\tgroup_stall_some_ms=-\tkills=-\tkills_by_cap=-\tbox_stall_ms=-\tbox_stall_some_ms=-\tbox_kills=-\tbox_limit_kills=-\tnet_tx_timeouts=-\tnet_link_changes=-\tothers=-\tsiblings=-"
     },
     {
       "name": "pod events, the host restarted between the snapshots: not complete, why host-restarted, the times known and the counters dashes",
@@ -4167,7 +4167,7 @@
         "cache/calls.log": "900000000\tboxd-2889387319\tcontainer\t0\tdetached\t5\t\tr1\tsleep\n"
       },
       "exit": 0,
-      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=ended\tcomplete=no\twhy=host-restarted\tstart=1000\tend=1100\tseconds=100\texit=0\tgroup_stall_ms=-\tgroup_stall_some_ms=-\tkills=-\tkills_by_cap=-\tbox_stall_ms=-\tbox_stall_some_ms=-\tbox_kills=-\tbox_limit_kills=-\tnet_tx_timeouts=-\tnet_link_changes=-\tothers=-"
+      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=ended\tcomplete=no\twhy=host-restarted\tstart=1000\tend=1100\tseconds=100\texit=0\tgroup_stall_ms=-\tgroup_stall_some_ms=-\tkills=-\tkills_by_cap=-\tbox_stall_ms=-\tbox_stall_some_ms=-\tbox_kills=-\tbox_limit_kills=-\tnet_tx_timeouts=-\tnet_link_changes=-\tothers=-\tsiblings=-"
     },
     {
       "name": "pod events: a group counter that is a dash in a snapshot makes the record incomplete, the others are given",
@@ -4181,7 +4181,7 @@
         "cache/calls.log": "900000000\tboxd-2889387319\tcontainer\t0\tdetached\t5\t\tr1\tsleep\n"
       },
       "exit": 0,
-      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=ended\tcomplete=no\twhy=counter-unreadable\tstart=1000\tend=1100\tseconds=100\texit=0\tgroup_stall_ms=5\tgroup_stall_some_ms=60\tkills=-\tkills_by_cap=1\tbox_stall_ms=10\tbox_stall_some_ms=50\tbox_kills=1\tbox_limit_kills=0\tnet_tx_timeouts=0\tnet_link_changes=1\tothers=-"
+      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=ended\tcomplete=no\twhy=counter-unreadable\tstart=1000\tend=1100\tseconds=100\texit=0\tgroup_stall_ms=5\tgroup_stall_some_ms=60\tkills=-\tkills_by_cap=1\tbox_stall_ms=10\tbox_stall_some_ms=50\tbox_kills=1\tbox_limit_kills=0\tnet_tx_timeouts=0\tnet_link_changes=1\tothers=-\tsiblings=-"
     },
     {
       "name": "pod events: a container's own group that could not be read at the end gives dashes and leaves the record complete",
@@ -4195,7 +4195,7 @@
         "cache/calls.log": "900000000\tboxd-2889387319\tcontainer\t0\tdetached\t5\t\tr1\tsleep\n"
       },
       "exit": 0,
-      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=ended\tcomplete=yes\twhy=-\tstart=1000\tend=1100\tseconds=100\texit=0\tgroup_stall_ms=5\tgroup_stall_some_ms=60\tkills=2\tkills_by_cap=1\tbox_stall_ms=-\tbox_stall_some_ms=-\tbox_kills=-\tbox_limit_kills=-\tnet_tx_timeouts=0\tnet_link_changes=1\tothers=-"
+      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=ended\tcomplete=yes\twhy=-\tstart=1000\tend=1100\tseconds=100\texit=0\tgroup_stall_ms=5\tgroup_stall_some_ms=60\tkills=2\tkills_by_cap=1\tbox_stall_ms=-\tbox_stall_some_ms=-\tbox_kills=-\tbox_limit_kills=-\tnet_tx_timeouts=0\tnet_link_changes=1\tothers=-\tsiblings=-"
     },
     {
       "name": "pod events: others are the boxes busy at any moment of the window (foreground calls, detached runs), not those that ended before it or began after it, not this box, not a launch line",
@@ -4223,7 +4223,7 @@
         "/work/jobs/dtafter/runs/r5.log": 1300
       },
       "exit": 0,
-      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=ended\tcomplete=yes\twhy=-\tstart=1000\tend=1100\tseconds=100\texit=0\tgroup_stall_ms=5\tgroup_stall_some_ms=60\tkills=2\tkills_by_cap=1\tbox_stall_ms=10\tbox_stall_some_ms=50\tbox_kills=1\tbox_limit_kills=0\tnet_tx_timeouts=0\tnet_link_changes=1\tothers=dt,dtrun,fg,fgedge"
+      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=ended\tcomplete=yes\twhy=-\tstart=1000\tend=1100\tseconds=100\texit=0\tgroup_stall_ms=5\tgroup_stall_some_ms=60\tkills=2\tkills_by_cap=1\tbox_stall_ms=10\tbox_stall_some_ms=50\tbox_kills=1\tbox_limit_kills=0\tnet_tx_timeouts=0\tnet_link_changes=1\tothers=dt,dtrun,fg,fgedge\tsiblings=-"
     },
     {
       "name": "pod events: a call log whose first line is younger than the start of the window: not complete, why calls-log-short, the rest given",
@@ -4237,7 +4237,7 @@
         "cache/calls.log": "1050000000\tfg\tcontainer\t0\t0\t10\t\t\tmake\n1020000000\tfgold\tcontainer\t0\t0\t10\t\t\tmake\n"
       },
       "exit": 0,
-      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=ended\tcomplete=no\twhy=calls-log-short\tstart=1000\tend=1100\tseconds=100\texit=0\tgroup_stall_ms=5\tgroup_stall_some_ms=60\tkills=2\tkills_by_cap=1\tbox_stall_ms=10\tbox_stall_some_ms=50\tbox_kills=1\tbox_limit_kills=0\tnet_tx_timeouts=0\tnet_link_changes=1\tothers=fg,fgold"
+      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=ended\tcomplete=no\twhy=calls-log-short\tstart=1000\tend=1100\tseconds=100\texit=0\tgroup_stall_ms=5\tgroup_stall_some_ms=60\tkills=2\tkills_by_cap=1\tbox_stall_ms=10\tbox_stall_some_ms=50\tbox_kills=1\tbox_limit_kills=0\tnet_tx_timeouts=0\tnet_link_changes=1\tothers=fg,fgold\tsiblings=-"
     },
     {
       "name": "pod events on a host with no call log: not complete, why calls-log-short",
@@ -4250,7 +4250,90 @@
         "cache/events/boxd-2889387319/r1.end": "engine=container\ntime=1100\nboot=500\ngroup_some_ms=160\ngroup_full_ms=45\nnet_tx_timeouts=2\nnet_link_changes=5\ngroup_kills=3\ngroup_cap_kills=1\nbox_some_ms=80\nbox_full_ms=20\nbox_kills=2\nbox_limit_kills=1\n"
       },
       "exit": 0,
-      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=ended\tcomplete=no\twhy=calls-log-short\tstart=1000\tend=1100\tseconds=100\texit=0\tgroup_stall_ms=5\tgroup_stall_some_ms=60\tkills=2\tkills_by_cap=1\tbox_stall_ms=10\tbox_stall_some_ms=50\tbox_kills=1\tbox_limit_kills=0\tnet_tx_timeouts=0\tnet_link_changes=1\tothers=-"
+      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=ended\tcomplete=no\twhy=calls-log-short\tstart=1000\tend=1100\tseconds=100\texit=0\tgroup_stall_ms=5\tgroup_stall_some_ms=60\tkills=2\tkills_by_cap=1\tbox_stall_ms=10\tbox_stall_some_ms=50\tbox_kills=1\tbox_limit_kills=0\tnet_tx_timeouts=0\tnet_link_changes=1\tothers=-\tsiblings=-"
+    },
+    {
+      "name": "pod events: the other runs of the same box whose window overlaps (an ended one, a running one) are siblings, sorted; one that ended before the window and one that began after it are not, and complete stays yes",
+      "command": "pod events boxd-2889387319 r1",
+      "job_files": {
+        "runs/r1.log": "EXIT 0\n",
+        "runs/r2.log": "EXIT 0\n",
+        "runs/r3.log": "x\n",
+        "runs/r3.pid": "1\n",
+        "runs/r4.log": "EXIT 0\n",
+        "runs/r5.log": "EXIT 0\n"
+      },
+      "work_files": {
+        "cache/events/boxd-2889387319/r1.start": "engine=container\ntime=1000\nboot=500\ngroup_some_ms=100\ngroup_full_ms=40\nnet_tx_timeouts=2\nnet_link_changes=4\ngroup_kills=1\ngroup_cap_kills=0\nbox_some_ms=30\nbox_full_ms=10\nbox_kills=1\nbox_limit_kills=1\n",
+        "cache/events/boxd-2889387319/r1.end": "engine=container\ntime=1100\nboot=500\ngroup_some_ms=160\ngroup_full_ms=45\nnet_tx_timeouts=2\nnet_link_changes=5\ngroup_kills=3\ngroup_cap_kills=1\nbox_some_ms=80\nbox_full_ms=20\nbox_kills=2\nbox_limit_kills=1\n",
+        "cache/calls.log": "900000000\tboxd-2889387319\tcontainer\t0\tdetached\t5\t\tr1\tsleep\n",
+        "cache/events/boxd-2889387319/r2.start": "engine=container\ntime=1050\nboot=500\ngroup_some_ms=100\ngroup_full_ms=40\nnet_tx_timeouts=2\nnet_link_changes=4\ngroup_kills=1\ngroup_cap_kills=0\nbox_some_ms=30\nbox_full_ms=10\nbox_kills=1\nbox_limit_kills=1\n",
+        "cache/events/boxd-2889387319/r3.start": "engine=container\ntime=1090\nboot=500\ngroup_some_ms=100\ngroup_full_ms=40\nnet_tx_timeouts=2\nnet_link_changes=4\ngroup_kills=1\ngroup_cap_kills=0\nbox_some_ms=30\nbox_full_ms=10\nbox_kills=1\nbox_limit_kills=1\n",
+        "cache/events/boxd-2889387319/r4.start": "engine=container\ntime=1200\nboot=500\ngroup_some_ms=100\ngroup_full_ms=40\nnet_tx_timeouts=2\nnet_link_changes=4\ngroup_kills=1\ngroup_cap_kills=0\nbox_some_ms=30\nbox_full_ms=10\nbox_kills=1\nbox_limit_kills=1\n",
+        "cache/events/boxd-2889387319/r5.start": "engine=container\ntime=100\nboot=500\ngroup_some_ms=100\ngroup_full_ms=40\nnet_tx_timeouts=2\nnet_link_changes=4\ngroup_kills=1\ngroup_cap_kills=0\nbox_some_ms=30\nbox_full_ms=10\nbox_kills=1\nbox_limit_kills=1\n"
+      },
+      "mtimes": {
+        "/work/jobs/boxd-2889387319/runs/r2.log": 1060,
+        "/work/jobs/boxd-2889387319/runs/r4.log": 1300,
+        "/work/jobs/boxd-2889387319/runs/r5.log": 200
+      },
+      "exit": 0,
+      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=ended\tcomplete=yes\twhy=-\tstart=1000\tend=1100\tseconds=100\texit=0\tgroup_stall_ms=5\tgroup_stall_some_ms=60\tkills=2\tkills_by_cap=1\tbox_stall_ms=10\tbox_stall_some_ms=50\tbox_kills=1\tbox_limit_kills=0\tnet_tx_timeouts=0\tnet_link_changes=1\tothers=-\tsiblings=r2,r3"
+    },
+    {
+      "name": "pod events: a sibling that ended before the window began is no sibling (the run itself never is)",
+      "command": "pod events boxd-2889387319 r1",
+      "job_files": {
+        "runs/r1.log": "EXIT 0\n",
+        "runs/r2.log": "EXIT 0\n"
+      },
+      "work_files": {
+        "cache/events/boxd-2889387319/r1.start": "engine=container\ntime=1000\nboot=500\ngroup_some_ms=100\ngroup_full_ms=40\nnet_tx_timeouts=2\nnet_link_changes=4\ngroup_kills=1\ngroup_cap_kills=0\nbox_some_ms=30\nbox_full_ms=10\nbox_kills=1\nbox_limit_kills=1\n",
+        "cache/events/boxd-2889387319/r1.end": "engine=container\ntime=1100\nboot=500\ngroup_some_ms=160\ngroup_full_ms=45\nnet_tx_timeouts=2\nnet_link_changes=5\ngroup_kills=3\ngroup_cap_kills=1\nbox_some_ms=80\nbox_full_ms=20\nbox_kills=2\nbox_limit_kills=1\n",
+        "cache/calls.log": "900000000\tboxd-2889387319\tcontainer\t0\tdetached\t5\t\tr1\tsleep\n",
+        "cache/events/boxd-2889387319/r2.start": "engine=container\ntime=100\nboot=500\ngroup_some_ms=100\ngroup_full_ms=40\nnet_tx_timeouts=2\nnet_link_changes=4\ngroup_kills=1\ngroup_cap_kills=0\nbox_some_ms=30\nbox_full_ms=10\nbox_kills=1\nbox_limit_kills=1\n"
+      },
+      "mtimes": {
+        "/work/jobs/boxd-2889387319/runs/r2.log": 200,
+        "/work/jobs/boxd-2889387319/runs/r4.log": 1300
+      },
+      "exit": 0,
+      "stdout": "events\tbox=boxd-2889387319\tid=r1\tengine=container\tstate=ended\tcomplete=yes\twhy=-\tstart=1000\tend=1100\tseconds=100\texit=0\tgroup_stall_ms=5\tgroup_stall_some_ms=60\tkills=2\tkills_by_cap=1\tbox_stall_ms=10\tbox_stall_some_ms=50\tbox_kills=1\tbox_limit_kills=0\tnet_tx_timeouts=0\tnet_link_changes=1\tothers=-\tsiblings=-"
+    },
+    {
+      "name": "pod end of a run that is not running: one line, exit 0, nothing changed and no engine call",
+      "command": "pod end boxd-2889387319 r1",
+      "job_files": {
+        "runs/r1.log": "a\nEXIT 0\n"
+      },
+      "exit": 0,
+      "stdout": "run r1 in box boxd-2889387319 has already ended",
+      "podman_calls": [],
+      "msb_calls": []
+    },
+    {
+      "name": "pod end of a run that does not exist exits 125",
+      "command": "pod end boxd-2889387319 r9",
+      "exit": 125,
+      "stderr": "boxd-pod: no run r9 in box boxd-2889387319"
+    },
+    {
+      "name": "pod end with a run id that could leave the runs folder exits 125",
+      "command": "pod end boxd-2889387319 ../x",
+      "exit": 125,
+      "stderr": "boxd-pod: bad run id"
+    },
+    {
+      "name": "pod end with a bad box name exits 125",
+      "command": "pod end Bad-Name r1",
+      "exit": 125,
+      "stderr": "boxd-pod: bad box name"
+    },
+    {
+      "name": "pod end with a missing run id is an unknown command",
+      "command": "pod end boxd-2889387319",
+      "exit": 125,
+      "stderr": "boxd-pod: unknown command"
     },
     {
       "name": "pod events of a run that does not exist exits 125",

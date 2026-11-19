@@ -43,6 +43,7 @@ session and every box is under the total cap. The main sshd (port 22) refuses `b
 | `pod calls [<offset>]` | Read only: the call log from a byte offset, whole lines, in windows of at most 1 048 576 bytes (see "The reading verbs"). |
 | `pod log <box> <run> [<offset>]` | Read only: a detached run's log from a byte offset, the same windows; the box is not started (see "The reading verbs"). |
 | `pod events <box> <run>` | Read only: the host's own record of what could have disturbed a detached run during its window, one line (see "The event record of a detached run"). |
+| `pod end <box> <run>` | Ends one detached run and nothing else; not allowed for a key that may only read (see "Ending a detached run"). |
 | `pod queue <box> box\|vm <size>` | Since 0.4.41. Asks for a place in the waiting line and starts nothing (see "The waiting line"). `<size>` is `small`, `medium`, `large` or `xlarge`. Exit 0 when the call would be admitted now (nothing is written). Otherwise exit 75, the ticket of the box written or refreshed, and one line on standard output `boxd-pod: no room for another <busy box|virtual machine> now; <place>; busy now: <boxes>`. Takes the room lock and writes only the ticket; not allowed for keys that may only read. |
 | `pod help` | Since 0.4.10. Read only, one line per command the server accepts over ssh with a few words each, exit 0; no lock, no stamp, no call log line; allowed for keys that may only read. Extra words: exit 125, `boxd-pod: unknown command`. |
 | anything else | Exit 125, `boxd-pod: unknown command` on stderr (the text stays as it is: the client and the dashboard match it to detect a server older than the command; `pod help` lists the commands). `pod report`, `pod calls` and `pod log` with more words than shown are unknown commands too. |
@@ -577,6 +578,9 @@ separated: `events`, then these words in this order:
   (from the `time` of its start snapshot, or the log file's creation time when it has none, to the log's last modification time when it ended and to now
   while it runs); and a box that holds its `.running` lock now with a `.last-used` stamp not after the end of the window (a foreground call
   in progress is not in the call log yet).
+- `siblings`: the other detached runs of THIS box whose window overlaps this run's, run ids sorted, comma separated, `-` for none and when
+  the window is not known. Each window is taken as for `others` (start snapshot or log birth to the log's last write, or now while it runs). It never changes `complete`.
+  Appended after `others`: a reader that takes the words by key is not disturbed, and a server older than this word sends none.
 
 What is NOT given: the name of the killed process; the times of network stalls (counts only); kills made by the guest kernel inside a
 machine box (they show only in that run's log, `GUEST_KILLS`); a stall of one machine, because all machines of the host sit in one
@@ -599,6 +603,21 @@ Every full `boxd-setup` run puts the listed keys back among the allowed keys (a 
 three steps as root on a host: append `ExposeAuthInfo yes` to `/etc/boxd/sshd_config`; append the key line (`ssh-ed25519 AAAA...
 dashboard@homeserver`) to `/etc/boxd/view_keys` (mode 644) and to `/etc/ssh/authorized_keys/<account>`; run `boxctl reload` (restarts only
 the build sshd; sessions and boxes stay).
+
+## Ending a detached run (`pod end`, `box stop --run`)
+
+A detached run that is mistaken or hangs could only be waited out, and it holds its room meanwhile. **`pod end <box> <run>`** ends that one
+run and nothing else: the box keeps running, and its files and its other runs are untouched. It validates as `pod log` does (exit 125:
+`boxd-pod: bad box name`, `boxd-pod: bad run id`, `boxd-pod: no run <run> in box <box>`; extra words: `unknown command`) and it is not allowed for
+a key that may only read. A run that is not running: one line `run <run> in box <box> has already ended`, exit 0, nothing changed (ending twice is no error).
+A run that runs: first the line `boxd: ended by box stop --run` is added to its log, so the log of a run ended on purpose always says so. Then its processes in the box are ended by the run's own marker (every detached run's command is started with `BOXD_CALL=run-<run>`
+in its environment, the cleanup a foreground call uses when its session is gone), then its process group on the host gets SIGTERM and,
+after about 5 s, SIGKILL. The wrapper may still write its own ending (`EXIT 143` from a container box, `EXIT 255` from a machine box, whose engine reports the cut session that way); when it wrote none, the log gets the line `EXIT 143`
+(never a second `EXIT` line), the end snapshot of the event record is written when the wrapper did not, so `pod events` answers with the window up to the
+end, the pid record is removed, `.last-used` is renewed, and one call log line is written (exit column 0, reason `ended run <run>`). Then one line `ended run <run> in box <box>`, exit 0.
+The client's `box stop --run <run>` resolves box and host as `box log` does, prints `box stop: ended run <run> in box <box> on <host>; the box keeps running`
+(or `box stop: run <run> in box <box> on <host> has already ended; nothing to do`), and exits 0; `--run` with `box drop` is a usage error (exit 2);
+a server that does not know the word gives `box stop: this build server is older than run ending: box stop --run needs an upgrade`, exit 125.
 
 ## Forwarding a port (`pod forward`, `box forward`, `box vnc`)
 

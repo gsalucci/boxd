@@ -65,7 +65,7 @@ const shardsFake = `if [ -n "\${FAKE_SHARDS:-}" ]; then
 fi
 `;
 const hostFake = `if [ -n "\${FAKE_LOGDIR:-}" ]; then
-  case "$*" in *" pod log "*|*" pod events "*) echo x >> "$FAKE_LOGDIR/count"; cat "$FAKE_LOGDIR/$(wc -l < "$FAKE_LOGDIR/count" | tr -d ' ')"; [ ! -f "$FAKE_LOGDIR/err" ] || cat "$FAKE_LOGDIR/err" >&2; exit "$(cat "$FAKE_LOGDIR/exit" 2>/dev/null || echo 0)";; esac
+  case "$*" in *" pod log "*|*" pod events "*|*" pod end "*) echo x >> "$FAKE_LOGDIR/count"; cat "$FAKE_LOGDIR/$(wc -l < "$FAKE_LOGDIR/count" | tr -d ' ')"; [ ! -f "$FAKE_LOGDIR/err" ] || cat "$FAKE_LOGDIR/err" >&2; exit "$(cat "$FAKE_LOGDIR/exit" 2>/dev/null || echo 0)";; esac
 fi
 ${shardsFake}if [ -n "\${FAKE_BLOCK_DIR:-}" ]; then
   case "$*" in *" pod run "*)
@@ -884,6 +884,38 @@ test("BOXD_KEEP_ORPHAN=1 keeps the call going when its starter is gone", { timeo
   } finally { release(t.p("hold")); }
 });
 
+// ---- box stop --run: `pod end` ends one detached run ------------------------------------------------------------------------
+test("box stop --run: asks pod end for that run only (resolved as box log does), says the box keeps running, exit 0, one call", () => {
+  const r = logRun(["stop", "--run", "run-1"], [`ended run run-1 in box ${box}\n`]);
+  assert.deepEqual([r.code, r.out, r.err, r.calls], [0, `box stop: ended run run-1 in box ${box} on test; the box keeps running\n`, "", [`ssh boxd-test pod end ${box} run-1`]]);
+  const o = logRun(["stop", "--run", "run-1", "--pod", "other", "--host", "h2"], [`ended run run-1 in box other\n`]);
+  assert.deepEqual([o.code, o.calls], [0, ["ssh boxd-h2 pod end other run-1"]]);
+});
+
+test("box stop --run: a run that already ended is a line and exit 0; a refusal of the server passes through with its code", () => {
+  const r = logRun(["stop", "--run", "run-1"], [`run run-1 in box ${box} has already ended\n`]);
+  assert.deepEqual([r.code, r.out, r.err], [0, `box stop: run run-1 in box ${box} on test has already ended; nothing to do\n`, ""]);
+  const dir = mkdtempSync(path.join(root, "logdir-"));
+  writeFileSync(path.join(dir, "1"), ""); writeFileSync(path.join(dir, "err"), `boxd-pod: no run run-9 in box ${box}\n`); writeFileSync(path.join(dir, "exit"), "125");
+  const x = runBox(["stop", "--run", "run-9"], { env: { FAKE_LOGDIR: dir } });
+  assert.deepEqual([x.code, x.out, x.err], [125, "", `boxd-pod: no run run-9 in box ${box}\n`]);
+  assert.deepEqual(logRun(["stop", "--run", "run-1"], ["something else\n"]).code, 1);
+});
+
+test("box stop --run against a server that does not know the word: one line about the upgrade, exit 125", () => {
+  const dir = mkdtempSync(path.join(root, "logdir-"));
+  writeFileSync(path.join(dir, "1"), ""); writeFileSync(path.join(dir, "err"), "boxd-pod: unknown command\n"); writeFileSync(path.join(dir, "exit"), "125");
+  const r = runBox(["stop", "--run", "run-1"], { env: { FAKE_LOGDIR: dir } });
+  assert.deepEqual([r.code, r.out, r.err], [125, "", "box stop: this build server is older than run ending: box stop --run needs an upgrade\n"]);
+});
+
+test("--run belongs to box stop: box drop --run and a bad run id are usage errors (exit 2) and call nothing", () => {
+  for (const v of [["drop", "--run", "run-1"], ["stop", "--run", "../x"], ["stop", "--run"]]) {
+    const r = runBox(v);
+    assert.deepEqual([r.code, r.out === "", r.calls], [2, true, []], v.join(" "));
+  }
+});
+
 // ---- box log: a detached run's log is read without starting the box ---------------------------------------------------
 function logRun(args: string[], answers: string[], env: Record<string, string> = {}) {
   const dir = mkdtempSync(path.join(root, "logdir-"));
@@ -956,7 +988,7 @@ test("box log --tail 0 --follow prints nothing old, only what comes in later rou
 
 // box log <run> --events: `pod events` answers one line, events then key=value words; each word is printed on its own line, and the exit code says
 // whether the record covers the whole window of the run (0 yes, 3 no).
-const evWords = (o: Record<string, string> = {}) => "events\t" + Object.entries({ box, id: "run-1", engine: "container", state: "ended", complete: "yes", why: "-", start: "1000", end: "1100", seconds: "100", exit: "0", group_stall_ms: "5", kills: "2", others: "dt,fg", ...o }).map(([k, v]) => `${k}=${v}`).join("\t") + "\n";
+const evWords = (o: Record<string, string> = {}) => "events\t" + Object.entries({ box, id: "run-1", engine: "container", state: "ended", complete: "yes", why: "-", start: "1000", end: "1100", seconds: "100", exit: "0", group_stall_ms: "5", kills: "2", others: "dt,fg", siblings: "run-2", ...o }).map(([k, v]) => `${k}=${v}`).join("\t") + "\n";
 const evLines = (o: Record<string, string> = {}) => evWords(o).trimEnd().split("\t").slice(1).join("\n") + "\n";
 
 test("box log --events: one key=value line per word of the answer, nothing else on standard output, exit 0 when complete, one call", () => {
@@ -2005,6 +2037,18 @@ test("drop: a busy machine (a call or a detached run holds it) is refused with t
   assert.match(r.err, new RegExp(`box drop: box ${rp.box} on test still has a command running in it; nothing removed\n`));
   assert.deepEqual(stops(r.calls), []);
   assert.notEqual(getEntry(s, "test", rp.box), undefined);
+});
+
+test("stop and drop: a busy box with running detached runs names the way out: the first running run, and how many more", () => {
+  for (const [mode, nothing] of [["stop", "nothing stopped"], ["drop", "nothing removed"]]) {
+    for (const [runs, hint] of [[runLn("x", "r-1", "running", "-"), "; end a detached run with: box stop --run r-1"], [runLn("x", "r-1", "ended", "0") + runLn("x", "r-2", "running", "-") + runLn("x", "r-3", "running", "-") + runLn("o", "r-4", "running", "-"), "; end a detached run with: box stop --run r-2 (and 1 more)"]] as const) {
+      const s = servers([{ name: "test", status: FREE }]), rp = newRepo();
+      hostFile(s, "test", "list", LINE(rp.box)); hostFile(s, "test", `ps.${rp.box}`, DAEMONS); hostFile(s, "test", "report", BOXROW(rp.box, "busy=yes\truns=1") + runs.replaceAll("box=x", `box=${rp.box}`)); putEntry(s, "test", rp.box, rp.top);
+      const r = go(rp, s, [mode], { BOXD_HOST: "test" });
+      assert.equal(r.code, 1);
+      assert.equal(r.err, `box ${mode}: box ${rp.box} on test still has a command running in it; ${nothing}${hint}\n`);
+    }
+  }
 });
 
 test("drop: a report that does not say busy for this box (older server, other box, failed call) keeps today's rule: any process refuses", () => {

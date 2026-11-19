@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.43
+
+- A run ended with `box stop --run` always says so in its log: the line `boxd: ended by box stop --run` is written before the run is ended. In 0.4.42 it was missing whenever the run's own wrapper wrote the ending first, which on a real host was every time (exit 143 from a container box, 255 from a machine box).
+
+## 0.4.42
+
+- `box stop --run <run id>` ends one detached run and nothing else (server word `pod end <box> <run>`): the processes of that run inside the box, then its wrapper; the box, its files and its other runs stay. The log ends with `boxd: ended by box stop --run` and `EXIT 143`. Until now a detached run could only be waited out, because `box stop` and `box drop` refuse a box with a running command; that refusal now names the run: `…; end a detached run with: box stop --run <id>`.
+- The event record of a detached run gains `siblings=<run ids>`: the other detached runs of the same box whose window overlaps, a dash for none.
+- A detached run now carries its own call marker (`BOXD_CALL=run-<id>`), as foreground calls do.
+
 ## 0.4.41
 
 - Calls that wait for room are served in turn. Until now `box --wait` asked again every 30 seconds and held no place, so a call that arrived late could be served before one that had waited for an hour. Now a waiting call holds a ticket on the server (`cache/queue`, new server word `pod queue`), and nobody takes room that an earlier waiter could take at its next ask. A waiter whose need does not fit anyway holds nobody back, and a call into a box that is already busy is never held back.

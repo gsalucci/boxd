@@ -21,7 +21,7 @@ PROC=${BOXD_PROC:-/proc}   # test hook, like BOXD_MEMINFO: where `pod report` fi
 KVM=${BOXD_KVM:-/dev/kvm}   # test hook: the device a --kvm box gets
 ROUTE=${BOXD_ROUTE:-/proc/net/route}   # test hooks: the routing table and the network interface folder `pod report` reads
 NETDIR=${BOXD_NET:-/sys/class/net}
-VERSION=0.4.41
+VERSION=0.4.43
 # Keys that may only read, one "<type> <key> [comment]" per line (view_only below); and the largest answer of pod calls and pod log.
 VIEW_KEYS=${BOXD_VIEW_KEYS:-/etc/boxd/view_keys}
 READ_MAX=${BOXD_READ_MAX:-1048576}
@@ -889,8 +889,8 @@ snap_read() {
     [[ ${a[time]:-} =~ ^[0-9]+$ ]]
 }
 pod_events() {
-    local box=${1:-} id=${2:-} f ev st=ended ex=- why=- eng=- s=- e=- sec=- k b i l first=- cn now oth=- os oe hs= he= full=yes
-    local -A S=() E=() X=() O=() D=()
+    local box=${1:-} id=${2:-} f ev st=ended ex=- why=- eng=- s=- e=- sec=- k b i l first=- cn now oth=- sib=- os oe hs= he= full=yes
+    local -A S=() E=() X=() O=() D=() B=()
     [[ $box =~ $BOX_RE ]] || die "bad box name"
     [[ $id =~ $RUN_RE ]] || die "bad run id"
     f=$WORK/jobs/$box/runs/$id.log
@@ -919,19 +919,20 @@ pod_events() {
         done
     fi
     if [ -n "$hs" ] && [ -n "$he" ]; then
-        # The detached runs of the other boxes (from the start record, else the log's birth, to the log's last write, or now while it runs).
+        # The detached runs of the other boxes, and the other runs of this box (siblings; from the start record, else the log's birth, to the log's last write, or now while it runs).
         now=$(date +%s)
         while IFS= read -r l; do
             b=${l#"$WORK/jobs/"}; b=${b%%/*}; i=${l##*/}; i=${i%.log}
-            [[ $b =~ $BOX_RE && $i =~ $RUN_RE ]] && [ "$b" != "$box" ] && [ "$i" != dockerd ] || continue
+            [[ $b =~ $BOX_RE && $i =~ $RUN_RE ]] && [ "$i" != dockerd ] && { [ "$b" != "$box" ] || [ "$i" != "$id" ]; } || continue
             if run_alive "${l%.log}.pid"; then oe=$now; else oe=$(stat -c %Y "$l" 2>/dev/null) || continue; fi
             if snap_read "$WORK/cache/events/$b/$i.start" X; then os=${X[time]}; else os=$(stat -c %W "$l" 2>/dev/null); [[ $os =~ ^[1-9][0-9]*$ ]] || os=0; fi   # no birth time: from the beginning, so the box is listed rather than missed
-            [ "$os" -le "$e" ] && [ "$oe" -ge "$s" ] && O[$b]=1
+            if [ "$os" -le "$e" ] && [ "$oe" -ge "$s" ]; then if [ "$b" = "$box" ]; then B[$i]=1; else O[$b]=1; fi; fi
         done < <(find "$WORK/jobs" -mindepth 3 -maxdepth 3 -path '*/runs/*.log' -type f 2>/dev/null)
         # A box that holds its run lock now and was stamped (a call begins with the stamp) no later than the window's end: a foreground call still going, not yet in the call log.
         while IFS= read -r b; do [[ $b =~ $BOX_RE && $b != "$box" ]] && box_busy "$b" && [ "$(stamp_of "$b")" -le "$e" ] && O[$b]=1; done < <(find "$WORK/jobs" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null)
         [ "$why" != - ] || { [[ $first =~ ^[0-9]+$ ]] && [ "$first" -le "$s" ] || why=calls-log-short; }
         [ ${#O[@]} -eq 0 ] || oth=$(printf '%s\n' "${!O[@]}" | sort | paste -sd,)
+        [ ${#B[@]} -eq 0 ] || sib=$(printf '%s\n' "${!B[@]}" | sort | paste -sd,)
     fi
     # The end minus the start; a dash when either is not a number, and for every word after a restart (the counters began again).
     for k in group_full_ms group_some_ms group_kills group_cap_kills box_full_ms box_some_ms box_kills box_limit_kills net_tx_timeouts net_link_changes; do
@@ -940,8 +941,44 @@ pod_events() {
     done
     [ "$why" = - ] || full=no
     printf 'events\tbox=%s\tid=%s\tengine=%s\tstate=%s\tcomplete=%s\twhy=%s\tstart=%s\tend=%s\tseconds=%s\texit=%s' "$box" "$id" "$eng" "$st" "$full" "$why" "$s" "$e" "$sec" "$ex"
-    printf '\tgroup_stall_ms=%s\tgroup_stall_some_ms=%s\tkills=%s\tkills_by_cap=%s\tbox_stall_ms=%s\tbox_stall_some_ms=%s\tbox_kills=%s\tbox_limit_kills=%s\tnet_tx_timeouts=%s\tnet_link_changes=%s\tothers=%s\n' \
-        "${D[group_full_ms]}" "${D[group_some_ms]}" "${D[group_kills]}" "${D[group_cap_kills]}" "${D[box_full_ms]}" "${D[box_some_ms]}" "${D[box_kills]}" "${D[box_limit_kills]}" "${D[net_tx_timeouts]}" "${D[net_link_changes]}" "$oth"
+    printf '\tgroup_stall_ms=%s\tgroup_stall_some_ms=%s\tkills=%s\tkills_by_cap=%s\tbox_stall_ms=%s\tbox_stall_some_ms=%s\tbox_kills=%s\tbox_limit_kills=%s\tnet_tx_timeouts=%s\tnet_link_changes=%s\tothers=%s\tsiblings=%s\n' \
+        "${D[group_full_ms]}" "${D[group_some_ms]}" "${D[group_kills]}" "${D[group_cap_kills]}" "${D[box_full_ms]}" "${D[box_some_ms]}" "${D[box_kills]}" "${D[box_limit_kills]}" "${D[net_tx_timeouts]}" "${D[net_link_changes]}" "$oth" "$sib"
+}
+
+# pod end <box> <run>: ends one detached run and nothing else (docs/pod-contract.md, "Ending a detached run"). Its processes carry
+# BOXD_CALL=run-<id> (set where the run starts), so the box's other runs and calls are not touched; then its process group on the host.
+# The wrapper dies before it writes its own ending, so the log gets the note, `EXIT 143` and the end snapshot here, unless the wrapper wrote them.
+# shortcut: the engine is read from the run's start snapshot (container when a run of an older server has none), when that matters: try both engines.
+pod_end() {
+    local box=${1:-} id=${2:-} f pf pg="" i eg ev
+    [[ $box =~ $BOX_RE ]] || die "bad box name"
+    [[ $id =~ $RUN_RE ]] || die "bad run id"
+    f=$WORK/jobs/$box/runs/$id.log pf=${f%.log}.pid ev=$WORK/cache/events/$box/$id
+    [ -f "$f" ] && [ ! -L "$f" ] || die "no run $id in box $box"
+    run_alive "$pf" || { echo "run $id in box $box has already ended"; return 0; }
+    CALL_T0=${EPOCHREALTIME//[!0-9]/} CALL_BOX=$box CALL_CMD="end $id"
+    eg=$(sed -n 's/^engine=//p' "$ev.start" 2>/dev/null); [ "$eg" = vm ] || eg=container
+    CALL_ENGINE=$eg
+    read -r pg < "$pf" 2>/dev/null
+    # The note goes in before anything is ended: a wrapper that still writes its own ending (exit 143 from a container, 255 from a machine) then follows it.
+    [ -z "$(tail -c 1 "$f")" ] || echo >>"$f"
+    echo "boxd: ended by box stop --run" >>"$f"
+    if [ "$eg" = vm ]; then timeout 30 msb exec -w / "pod-$box" -- sh -c "$CALL_KILL" _ "run-$id"
+    else timeout 30 podman exec "pod-$box" sh -c "$CALL_KILL" _ "run-$id"; fi </dev/null >/dev/null 2>&1
+    if [[ $pg =~ ^[1-9][0-9]*$ ]] && kill -TERM -- "-$pg" 2>/dev/null; then
+        for i in $(seq 50); do kill -0 -- "-$pg" 2>/dev/null || break; sleep 0.1; done
+        kill -KILL -- "-$pg" 2>/dev/null
+        for i in $(seq 50); do kill -0 -- "-$pg" 2>/dev/null || break; sleep 0.1; done
+    fi
+    if [ "$(run_exit "$f")" = - ]; then   # the wrapper wrote no ending of its own
+        [ -z "$(tail -c 1 "$f")" ] || echo >>"$f"
+        echo "EXIT 143" >>"$f"
+    fi
+    [ ! -e "$ev.start" ] || [ -e "$ev.end" ] || events_write "$ev.end" "$box" "$eg"
+    rm -f "$pf"
+    touch "$WORK/jobs/$box/.last-used" 2>/dev/null
+    echo "ended run $id in box $box"
+    logcall 0 "ended run $id"
 }
 
 # Megabytes a running box uses, a dash when unreadable. Container: memory.current of the cgroup of its init process ($1 is
@@ -1490,7 +1527,9 @@ pod_run() {
     for v in ${!BOXD_SECRET_*}; do unset "$v"; done
     local -a eu=()
     [ -z "$user" ] || eu=(--user "$(id -u):$(id -g)" -e HOME=/job/home)
-    if [ -n "$vm" ]; then eng=(msb exec --stream "${vu[@]}" "${ev[@]}" -w /job/src "$name" --); else eng=(podman exec "${eu[@]}" "${ev[@]}" -w /job/src "$name"); fi
+    # A detached run carries a marker as a foreground call does, so pod end finds its processes.
+    local -a mk=(); [ -z "$run" ] || mk=(-e "BOXD_CALL=run-$run")
+    if [ -n "$vm" ]; then eng=(msb exec --stream "${vu[@]}" "${ev[@]}" "${mk[@]}" -w /job/src "$name" --); else eng=(podman exec "${eu[@]}" "${ev[@]}" "${mk[@]}" -w /job/src "$name"); fi
 
     if [ -n "$run" ]; then
         : > "$J/runs/$run.log"
@@ -1659,6 +1698,7 @@ pod report             host, boxes, runs and images in one answer
 pod calls [offset]     the call log
 pod log <box> <run> [offset]         output of a detached run
 pod events <box> <run>               what could have disturbed a detached run
+pod end <box> <run>                  end one detached run, nothing else
 pod forward <box> <port>             connect to a port inside a box
 pod image ...          manage local images
 pod queue <box> box|vm <size>        ask for a place in the waiting line, start nothing
@@ -1715,6 +1755,7 @@ if [ -n "${SSH_ORIGINAL_COMMAND:-}" ]; then
         calls) [ ${#W[@]} -le 3 ] || die "unknown command"; pod_calls "${W[2]:-}" ;;
         log) [ ${#W[@]} -ge 4 ] && [ ${#W[@]} -le 5 ] || die "unknown command"; pod_log "${W[@]:2}" ;;
         events) [ ${#W[@]} -eq 4 ] || die "unknown command"; pod_events "${W[@]:2}" ;;
+        end) [ ${#W[@]} -eq 4 ] || die "unknown command"; pod_end "${W[@]:2}" ;;
         forward) [ ${#W[@]} -eq 4 ] || die "unknown command"; pod_forward "${W[2]}" "${W[3]}" ;;
         image) pod_image "${W[@]:2}" ;;
         queue) [ ${#W[@]} -ge 4 ] && [ ${#W[@]} -le 5 ] || die "unknown command"; pod_queue "${W[@]:2}" ;;

@@ -12,6 +12,7 @@
 //   box vnc [--host <name>] [--pod <name>] [--port <box-port>]
 //   box drop [--pod <name>] [--host <name>]
 //   box stop [--pod <name>] [--host <name>]
+//   box stop --run <run> [--pod <name>] [--host <name>]
 //   box gc [--dry-run]
 // Built with tsc-rs (see tsconfig.json); the emitted box.mjs is what runs.
 import { spawn, spawnSync } from "node:child_process";
@@ -21,7 +22,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-export const VERSION = "0.4.41";
+export const VERSION = "0.4.43";
 const BOX = /^[a-z0-9][a-z0-9_.-]{0,62}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const MAC = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i;
@@ -57,7 +58,7 @@ export const HELP = `usage: box [options] [--] <command...>
                                        "box log <run> --follow --tail 20" shows how an ended run ended, and exits with its code
        box log <run> --events [--pod <name>] [--host <name>]
                                        after a --detach run ended: the server's own record of what could have disturbed it (memory stalls, kills
-                                       for memory, network card stalls, other boxes busy), one key=value per line; exit 0 when the record covers the
+                                       for memory, network card stalls, other boxes busy, other runs of the same box: siblings), one key=value per line; exit 0 when the record covers the
                                        whole run, 3 when it does not (the reason on standard error, the lines still printed); excludes --follow, --tail, --state
        box forward [--host <name>] [--pod <name>] <local-port> <box-port>
                                        reach a port of this worktree's running container box (loopback inside it) on the loopback address here
@@ -72,6 +73,9 @@ export const HELP = `usage: box [options] [--] <command...>
        box stop [--pod <name>] [--host <name>]
                                        stops this worktree's box on the build server and frees its memory, and keeps its files and its record: the
                                        next call makes the box again on the same files (build outputs stay). Same guards as box drop
+       box stop --run <run> [--pod <name>] [--host <name>]
+                                       ends that one detached run and nothing else: the box keeps running, with its files and its other runs
+                                       (a run that already ended: nothing to do, exit 0). Not for box drop
        box gc [--dry-run]              the collector: removes the boxes and server files of this machine's worktrees that no longer exist (a worktree
                                        must be found missing by two passes 15 minutes apart), lists boxes that no worktree here
                                        owns ("unknown owner", nothing is touched) and reports commands running over 6 hours;
@@ -974,21 +978,40 @@ export function removedWords(out: string): string {
   return `${freed(out)}${m ? `; it needed ${m[1]} MB of its ${m[2]} MB at most${a ? ` (${a})` : ""}` : ""}`;
 }
 
+// box stop --run <id>: `pod end <box> <run>` ends that one detached run; the box and its other runs go on. Resolved as box log does, no probe, no wake.
+function endRunCall(HOST: string, box: string, run: string): number {
+  const host = HOST.replace(/^boxd-/, ""), r = spawnSync("ssh", [HOST, `pod end ${box} ${run}`], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 1 << 20 });
+  if (r.status !== 0) {
+    if (/unknown command/.test(r.stderr)) { process.stderr.write("box stop: this build server is older than run ending: box stop --run needs an upgrade\n"); return 125; }
+    process.stderr.write(r.stderr);
+    return r.status ?? 1;
+  }
+  const out = r.stdout.trim();
+  if (out === `ended run ${run} in box ${box}`) process.stdout.write(`box stop: ended run ${run} in box ${box} on ${host}; the box keeps running\n`);
+  else if (out === `run ${run} in box ${box} has already ended`) process.stdout.write(`box stop: run ${run} in box ${box} on ${host} has already ended; nothing to do\n`);
+  else { process.stderr.write("box stop: the server's answer is not an ending\n"); return 1; }
+  return 0;
+}
+
 // box drop and box stop share this: drop is the collector's removal for this worktree's box, asked for. Never wakes a host, never removes a box with a command in it
 // (no force: the collector removes a box under a live run only after the worktree is gone, this is a person's call from inside it).
 // pod drop answers 0 for a box the host no longer has (only the folder, or nothing, to remove), so a reaped box is cleaned too.
 // box stop (mode "stop") asks pod stop instead: the box goes, its folder and the record here stay, and a host that lists no box has nothing to stop.
 async function dropCall(args: string[], env: Env, mode: "drop" | "stop" = "drop"): Promise<number> {
   const cmd = `box ${mode}`, nothing = mode === "stop" ? "nothing stopped" : "nothing removed";
-  let hostFlag: string | undefined, pod: string | undefined;
+  let hostFlag: string | undefined, pod: string | undefined, run: string | undefined;
   for (let i = 0; i < args.length; i++) {
     const a = args[i] as string, v = args[i + 1];
     if (a === "--help" || a === "-h") { process.stdout.write(`${HELP}\n`); return 0; }
     if ((a === "--host" || a === "--pod") && v !== undefined) { if (a === "--host") hostFlag = v; else pod = v; i++; }
+    else if (a === "--run" && v !== undefined && mode === "stop") { run = v; i++; }
+    else if (a === "--run" && mode === "drop") return usage("box drop: --run belongs to box stop (box stop --run <id> ends one detached run)");
     else return usage(`${cmd}: unknown option ${a}`);
   }
+  if (run !== undefined && !/^[A-Za-z0-9_.-]{1,64}$/.test(run)) return usage("box stop: --run needs the run id (the one box --detach printed)");
   const t = readTarget(hostFlag, pod, env);
   if (typeof t === "string") return usage(t);
+  if (run !== undefined) return endRunCall(t.HOST, t.box, run);
   const host = t.HOST.replace(/^boxd-/, ""), refuse = (m: string) => { process.stderr.write(`${cmd}: ${m}\n`); return 1; };
   const worktree = spawnSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).stdout.trim() || "-";
   // --pod can name any box: only one this machine recorded, for this worktree or for one that is gone, is removed (its files go with it).
@@ -1007,7 +1030,12 @@ async function dropCall(args: string[], env: Env, mode: "drop" | "stop" = "drop"
     const rep = await ask(host, "pod report"), row = rep.code === 0 ? rep.out.split("\n").filter((l) => l.startsWith("box\t")).map(parseStatus).find((k) => k.box === t.box && k.busy !== undefined) : undefined;
     const procs = row ? { code: 0, out: row.busy === "yes" ? "busy" : "" } : await ask(host, `pod ps ${t.box}`);
     if (procs.code !== 0) return refuse(`${host}: pod ps failed (exit ${procs.code}); ${nothing}`);
-    if (procs.out.trim()) return refuse(`box ${t.box} on ${host} still has a command running in it; ${nothing}`);
+    if (procs.out.trim()) {
+      // The server's report names the box's running detached runs: the way out is to end one of them.
+      const live = rep.code === 0 ? rep.out.split("\n").filter((l) => l.startsWith("run\t")).map(parseStatus).filter((k) => k.box === t.box && k.state === "running" && /^[A-Za-z0-9_.-]{1,64}$/.test(k.id ?? "")) : [];
+      const hint = live.length ? `; end a detached run with: box stop --run ${live[0]!.id}${live.length > 1 ? ` (and ${live.length - 1} more)` : ""}` : "";
+      return refuse(`box ${t.box} on ${host} still has a command running in it; ${nothing}${hint}`);
+    }
   }
   const dropped = await ask(host, `pod ${mode} ${t.box}`);
   if (dropped.code !== 0) return refuse(`${host}: ${mode === "stop" ? "stopping" : "removing"} ${t.box} failed (exit ${dropped.code}); record kept`);

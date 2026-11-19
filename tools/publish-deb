@@ -27,10 +27,11 @@ base=$url/api/packages/$owner/debian
 
 # A status code from curl; the body is not needed.
 # curl's own failure (reset, timeout) must not end the script silently under set -e: -S prints its error, and the code read is then 000.
-code() { curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: token $GITEA_TOKEN" "$@" || true; }
-# An upload the connection cut (000) is sent again, twice at most: the registry takes about 40 seconds to index one package and a
-# proxy in between may cut it. A cut upload that did arrive answers 409 the next time, which the caller handles.
-put() { local c n; for n in 1 2 3; do c=$(code -X PUT --upload-file "$1" "$base/pool/$dist/$comp/upload"); [ "$c" = 000 ] || break; done; echo "$c"; }
+# A request the connection cut (000) is sent again, three sends at most: the registry takes about 40 seconds to index one package and a
+# proxy in between may cut it. A cut upload that did arrive answers 409 the next time, and a cut delete that did arrive answers 404:
+# the caller handles both.
+code() { local c n; for n in 1 2 3; do c=$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: token $GITEA_TOKEN" "$@" || true); [ "$c" = 000 ] || break; done; echo "$c"; }
+put() { code -X PUT --upload-file "$1" "$base/pool/$dist/$comp/upload"; }
 
 for f in "$@"; do
 	name=$(basename "$f" .deb)               # <package>_<version>_<architecture>
@@ -38,7 +39,7 @@ for f in "$@"; do
 	put=$(put "$f")
 	if [ "$put" = 409 ]; then
 		del=$(code -X DELETE "$base/pool/$dist/$comp/$pkg/$ver/$arch")
-		[ "$del" = 204 ] || { echo "publish-deb: delete of $name answered $del" >&2; exit 1; }
+		[ "$del" = 204 ] || [ "$del" = 404 ] || { echo "publish-deb: delete of $name answered $del" >&2; exit 1; }
 		put=$(put "$f")
 	fi
 	[ "$put" = 201 ] || { echo "publish-deb: upload of $name answered $put" >&2; exit 1; }

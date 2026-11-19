@@ -65,7 +65,10 @@ case $1 in
     start) read -r img _ u < "$FAKE_STATE/$2"; echo "$img running${u:+ $u}" > "$FAKE_STATE/$2" ;;
     rm) case $2 in -af) rm -f "$FAKE_STATE"/pod-* ;; *) last "$@"; rm -f "$FAKE_STATE/$n" ;; esac ;;
     exec)
-        case "$*" in *boxd-call-cleanup*) [ -z "${FAKE_CLEAN:-}" ] || echo cleaned > "$FAKE_CLEAN"; exit 0 ;; esac
+        # FAKE_CLEAN_ENDS=<run log>: the cleanup ends the blocked command, as a real engine does, and returns once the wrapper wrote its own EXIT
+        case "$*" in *boxd-call-cleanup*) [ -z "${FAKE_CLEAN:-}" ] || echo cleaned > "$FAKE_CLEAN"
+            [ -z "${FAKE_CLEAN_ENDS:-}" ] || { echo go > "$FAKE_REL"; until grep -q '^EXIT' "$FAKE_CLEAN_ENDS" 2>/dev/null; do sleep 0.05; done; }
+            exit 0 ;; esac
         [ -z "${FAKE_EXEC_OUT:-}" ] || echo "$FAKE_EXEC_OUT"
         [ -z "${FAKE_BLOCK_EXEC:-}" ] || block exec-blocked
         # FAKE_EXEC_CRASH=<n>: the kernel killed a process meanwhile, the out-of-memory kill counter then reads n
@@ -467,8 +470,8 @@ kill "$tp" 2>/dev/null; exec 4<&-
 eq "detach: log holds the output, then EXIT with the code" "hello|EXIT 3" "$(paste -sd'|' "$W/jobs/$box/runs/$run.log")"
 eq "detach: the group record is gone once the run ended" no "$([ -e "$W/jobs/$box/runs/$run.pid" ] && echo yes || echo no)"
 eq "detach: ran under boxd-keepawake" boxd-keepawake "$(cat "$FAKE_KEEP")"
-eq "detach: no session marker" 0 "$(grep -c BOXD_CALL "$FAKE_LOG")"
-eq "detach: exec has no -i and no terminal" "exec -w /job/src pod-$box cargo test -p my crate" "$(grep '^exec' "$FAKE_LOG")"
+eq "detach: the command carries the run's own marker, so pod end finds it" 1 "$(grep -c "BOXD_CALL=run-$run " "$FAKE_LOG")"
+eq "detach: exec has no -i and no terminal" "exec -e BOXD_CALL=run-$run -w /job/src pod-$box cargo test -p my crate" "$(grep '^exec' "$FAKE_LOG")"
 eq "detach: last-used refreshed when the run ends" yes "$([ "$(stat -c %Y "$W/jobs/$box/.last-used")" -gt 100 ] && echo yes || echo no)"
 unset FAKE_EXEC_OUT FAKE_EXEC_EXIT FAKE_BLOCK_EXEC
 
@@ -553,7 +556,7 @@ eq "detach, machine killed by the out-of-memory killer: the log says so, then EX
     "$(vmrun 20261115-131105-0517 3 4)"
 eq "detach, machine ended otherwise: the log says it ended" "boxd: the virtual machine of box $box ended under this run|EXIT 1" "$(vmrun 20261115-131105-0518 3 3)"
 eq "detach, machine still alive: no note, only EXIT" "EXIT 1" "$(vmrun 20261115-131105-0519 3 alive)"
-eq "detach in a machine: the command is started with --stream, so the log grows while it runs (without it the engine writes at the end)" 1 "$(grep -c "^exec --stream -w /job/src pod-$box -- sh -c " "$FAKE_MSB_LOG")"
+eq "detach in a machine: the command is started with --stream, so the log grows while it runs (without it the engine writes at the end)" 1 "$(grep -c "^exec --stream -e BOXD_CALL=run-[^ ]* -w /job/src pod-$box -- sh -c " "$FAKE_MSB_LOG")"
 setup; mkdir -p "$BOXD_CGROOT/boxd"; printf 'oom_kill 3\n' > "$BOXD_CGROOT/boxd/memory.events"
 FAKE_EXEC_CRASH=4 FAKE_EXEC_EXIT=1 pod "pod run $box --vm -- $B64"
 eq "foreground, machine killed: the note on standard error, the command's code kept" \
@@ -1086,7 +1089,7 @@ printf 'ssh-ed25519 %s dashboard\n' "$KEYA" > "$W/view_keys"
 for v in "pod status" "pod list" "pod report" "pod calls" "pod calls 0" "pod log boxd-2889387319 r1 0" "pod events boxd-2889387319 r1" "pod ps nobox"; do
     pod "$v"; eq "view keys: '$v' is not refused for being a write" 0 "$(grep -c 'may only read' "$T/e/err")"
 done
-for v in "pod clear" "pod reap" "pod image has container docker.io/library/busybox:stable 0123456789ab" "pod run x --detach r1 -- $B64" "podman ps" "ls"; do
+for v in "pod end x r1" "pod clear" "pod reap" "pod image has container docker.io/library/busybox:stable 0123456789ab" "pod run x --detach r1 -- $B64" "podman ps" "ls"; do
     pod "$v"; eq "view keys: '${v:0:30}' is refused" "125 boxd-pod: this key may only read" "$rc $(cat "$T/e/err")"
 done
 printf 'publickey ssh-ed25519 %s\n' "${KEYA%view}" > "$W/auth"; pod "pod run $box -- $B64"; eq "view keys: a key that only begins like a listed one keeps every command" 0 "$rc"
@@ -1394,6 +1397,31 @@ eq "event record: after the end there are both" "yes" "$([ -e "$EV/20261118-1000
 # on a real host the work area belongs to root and the build account owns only what is in it: the record must not need a new folder at its top (0.4.39 wrote none there)
 evsetup; mkdir -p "$W/home" "$W/tmp" "$W/cache" "$W/jobs"; chmod 555 "$W"; pod "pod run $box --detach 20261118-100000-0003 -- $B64"; evwait 20261118-100000-0003; chmod 755 "$W"
 eq "event record: written when the work area's top folder cannot be written" "yes" "$([ -e "$W/cache/events/$box/20261118-100000-0003.end" ] && echo yes || echo no)"
+# pod end: one detached run of two in a box is ended; the other and the box go on
+evsetup; export FAKE_BLOCK_EXEC=1; RA=20261119-100000-0001; RB=20261119-100000-0002; R=$W/jobs/$box/runs; EV=$W/cache/events/$box
+pod "pod run $box --detach $RA -- $B64"; read -r _ <&3
+pod "pod run $box --detach $RB -- $B64"; read -r _ <&3
+pga=$(cat "$R/$RA.pid")
+pod "pod end $box $RA"; eq "pod end: one line, exit 0" "0 ended run $RA in box $box" "$rc $(cat "$T/e/out")"
+eq "pod end: the wrapper's group is gone, and its record" "gone no" "$(kill -0 -- "-$pga" 2>/dev/null && echo alive || echo gone) $([ -e "$R/$RA.pid" ] && echo yes || echo no)"
+eq "pod end: the log ends with the note and exactly one EXIT 143" "boxd: ended by box stop --run|EXIT 143|1" "$(tail -n 2 "$R/$RA.log" | paste -sd'|')|$(grep -c '^EXIT' "$R/$RA.log")"
+eq "pod end: the cleanup ran in the box with the run's own marker" 1 "$(grep -c "boxd-call-cleanup.* _ run-$RA\$" "$FAKE_LOG")"
+pod "pod log $box $RA 0"; eq "pod end: pod log says ended with exit 143" "state=ended	exit=143" "$(head -n 1 "$T/e/out" | cut -f5-6)"
+eq "pod end: the end snapshot of the event record is there" yes "$([ -e "$EV/$RA.end" ] && echo yes || echo no)"
+pod "pod events $box $RA"; eq "pod end: pod events answers for the window up to the end, the other run is a sibling" "state=ended complete=yes exit=143 siblings=$RB" "$(tr '\t' '\n' < "$T/e/out" | grep -E '^(state|complete|exit|siblings)=' | paste -sd' ')"
+pod "pod log $box $RB 0"; eq "pod end: the second run keeps running" "state=running" "$(head -n 1 "$T/e/out" | cut -f5)"
+eq "pod end: the box is still there" 1 "$(grep -c "^run -d" "$FAKE_LOG")"; eq "pod end: the box was not stopped or removed" 0 "$(grep -c '^rm \|^stop ' "$FAKE_LOG")"
+sum=$(md5sum < "$R/$RA.log"); pod "pod end $box $RA"; eq "pod end: a run that ended: the line says so, exit 0, nothing changed" "0 run $RA in box $box has already ended $sum" "$rc $(cat "$T/e/out") $(md5sum < "$R/$RA.log")"
+pod "pod log $box nosuch 0"; want="$rc $(cat "$T/e/err")"; pod "pod end $box nosuch"; eq "pod end: an unknown run is refused as pod log refuses it" "$want" "$rc $(cat "$T/e/err")"
+pod "pod log $box ../x 0"; want="$rc $(cat "$T/e/err")"; pod "pod end $box ../x"; eq "pod end: a bad run id is refused as pod log refuses it" "$want" "$rc $(cat "$T/e/err")"
+pod "pod log Bad-Name $RA 0"; want="$rc $(cat "$T/e/err")"; pod "pod end Bad-Name $RA"; eq "pod end: a bad box name is refused as pod log refuses it" "$want" "$rc $(cat "$T/e/err")"
+echo go > "$FAKE_REL"; evwait "$RB"; unset FAKE_BLOCK_EXEC
+eq "pod end: the run that was not ended ended by itself with its own EXIT" "1" "$(grep -c '^EXIT' "$R/$RB.log")"
+# pod end on a real host: the command ends under the cleanup and the wrapper writes its own EXIT first; the note must already be in the log, before it
+evsetup; export FAKE_BLOCK_EXEC=1 FAKE_EXEC_EXIT=77; RC=20261119-100000-0003; R=$W/jobs/$box/runs; export FAKE_CLEAN_ENDS=$R/$RC.log
+pod "pod run $box --detach $RC -- $B64"; read -r _ <&3
+pod "pod end $box $RC"; unset FAKE_BLOCK_EXEC FAKE_EXEC_EXIT FAKE_CLEAN_ENDS
+eq "pod end, wrapper ends first: the note, then the wrapper's own EXIT, and no other EXIT" "boxd: ended by box stop --run|EXIT 77|1" "$(tail -n 2 "$R/$RC.log" | paste -sd'|')|$(grep -c '^EXIT' "$R/$RC.log")"
 # a machine box: the four words of an own group are dashes
 setup; mkdir -p "$BOXD_CGROOT/boxd"; CASE_ENV=(BOXD_ROUTE="$T/e/noroute" BOXD_NET="$T/e/nonet"); printf 'oom 0\noom_kill 3\n' > "$BOXD_CGROOT/boxd/memory.events"
 pod "pod run $box --vm --detach 20261118-100000-0003 -- $B64"; evwait 20261118-100000-0003
