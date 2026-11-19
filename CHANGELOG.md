@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.48
+
+- The shared caches and unused images are cleaned by age, once a day, without waiting for the disk to fill. Until now they went only under disk pressure, and some never. What goes when it is older than `BOXD_KEEP_DAYS`: files of the shared package caches (`/cache` of the boxes), saved image archives of boxes that no longer exist, and images that no box uses. What stays: the host's own shared images (those with an archive in `BOXD_IMAGES_DIR`), the built image of a box whose folder exists, and any image that an existing box folder names, so a stopped box does not pull its image again.
+- Each kind that removed something writes one line to the removal log, as box removals do.
+
 ## 0.4.47
 
 - A detached run started in a box that already has a detached run going says so: `boxd-pod: run <id> is still going in this box; both use the same /job/src`. The run starts as before. Two runs in one box share its source folder, and nothing told the caller.

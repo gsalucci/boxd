@@ -108,7 +108,7 @@ test("a poll of an awake host asks by address and port, with no alias, no shared
     `${l.port} -F /dev/null -i ${key} -o BatchMode=yes -o ConnectTimeout=3 -o IdentitiesOnly=yes -o ControlMaster=no -o ControlPath=none -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=${r.settings.stateDir}/known_hosts -p ${l.port} -- build@127.0.0.1 pod calls`,
   ]);
   const d = (await r.get(svc, "/api/fleet.json")).json();
-  assert.deepEqual([d.hosts[0].state, d.hosts[0].version, d.boxes.length, d.calls.length, d.version], ["awake", "0.4.47", 4, 11, "0.4.47"]);
+  assert.deepEqual([d.hosts[0].state, d.hosts[0].version, d.boxes.length, d.calls.length, d.version], ["awake", "0.4.48", 4, 11, "0.4.48"]);
 });
 
 test("exit 125 from pod report (a server on 0.2.0) falls back to pod status and pod list, reads no call log, and says so", async () => {
@@ -177,7 +177,7 @@ test("a host that stops answering is served with its last known values, marked s
   await svc.poll();
   assert.equal(calls().length, start, "no ssh to a host that does not answer");
   const d = (await r.get(svc, "/api/fleet.json")).json(), h = d.hosts[0];
-  assert.deepEqual([h.state, h.stale, h.seenAt, h.sinceAt, h.load, h.version, d.boxes.length], ["asleep", true, seen, r.clock.t, [17.42, 9.1, 6.85], "0.4.47", 4]);
+  assert.deepEqual([h.state, h.stale, h.seenAt, h.sinceAt, h.load, h.version, d.boxes.length], ["asleep", true, seen, r.clock.t, [17.42, 9.1, 6.85], "0.4.48", 4]);
   assert.equal(d.alerts.some((a: any) => a.kind === "unreachable"), false);
 });
 

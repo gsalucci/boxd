@@ -81,6 +81,7 @@ case $1 in
         [ -z "${FAKE_FWD_PROBE:-}" ] || { flock -n -x "$FAKE_FWD_PROBE" true && echo free || echo busy; } > "$FAKE_FWD_PROBE.probe"
         [ -z "${FAKE_FWD_OUT:-}" ] || printf %s "$FAKE_FWD_OUT"
         exit "${FAKE_FWD_EXIT:-0}" ;;
+    rmi) [ "${FAKE_RMI_REFUSE:-}" != "$2" ] || exit 1 ;;   # an image a box uses is refused, as the real engine does
     images) cat "${FAKE_IMAGE_LIST:-/dev/null}" ;;   # the named images of the store, one reference per line
     ps)
         [ -z "${FAKE_PS_EXIT:-}" ] || { echo "Error: database is locked" >&2; exit "$FAKE_PS_EXIT"; }   # a failing listing
@@ -125,7 +126,7 @@ case $1 in
         # as the real engine does: its own progress line on standard error (seen on laptop, 2026-11-17); FAKE_RM_EXIT makes the removal fail
         [ -z "${FAKE_RM_EXIT:-}" ] || { echo "  x Failed             $n" >&2; exit "$FAKE_RM_EXIT"; }
         rm -f "$FAKE_VM_STATE/$n"; echo "  ✓ Removed             $n" >&2 ;;
-    image) case $2 in ls) cat "${FAKE_VM_IMAGE_LIST:-/dev/null}"; exit 0 ;; rm) exit 0 ;; esac   # the cached images: a header, then "<reference> <digest> <size> <created>"
+    image) case $2 in ls) cat "${FAKE_VM_IMAGE_LIST:-/dev/null}"; exit 0 ;; rm) [ "${FAKE_RMI_REFUSE:-}" != "$3" ] || exit 1; exit 0 ;; esac   # the cached images: a header, then "<reference> <digest> <size> <created>"
         last "$@"; cat "$FAKE_VM_IMAGES/$(echo "$n" | tr / _)" 2>/dev/null || exit 1 ;;   # inspect prints the image id
     load) f=$(readlink /proc/$$/fd/0)
         if [ -s "$f" ]; then read -r r i < "$f"; echo "$i" > "$FAKE_VM_IMAGES/$(echo "$r" | tr / _)"
@@ -1216,6 +1217,39 @@ echo 95 > "$FAKE_DF"; reapnow 100000; reapnow 100000; reapnow 100000
 eq "pressure: a folder used within the box lifetime is never taken, however full the disk" "live" "$(folders)"
 : > "$FAKE_DF"; reapnow 100000; eq "pressure: an unreadable fill level removes nothing and the reaper still exits 0" "0 live" "$rc $(folders)"
 unset FAKE_DF
+
+# Retention of the shared caches and images by age: once a day, at any fill level (evict_daily).
+setup; : > "$BOXD_POD_CLEAN"; day=86400; export FAKE_DF=$T/e/df; echo 10 > "$FAKE_DF"
+mkdir -p "$W/cache/pod/m2" "$W/cache/images" "$W/jobs/live/src" "$BOXD_IMAGES_DIR"; touch -d @$((39 * day)) "$W/jobs/live/.last-used"
+touch -d @100 "$W/cache/pod/m2/old.jar"; : > "$W/cache/pod/m2/new.jar"
+touch -d @100 "$W/cache/images/built-gone.tar" "$W/cache/images/built-live.tar" "$W/cache/images/agent.tar"; : > "$W/cache/images/built-gone2.tar"
+: > "$BOXD_IMAGES_DIR/toolbox.tar"
+printf 'engine=container\nimage=docker.io/library/kept:1\n' > "$W/jobs/live/.kind"; mkdir -p "$W/jobs/live2/src"; printf 'engine=container\nimage=docker.io/library/kept2\n' > "$W/jobs/live2/.kind"
+touch -d @$((39 * day)) "$W/jobs/live2/.last-used"
+old='1970-01-02 00:00:00 +0000 UTC'; young='1970-02-05 00:00:00 +0000 UTC'
+printf '%s\t%s\n' docker.io/library/old:1 "$old" localhost/toolbox:latest "$old" localhost/built-live:latest "$old" localhost/built-gone:latest "$old" \
+    docker.io/library/young:1 "$young" docker.io/library/used:1 "$old" docker.io/library/nodate:1 "" docker.io/library/kept:1 "$old" docker.io/library/kept2:latest "$old" > "$T/e/imglist"
+printf '%s\n' 'REFERENCE DIGEST SIZE CREATED' "docker.io/library/vmold:1 sha256:a 1.0 GiB 1970-01-02" "localhost/toolbox sha256:b 3.7 GiB 1970-01-02" \
+    "docker.io/library/vmyoung:1 sha256:c 1.0 GiB 1970-02-05" > "$T/e/vmimglist"
+export FAKE_IMAGE_LIST=$T/e/imglist FAKE_VM_IMAGE_LIST=$T/e/vmimglist FAKE_RMI_REFUSE=docker.io/library/used:1
+now=$((40 * day)); : > "$FAKE_LOG"; : > "$FAKE_MSB_LOG"
+rm -f "$BOXD_POD_CLEAN"; reapnow $now
+eq "daily pass: nothing runs before the boot clear of the machines" "no|2|0" "$([ -e "$W/cache/.evicted-daily" ] && echo yes || echo no)|$(ls "$W/cache/pod/m2" | wc -l)|$(grep -c '^rmi' "$FAKE_LOG")"
+: > "$BOXD_POD_CLEAN"; : > "$FAKE_LOG"; : > "$FAKE_MSB_LOG"
+reapnow $now
+eq "daily pass: an old cache file goes without disk pressure, a newer one stays" "m2/new.jar" "$(cd "$W/cache/pod" && find . -type f | sed 's|^\./||' | paste -sd' ')"
+eq "daily pass: the old archive of a gone box and the old archive tied to no box go, the archive of an existing box and a young one stay" "built-gone2.tar built-live.tar" "$(ls "$W/cache/images" | paste -sd' ')"
+eq "daily pass: images by age: old unused ones go (an old image a box uses is refused and stays), the shared one with an archive, the built image of an existing box, a young one and one without a date stay" \
+    "rmi docker.io/library/old:1|rmi localhost/built-gone:latest|rmi docker.io/library/used:1" "$(grep '^rmi' "$FAKE_LOG" | paste -sd'|')"
+eq "daily pass: the machine store the same (no dangling prune, no record removal by age)" "image rm docker.io/library/vmold:1|0" "$(grep '^image rm' "$FAKE_MSB_LOG" | paste -sd'|')|$(grep -c 'image prune' "$FAKE_LOG")"
+eq "daily pass: each kind is one line in evictions.log" "cache	older than 14 days, 1 files|image-archives	older than 14 days, 2 files|images	older than 14 days, 3 images" "$(cut -f2- "$W/cache/evictions.log" | paste -sd'|')"
+eq "daily pass: the line's time is the reaper's clock" "$now" "$(head -1 "$W/cache/evictions.log" | cut -f1)"
+touch -d @100 "$W/cache/pod/m2/second.jar"; : > "$FAKE_LOG"; reapnow $((now + 60))
+eq "daily pass: not again within the day" "m2/second.jar yes" "$(cd "$W/cache/pod" && find . -name second.jar | sed 's|^\./||') $([ -z "$(grep '^rmi' "$FAKE_LOG")" ] && echo yes)"
+touch -d "@$((now - day - 1))" "$W/cache/.evicted-daily"; : > "$FAKE_LOG"; rm -r "$W/jobs/live" "$W/jobs/live2"; reapnow $((now + 60))
+eq "daily pass: an old image a box folder records stays (also recorded without a tag); once the folders are gone it goes" "rmi localhost/built-live:latest|rmi docker.io/library/kept:1|rmi docker.io/library/kept2:latest" "$(grep -E '^rmi .*(kept|built-live)' "$FAKE_LOG" | paste -sd'|')"
+eq "daily pass: again once the stamp is older than a day" "m2/new.jar" "$(cd "$W/cache/pod" && find . -type f | sed 's|^\./||' | paste -sd' ')"
+unset FAKE_DF FAKE_IMAGE_LIST FAKE_VM_IMAGE_LIST FAKE_RMI_REFUSE
 
 # pod drop: the client's collector removes the box and the folder of a worktree that is gone.
 setup; mkdir -p "$W/cache"

@@ -21,7 +21,7 @@ PROC=${BOXD_PROC:-/proc}   # test hook, like BOXD_MEMINFO: where `pod report` fi
 KVM=${BOXD_KVM:-/dev/kvm}   # test hook: the device a --kvm box gets
 ROUTE=${BOXD_ROUTE:-/proc/net/route}   # test hooks: the routing table and the network interface folder `pod report` reads
 NETDIR=${BOXD_NET:-/sys/class/net}
-VERSION=0.4.47
+VERSION=0.4.48
 # Keys that may only read, one "<type> <key> [comment]" per line (view_only below); and the largest answer of pod calls and pod log.
 VIEW_KEYS=${BOXD_VIEW_KEYS:-/etc/boxd/view_keys}
 READ_MAX=${BOXD_READ_MAX:-1048576}
@@ -664,29 +664,73 @@ drop_box() {
         echo "evicted $box ($2)$need${mb:+, $mb MB freed}"
     )
 }
-# Images under disk pressure: every named image goes unless a box uses it (the engines refuse those themselves) or it is the
-# built image of a box whose folder is still here; then the dangling layers. All of them come back by themselves: pulled
-# again, loaded again from BOXD_IMAGES_DIR, built again from the Containerfile. An image sent with `box image push` must be
-# pushed again (`pod image has` then answers no).
-# shortcut: images go only under disk pressure, not by age (6 GB of 953 on the tower, 2026-11-14); when they fill a disk that folders do not: a last-use stamp per image.
-evict_images() {
-    local ref b
-    while IFS= read -r ref; do
-        [[ $ref == *"<none>"* || -z $ref ]] && continue
-        [[ $ref =~ ^localhost/built-(.+):latest$ ]] && [ -d "$WORK/jobs/${BASH_REMATCH[1]}" ] && continue
-        podman rmi "$ref" </dev/null >/dev/null 2>&1
-    done < <(podman images --format '{{.Repository}}:{{.Tag}}' </dev/null 2>/dev/null)
-    podman image prune -f </dev/null >/dev/null 2>&1
-    have_msb || return 0
-    while read -r ref _; do
-        [ -n "$ref" ] && [ "$ref" != REFERENCE ] || continue
-        [[ $ref =~ ^localhost/built-(.+):latest$ ]] && [ -d "$WORK/jobs/${BASH_REMATCH[1]}" ] && continue
-        vmx image rm "$ref" </dev/null >/dev/null 2>&1
-    done < <(vmx image ls </dev/null 2>/dev/null)
-    find "$WORK/cache" -maxdepth 1 -name 'pushed-vm-*' -type f -delete
+# Images: under disk pressure (no argument) every named image goes unless a box uses it (the engines refuse those themselves) or it is
+# the built image of a box whose folder is still here; then the dangling layers. With an age (evict_images <days> <now>, the daily pass)
+# only an image created before that many days goes, and never a shared image that has an archive in BOXD_IMAGES_DIR (it is loaded
+# again only at need and the next box would wait for it). All of them come back by themselves: pulled again, loaded again from
+# BOXD_IMAGES_DIR, built again from the Containerfile. An image sent with `box image push` must be pushed again (`pod image has`
+# then answers no). GONE counts what the engines removed. In the daily pass an image a box folder records stays too (see kept_images).
+# shortcut: an image's age is its creation date, not its last use, so a freshly pulled old image goes when no box uses it; when that costs pulls: a last-use stamp per image.
+GONE=0 KEPT=
+# <ref> with :latest when it has no tag, the one form both sides of a comparison are brought to (a recorded or listed reference may lack it).
+tagged() { case ${1##*/} in *:*) printf %s "$1" ;; *) printf %s:latest "$1" ;; esac; }
+# The images the existing box folders record (.kind) and the default image, one per line: a stopped box starts again from its record.
+kept_images() {
+    local k line
+    tagged "$DEFAULT_IMAGE"; echo
+    while IFS= read -r k; do   # find, not a pattern: this script runs with set -f
+        while IFS= read -r line; do case $line in image=*) tagged "${line#image=}"; echo ;; esac; done <"$k"
+    done < <(find "$WORK/jobs" -mindepth 2 -maxdepth 2 -name .kind -type f 2>/dev/null)
 }
-# The shared package caches under disk pressure: files not written for the retention time go (a tool downloads them again).
-evict_caches() { [ ! -d "$WORK/cache/pod" ] || podman unshare find "$WORK/cache/pod" -type f -mtime "+$KEEP_DAYS" -delete </dev/null 2>/dev/null; }
+image_goes() {   # <ref> <created> <days> <now>: 0 when the daily pass may remove it
+    local ref=$1 name t
+    [[ $ref =~ ^localhost/built-(.+):latest$ ]] && [ -d "$WORK/jobs/${BASH_REMATCH[1]}" ] && return 1
+    [ -n "${3:-}" ] || return 0
+    case "$KEPT" in *$'\n'"$(tagged "$ref")"$'\n'*) return 1 ;; esac
+    case $ref in localhost/*) name=${ref#localhost/}; [ ! -e "$IMAGES/${name%%:*}.tar" ] || return 1 ;; esac
+    t=$(date -d "${2% UTC}" +%s 2>/dev/null) && [ $((${4} - t)) -gt $((${3} * 86400)) ]   # no readable date: it stays
+}
+evict_images() {
+    local ref created
+    while IFS=$'\t' read -r ref created; do
+        [[ $ref == *"<none>"* || -z $ref ]] && continue
+        image_goes "$ref" "$created" "${1:-}" "${2:-}" || continue
+        ! podman rmi "$ref" </dev/null >/dev/null 2>&1 || GONE=$((GONE + 1))
+    done < <(podman images --format '{{.Repository}}:{{.Tag}}\t{{.CreatedAt}}' </dev/null 2>/dev/null)
+    [ -n "${1:-}" ] || podman image prune -f </dev/null >/dev/null 2>&1
+    have_msb || return 0
+    while read -r ref _ _ _ created; do
+        [ -n "$ref" ] && [ "$ref" != REFERENCE ] || continue
+        image_goes "$ref" "$created" "${1:-}" "${2:-}" || continue
+        ! vmx image rm "$ref" </dev/null >/dev/null 2>&1 || GONE=$((GONE + 1))
+    done < <(vmx image ls </dev/null 2>/dev/null)
+    [ -n "${1:-}" ] || find "$WORK/cache" -maxdepth 1 -name 'pushed-vm-*' -type f -delete
+}
+# The shared package caches: files not written for the retention time go (a tool downloads them again). One size per file on standard output.
+evict_caches() { [ ! -d "$WORK/cache/pod" ] || podman unshare find "$WORK/cache/pod" -type f -mtime "+$KEEP_DAYS" -printf '%s\n' -delete </dev/null 2>/dev/null; }
+# The image archives of boxes (cache/images): built-<box>.tar belongs to the box <box> and stays while its folder is here; any
+# other archive (a pushed image's temporary file, an agent's own image) cannot be tied to a box, age alone decides.
+evict_archives() {
+    local f
+    find "$WORK/cache/images" -maxdepth 1 -type f -mtime "+$KEEP_DAYS" -printf '%f\n' 2>/dev/null | while IFS= read -r f; do
+        [[ $f =~ ^built-(.+)\.tar$ ]] && [ -d "$WORK/jobs/${BASH_REMATCH[1]}" ] && continue
+        rm -f -- "$WORK/cache/images/$f" && echo "$f"
+    done
+}
+# The daily pass: at most once in 24 hours by the stamp's own time, the first pass after an install at once. Each kind that
+# removed something is one line in evictions.log.
+evict_daily() {
+    local now=$1 stamp=$WORK/cache/.evicted-daily n
+    [ ! -e "$stamp" ] || [ $((now - $(stat -c %Y "$stamp" 2>/dev/null || echo 0))) -ge 86400 ] || return 0
+    touch -d "@$now" "$stamp" || return 0
+    n=$(evict_caches | wc -l)
+    [ "$n" -eq 0 ] || printf '%s\tcache\tolder than %s days, %s files\n' "$now" "$KEEP_DAYS" "$n" >> "$WORK/cache/evictions.log"
+    n=$(evict_archives | wc -l)
+    [ "$n" -eq 0 ] || printf '%s\timage-archives\tolder than %s days, %s files\n' "$now" "$KEEP_DAYS" "$n" >> "$WORK/cache/evictions.log"
+    GONE=0 KEPT=$'\n'$(kept_images)$'\n'; evict_images "$KEEP_DAYS" "$now"; KEPT=
+    [ "$GONE" -eq 0 ] || printf '%s\timages\tolder than %s days, %s images\n' "$now" "$KEEP_DAYS" "$GONE" >> "$WORK/cache/evictions.log"
+    return 0
+}
 evict() {
     local now=$1 keep=$((KEEP_DAYS * 86400)) list s box pct flag=$WORK/cache/.evicting
     # Not before this boot's clear: removing a box asks microsandbox, which trusts process ids from before the reboot.
@@ -698,11 +742,12 @@ evict() {
         [ -n "$box" ] && [ $((now - s)) -gt "$keep" ] || continue
         drop_box "$box" "unused $KEEP_DAYS days" "$now" || true
     done <<<"$list"
+    evict_daily "$now"
     pct=$(df --output=pcent "$WORK" 2>/dev/null | tr -dc '0-9\n' | sed -n '$p')
     [[ $pct =~ ^[0-9]+$ ]] || return 0
     if [ "$pct" -ge "$EVICT_AT" ]; then
         if [ ! -e "$flag" ]; then   # once per episode of pressure
-            evict_images; evict_caches
+            evict_images; evict_caches >/dev/null
             printf '%s\timages\tdisk %s percent full\n' "$now" "$pct" >> "$WORK/cache/evictions.log"; echo "evicted images (disk $pct percent full)"
         fi
         : > "$flag"
