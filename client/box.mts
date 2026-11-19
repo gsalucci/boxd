@@ -22,7 +22,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-export const VERSION = "0.4.49";
+export const VERSION = "0.4.50";
 const BOX = /^[a-z0-9][a-z0-9_.-]{0,62}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const MAC = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i;
@@ -77,7 +77,7 @@ export const HELP = `usage: box [options] [--] <command...>
                                        ends that one detached run and nothing else: the box keeps running, with its files and its other runs
                                        (a run that already ended: nothing to do, exit 0). Not for box drop
        box gc [--dry-run]              the collector: removes the boxes and server files of this machine's worktrees that no longer exist (a worktree
-                                       must be found missing by two passes 15 minutes apart), lists boxes that no worktree here
+                                       must be found missing by two passes 15 minutes apart; a box with a run still going is kept until it ends), lists boxes that no worktree here
                                        owns ("unknown owner", nothing is touched) and reports commands running over 6 hours;
                                        --dry-run only says what it would do. Runs by itself after an ordinary call, at most every
                                        15 minutes ($BOXD_GC=0 turns that off); records in ~/.local/state/boxd
@@ -136,7 +136,7 @@ container or, with --vm, a small virtual machine; the same box on every call) an
                    moves to one that has by itself (one line says so), unless its box still holds a machine, a container
                    or a run there, or the call named a server (--host, $BOXD_HOST); then exit 75 and the command that moves it
   --pod <name>     use this box instead of the one derived from the worktree. For box gc the box belongs to the
-                   worktree that called it last
+                   worktree that made it, until that one is gone
   --no-sync        skip the sync
   --include <path> also send <path> (file or folder, relative to the worktree) although git ignores it; repeatable.
                    The sync sends what git counts as the worktree, so an ignored journal or state file needs this
@@ -522,7 +522,7 @@ function wakeTarget(env: Env, name: string): string | undefined {
 // One host's state, asked without waking it: a host that sleeps is first tried with a plain connection to its wake
 // target (what box-wake does), and only an answer lets the ssh through; no answer means asleep and no ssh is made.
 // What each host's last `pod status` said its version is: a call made with --wait keeps its place in line only on a server that knows it.
-const hostVersion = new Map<string, string>(), PLACE_FROM = "0.4.41";
+const hostVersion = new Map<string, string>(), PLACE_FROM = "0.4.41", IDLE_DROP_FROM = "0.4.50";
 const atLeast = (v: string | undefined, min: string) => { const a = (v ?? "").split(".").map(Number), b = min.split(".").map(Number), i = b.findIndex((x, j) => (a[j] ?? 0) !== x); return i < 0 || (a[i] ?? 0) > (b[i] as number); };
 // The place and the busy boxes the server tells a waiting call, at the end of its last line (docs/pod-contract.md, "The waiting line").
 const placeOf = (text: string) => /; (first in line|\d+ calls? waits? ahead of this one).*$/.exec(text.trimEnd().split("\n").pop() ?? "")?.[0].slice(2);
@@ -869,12 +869,14 @@ export type Entry = { box: string; host: string; worktree: string; missingSince?
 const entryFile = (env: Env, host: string, box: string) => path.join(stateDir(env), "boxes", `${host}.${box}`);
 
 // Every call that reaches a host records its box: a fresh name, renamed over the old record (also clears a missing mark: the
-// worktree is here). shortcut: a state folder that cannot be written means no record, never a failed call; a box shared by
-// several worktrees (--pod) keeps the last caller's worktree only, so the collector may stop it when that one is deleted
-// (the next call of another worktree makes it again).
+// worktree is here). A box shared by several worktrees (--pod) keeps the worktree that made it for as long as that one is here; only
+// when it is gone does the next caller's worktree take the record over. shortcut: a state folder that cannot be written means no record,
+// never a failed call; a box shared by worktrees is removed when its first worktree is deleted, though others still use it (the next call makes it again).
 export function register(env: Env, host: string, box: string, worktree: string): void {
   const file = entryFile(env, host, box), tmp = `${file}.${process.pid}`;
   try {
+    const old = entries(env).find((e) => e.host === host && e.box === box);
+    if (old && old.worktree !== worktree && worktreeHere(old.worktree)) return;
     mkdirSync(path.dirname(file), { recursive: true });
     writeFileSync(tmp, `${JSON.stringify({ box, host, worktree } satisfies Entry)}\n`);
     renameSync(tmp, file);
@@ -947,7 +949,13 @@ export async function collect(env: Env, opts: { dry: boolean; quiet: boolean; no
       }
       if (opts.dry) { say(`box gc: would remove ${h.name} box ${e.box} and its files (worktree ${e.worktree} is gone${live ? ", a run is still going" : ""})`); continue; }
       // pod drop removes the box and its folder; a server older than 0.4.0 does not know it and only stops the box.
-      const drop = await ask(h.name, `pod drop ${e.box}`), dropped = drop.code === 0;
+      // A server that knows "idle" keeps a box that has a run or a call going (exit 75): the list of runs above is a guess and is not trusted.
+      const drop = await ask(h.name, `pod drop ${e.box}${atLeast(h.status === undefined ? undefined : parseStatus(h.status).version, IDLE_DROP_FROM) ? " idle" : ""}`), dropped = drop.code === 0;
+      if (drop.code === 75) {
+        const kept = `${h.name} box ${e.box}: worktree ${e.worktree} is gone but a run is still going in it; kept until it ends`;
+        if (opts.quiet) process.stderr.write(`[box gc] ${kept}\n`); else say(`box gc: ${kept}`);
+        continue;
+      }
       if (!dropped && (await ask(h.name, `pod stop ${e.box}`)).code !== 0) { say(`box gc: ${h.name}: removing ${e.box} failed; kept`); continue; }
       rmSync(entryFile(env, e.host, e.box), { force: true });
       try { appendFileSync(path.join(stateDir(env), "gc.log"), `${[new Date(opts.now).toISOString(), e.host, e.box, e.worktree, live ? "run live" : "idle"].join("\t")}\n`); } catch { /* evidence only */ }

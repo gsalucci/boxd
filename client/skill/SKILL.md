@@ -77,7 +77,7 @@ queue around `box`; a refusal waiting cannot fix, like a missing image, still ex
 - To free a box's memory between runs while the worktree lives on, run `box stop`: the box stops and its files stay (build outputs included), so the next call makes it again on the same files. Use `box drop` only when the worktree is going away: it removes the files too, and the next call starts from a cold build.
 - After you delete a worktree yourself, run `box drop` first, from inside it: the box is found from the worktree. It removes the box, its files on the server and its record at once, refuses while the box is busy (a call or a detached run; the image's own daemons do not count), and does not wake a sleeping server (the collector then does it later).
 - `box gc` (`--dry-run` to only look) removes the boxes and server files of worktrees that were deleted (found missing by two passes 15 minutes
-  apart), lists boxes nobody here owns and reports commands running over 6 hours; it also runs by itself after ordinary calls
+  apart; a box with a run still going is kept until it ends), lists boxes nobody here owns and reports commands running over 6 hours; it also runs by itself after ordinary calls
   (`BOXD_GC=0` turns that off). You never need to stop a box by hand.
 - A call that prints nothing for 15 minutes gets the `box ps` table on stderr by itself, every line prefixed
   `[box ps] `, repeated while the silence lasts; stdout and the exit code are untouched. `--ps-after 5` (or
@@ -114,7 +114,7 @@ queue around `box`; a refusal waiting cannot fix, like a missing image, still ex
 - `box stop --run <id>` ends that one detached run (a mistaken or hanging one, which holds its room meanwhile) and nothing else: the box keeps running with its files and its other runs. A run that already ended: nothing to do, exit 0. `box stop` and `box drop` refuse a box with a command running and name the run to end.
 - `box log <id> --follow` exits 129 when the run ended without an exit code: its box or the server went down under it (reboot, power loss,
   box removed). Nothing restarts such a run. A server never sleeps while a detached run or a call is going.
-- `--no-sync` skips the sync; `--pod <name>` shares one box between worktrees; `box --help` lists everything.
+- `--no-sync` skips the sync; `--pod <name>` shares one box between worktrees (the worktree that made it owns it while it exists); `box --help` lists everything.
 - Boxes vanish after 30 idle minutes (a detached run keeps its box). `/job/src` and your build outputs stay; the next call recreates the box.
 - **`/job` is not an archive: the server removes whole box folders by itself.** When the worktree was deleted, after 14 days without a call, or
   least recently used first when the server's disk is 70 % full. Pull what must last (`--pull`). Under that disk pressure unused images go too: after it, `box image push` again. The first call after a removal says

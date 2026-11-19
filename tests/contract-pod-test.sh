@@ -1261,6 +1261,35 @@ reapnow $((now + 5 * day))
 eq "daily pass: a stamp from the future lets the pass run, and it is rewritten with the present time" "no|$((now + 5 * day))" "$([ -e "$W/cache/images/built-gone3.tar" ] && echo yes || echo no)|$(stat -c %Y "$W/cache/.evicted-daily")"
 unset FAKE_DF FAKE_IMAGE_LIST FAKE_VM_IMAGE_LIST FAKE_RMI_REFUSE
 
+# pod drop <box> idle: the collector's guess that nothing runs is not trusted, so a box whose .running is held (a run, a call) is kept;
+# plain pod drop (box drop, an order) removes it anyway. The holder is this shell (fd 8, shared lock), released by closing the fd.
+setup; mkdir -p "$W/cache"
+pod "pod run $box -- $B64"
+exec 8<"$W/jobs/$box/.running"; flock -s 8
+pod "pod drop $box idle"
+eq "drop idle: a box with a run going is kept, exit 75 and the message" "75|boxd-pod: box $box has a run or a call going; kept|" "$rc|$(cat "$T/e/err")|$(cat "$T/e/out")"
+eq "drop idle: the folder, the container and the log are untouched" "yes|pod-$box|" "$([ -d "$W/jobs/$box" ] && echo yes)|$(ls "$FAKE_STATE")|$(evlog)"
+exec 8<&-
+pod "pod drop $box idle"; eq "drop idle: once the holder ended the box is removed" "0||$box	worktree gone" "$rc|$(folders)|$(evlog)"
+pod "pod drop $box idle"; eq "drop idle: nothing there is exit 0" 0 "$rc"
+pod "pod drop $box now"; eq "drop: any other second word is refused" 125 "$rc"
+pod "pod drop $box idle idle"; eq "drop: a third word is refused" 125 "$rc"
+pod "pod run $box -- $B64"; exec 8<"$W/jobs/$box/.running"; flock -s 8
+pod "pod drop $box"; eq "drop: plain drop still removes a box with a run going" "0||" "$rc|$(folders)|$(ls "$FAKE_STATE")"
+exec 8<&-
+
+# --image-file: a shared image the disk-pressure sweep removed (FROM localhost/<name>, archive in the images folder) is loaded again before the build.
+setup; mkdir -p "$W/jobs/$box/src"
+printf 'from --platform=linux/amd64 localhost/shared:latest AS base\nRUN true\nFROM base\nFROM scratch\nFROM docker.io/library/debian\n' > "$W/jobs/$box/src/Containerfile"
+: > "$BOXD_IMAGES_DIR/shared.tar"
+pod "pod run $box --image-file Containerfile -- $B64"
+eq "image build: a localhost image absent from the store is loaded from its archive before the build" "0|load|build" "$rc|$(grep -E '^(load|build)' "$FAKE_LOG" | cut -d' ' -f1 | paste -sd'|')"
+: > "$FAKE_LOG"; pod "pod run $box --image-file Containerfile -- $B64"
+eq "image build: an image already in the store is not loaded again" "0|0" "$rc|$(grep -c '^load' "$FAKE_LOG")"
+setup; mkdir -p "$W/jobs/$box/src"; echo "FROM localhost/nowhere:latest" > "$W/jobs/$box/src/Containerfile"
+pod "pod run $box --image-file Containerfile -- $B64"
+eq "image build: no store, no archive: the clear refusal, no build" "125|0" "$rc|$(grep -c '^build' "$FAKE_LOG")"
+
 # pod drop: the client's collector removes the box and the folder of a worktree that is gone.
 setup; mkdir -p "$W/cache"
 pod "pod run $box -- $B64"; eq "drop: the box exists first" "pod-$box" "$(ls "$FAKE_STATE")"

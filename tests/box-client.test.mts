@@ -535,7 +535,7 @@ function realStatus(vmRunning: number, capMb?: number): string {
 }
 const FULL = realStatus(3), FREE = realStatus(1);
 const REFUSAL = "boxd-pod: no room for another virtual machine (3 of 3 running); wait for one to end or stop one";
-const { parseStatus, choose, NO_ROOM, VERSION } = await import(TOOL);
+const { parseStatus, choose, NO_ROOM, VERSION, register } = await import(TOOL);
 
 type Fake = { name: string; status?: string; runExit?: number; runErr?: string };
 // A user with the given build servers registered (ssh config markers, hosts.order) and one folder of fake host files.
@@ -1138,6 +1138,40 @@ test("gc: a run still going in the box does not save it (and the log says so); a
   assert.match(r.out, /removed test box gone-1 and its files: .* \(a run was still going\)/);
   assert.equal(gcLog(s)[0]?.[4], "run live");
   assert.equal(getEntry(s, "test", rp.box).missingSince, undefined); // it is back: the mark is cleared
+});
+
+test("gc: a server of 0.4.50 or later is asked `pod drop <box> idle`; when it keeps the box (exit 75) the record stays and the line says so; an older server gets the plain drop", () => {
+  const NEW = FREE.replace(/version=[^\t]+/, "version=0.4.50"), dropCalls = (calls: string[]) => calls.filter((c) => c.includes(" pod drop ")).map((c) => c.replace(/^.* boxd-test /, ""));
+  const make = (status: string) => { const s = servers([{ name: "test", status }]); hostFile(s, "test", "list", LINE("gone-1")); putEntry(s, "test", "gone-1", NOWHERE, T0 - 20 * MIN); return s; };
+  const kept = make(NEW); hostFile(kept, "test", "drop.exit", "75\n");
+  const a = gc(kept, ["gc"], T0), line = `test box gone-1: worktree ${NOWHERE} is gone but a run is still going in it; kept until it ends`;
+  assert.deepEqual(dropCalls(a.calls), ["pod drop gone-1 idle"]);
+  assert.equal(a.out, `box gc: ${line}\n`);
+  assert.equal(stops(a.calls).length, 1); // no fall back to pod stop
+  assert.equal(getEntry(kept, "test", "gone-1").missingSince, T0 - 20 * MIN);
+  assert.deepEqual(gcLog(kept), []);
+  const q = go(newRepo(), kept, ["--no-sync", "true"], { BOXD_GC: "1", BOXD_NOW: String(T0), BOXD_HOST: "test" });
+  assert.equal(q.out, ""); assert.ok(q.err.includes(`[box gc] ${line}\n`), q.err);
+  const done = make(NEW), b = gc(done, ["gc"], T0);   // the server removes it: as before
+  assert.deepEqual(dropCalls(b.calls), ["pod drop gone-1 idle"]);
+  assert.match(b.out, /removed test box gone-1 and its files/);
+  assert.equal(getEntry(done, "test", "gone-1"), undefined);
+  assert.deepEqual(dropCalls(gc(make(FREE), ["gc"], T0).calls), ["pod drop gone-1"]);   // 0.4.40: the plain order
+});
+
+test("register: a box shared with --pod keeps the worktree that made it while that one is here, and goes to the next caller when it is gone", () => {
+  const s = servers([{ name: "test", status: FREE }]), a = newRepo(), b = newRepo(), env = { HOME: s.home };
+  register(env, "test", "shared", a.top);
+  register(env, "test", "shared", b.top);
+  assert.deepEqual(getEntry(s, "test", "shared"), { box: "shared", host: "test", worktree: a.top });
+  putEntry(s, "test", "shared", a.top, T0);
+  register(env, "test", "shared", b.top);
+  assert.equal(getEntry(s, "test", "shared").missingSince, T0);   // another worktree does not clear the mark
+  register(env, "test", "shared", a.top);
+  assert.deepEqual(getEntry(s, "test", "shared"), { box: "shared", host: "test", worktree: a.top });   // its own worktree does
+  putEntry(s, "test", "shared", NOWHERE);
+  register(env, "test", "shared", b.top);
+  assert.deepEqual(getEntry(s, "test", "shared"), { box: "shared", host: "test", worktree: b.top });
 });
 
 test("gc: a folder that is not a git worktree top folder counts as missing", () => {

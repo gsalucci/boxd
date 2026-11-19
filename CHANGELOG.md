@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.50
+
+- The client's collector no longer removes a box while a run or a call is going in it. It sends `pod drop <box> idle` to a server from 0.4.50; the server keeps a busy box (exit 75) and the collector says `kept until it ends` and asks again at its next pass. Before, the removal was forced: on 2026-11-19 a box with a detached run was removed because a worktree had been deleted. `box drop` (an explicit order) still removes at once.
+- A box named with `--pod` stays with the worktree that made it for as long as that worktree exists. Before, the last caller became the owner, so a look into the box from another worktree, followed by deleting that worktree, removed the box.
+- A build from `--image-file` loads a `FROM localhost/<name>` base image from its archive when the store no longer has it (the disk pressure pass removes unused images). Before, the build failed with `unable to copy from source docker://localhost/...`.
+
 ## 0.4.49
 
 - Fixes a fault of 0.4.48 that removed live files from the shared package caches (`/cache` of the boxes). The daily pass of 0.4.48 judged a file by its modification time, and package tools keep the upstream's old times on files they unpack, so files written an hour before were removed: the content of unpacked cargo sources (their markers stayed, so builds failed with `failed to find <crate> in path source`) and parts of the Maven, npm, pnpm and Go caches. If a host ran 0.4.48: remove the folders under `cache/pod/cargo/registry/src` in its work area once, so cargo unpacks them again.

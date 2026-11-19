@@ -21,7 +21,7 @@ PROC=${BOXD_PROC:-/proc}   # test hook, like BOXD_MEMINFO: where `pod report` fi
 KVM=${BOXD_KVM:-/dev/kvm}   # test hook: the device a --kvm box gets
 ROUTE=${BOXD_ROUTE:-/proc/net/route}   # test hooks: the routing table and the network interface folder `pod report` reads
 NETDIR=${BOXD_NET:-/sys/class/net}
-VERSION=0.4.49
+VERSION=0.4.50
 # Keys that may only read, one "<type> <key> [comment]" per line (view_only below); and the largest answer of pod calls and pod log.
 VIEW_KEYS=${BOXD_VIEW_KEYS:-/etc/boxd/view_keys}
 READ_MAX=${BOXD_READ_MAX:-1048576}
@@ -761,9 +761,13 @@ evict() {
         if drop_box "$box" "disk $pct percent full" "$now"; then break; fi
     done <<<"$list"
 }
+# pod drop <box>: an order, removes the box even under a run. pod drop <box> idle: the collector's guess that nothing runs is not trusted,
+# so a box with a run or a call going (.running held) is kept, exit 75 (temporary: asked again at its next pass).
 pod_drop() {
     [[ ${1:-} =~ $BOX_RE ]] || die "bad box name"
+    [ -z "${2:-}" ] || [ "$2" = idle ] || die "unknown command"
     if [ ! -d "$WORK/jobs/$1" ]; then pod_stop "$1"; return; fi
+    if [ "${2:-}" = idle ]; then drop_box "$1" "worktree gone" "$(date +%s)" || noroom "box $1 has a run or a call going; kept"; return; fi
     drop_box "$1" "worktree gone" "$(date +%s)" force || die "box $1 is being made right now; not removed"
 }
 
@@ -1323,6 +1327,16 @@ pod_run() {
         # realpath: a link inside the worktree must not point the build at a file outside it.
         full=$(realpath -e "$J/src/$imgfile" 2>/dev/null) && [ -f "$full" ] && [[ $full == "$(realpath "$J/src")"/* ]] || die "image file $imgfile not found"
         image=localhost/built-$box:latest
+        # A shared image (localhost/<name>) the disk-pressure sweep removed is loaded again from its archive, as a plain --image call does: the build would fail on a pull.
+        local fw fr
+        while read -ra fw; do
+            [[ ${fw[0]:-} == [Ff][Rr][Oo][Mm] ]] || continue
+            for fr in "${fw[@]:1}"; do
+                [[ $fr == --* ]] && continue
+                [[ $fr =~ ^localhost/[a-z0-9][a-z0-9._-]*(:[A-Za-z0-9._-]+)?$ ]] && ensure_image container "$fr"
+                break
+            done
+        done <"$full"
         # The build's output goes to a file in the cache folder (the box folder is mounted into the box), not to the caller: it is
         # noise on every call, and names the tags of other boxes that share an image id. A failed build prints it; a long one says so.
         bl=$WORK/cache/build-$box.log bt=$SECONDS   # the file is not under cache/pod: boxes see that folder as /cache
@@ -1826,7 +1840,7 @@ if [ -n "${SSH_ORIGINAL_COMMAND:-}" ]; then
     case ${W[1]:-} in
         run) pod_run "${W[@]:2}" ;;
         stop) [ ${#W[@]} -eq 3 ] || die "unknown command"; pod_stop "${W[2]}" ;;
-        drop) [ ${#W[@]} -eq 3 ] || die "unknown command"; pod_drop "${W[2]}" ;;
+        drop) [ ${#W[@]} -ge 3 ] && [ ${#W[@]} -le 4 ] || die "unknown command"; pod_drop "${W[2]}" "${W[3]:-}" ;;
         list) [ ${#W[@]} -eq 2 ] || die "unknown command"; pod_list ;;
         ps) [ ${#W[@]} -eq 3 ] || die "unknown command"; pod_ps "${W[2]}" ;;
         status) [ ${#W[@]} -eq 2 ] || die "unknown command"; pod_status ;;
