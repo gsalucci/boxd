@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.59
+
+- The line of a box made again over its kept folder (0.4.58) ends with the way to keep what it names as new: `...; build those into the image with --image-file to keep them`. A Containerfile in the worktree, given with `--image-file`, is the place for setup that must come back after a stop, for a container box and a machine box alike.
+
 ## 0.4.58
 
 - A box made again over its kept folder (after `box stop`, the idle time limit, an eviction, `--recreate` or an image rebuild) says so once on standard error: `boxd-pod: machine box <box>: made again from its image: /job and /cache were kept; everything else is new (the home folder outside /job, packages installed with the system's package tool)`, the same for a container box; a `--user` box, whose home is `/job/home`, is told only of the packages. A plugin in the home folder and libraries installed in a stopped machine were gone on its next call and nothing said why. A first call prints what it printed before.
