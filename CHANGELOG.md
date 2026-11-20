@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.61
+
+- `--host <name>` written after the command, where `<name>` is one of your build servers, is now refused (exit 2) before anything runs. Before, the client only warned and went on: `box ls --host big` ran `ls --host big` as the command, and when the worktree's own server was full it made a new box on another server and moved the worktree there. The refusal prints the corrected call (`box --host big ls`) and names `box ps` and `box runs` as the listings. A value that is no build server (`vite --host 0.0.0.0`) keeps the warning, and `--` before the command hands the option to the command as before.
+
 ## 0.4.60
 
 - A call waiting with `--wait` no longer stays behind idle machines. An idle machine (no run or call for `BOXD_VM_IDLE_MIN`, 300 seconds) gives its room to the next machine that asks, but the waiting line's own check (`pod queue`) still counted the memory such machines hold and answered no, so the call that removes them was never made: two waiting launches sat 15 minutes and more behind two machines whose runs had ended. `pod queue` now answers yes when only the measured memory refuses and an idle machine exists.

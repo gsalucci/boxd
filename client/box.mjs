@@ -21,7 +21,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-export const VERSION = "0.4.60";
+export const VERSION = "0.4.61";
 const BOX = /^[a-z0-9][a-z0-9_.-]{0,62}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const MAC = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i;
@@ -1647,6 +1647,13 @@ export function main(args, env = process.env, inner) {
     }
     // Without an explicit --, a box option after the command is part of the command; say so once (people wrote `box sh -c '...' --pull x`).
     const late = args[i - 1] === "--" ? undefined : argv.find((w) => ["--pull", "--include", "--env", "--detach", "--host", "--pod", "--no-sync", "--wait"].includes(w));
+    // A late --host naming one of box's own servers was never meant for the command (`box ls --host <server>` made a box on another server
+    // and moved the worktree there): refuse before anything is made or moved.
+    const lateHost = late === undefined ? undefined : argv[argv.indexOf("--host") + 1];
+    if (argv.includes("--host") && late !== undefined && hostOrder(env).includes(lateHost)) {
+        process.stderr.write(`box: --host ${lateHost} after the command would be handed to "${argv[0]}", not to box, and ${lateHost} is one of your build servers: nothing was run. Write box --host ${lateHost} ${argv.filter((w, k) => w !== "--host" && argv[k - 1] !== "--host").join(" ")} (boxes are listed by box ps, runs by box runs); to hand it to the command, put -- before the command\n`);
+        return 2;
+    }
     if (late)
         process.stderr.write(`box: ${late} after the command is handed to the command, not to box; put box options before the command (or write -- before the command to silence this)\n`);
     if (!/^\d+(\.\d+)?$/.test(psAfter))

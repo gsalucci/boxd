@@ -918,7 +918,9 @@ run from inside a worktree (git toplevel of the current directory; `--shards <n>
 3a. **Box options go before the command.** Options are read until the first word that is not one (or `--`). When no `--` was written and
    one of `--pull`, `--include`, `--env`, `--detach`, `--host`, `--pod`, `--no-sync` or `--wait` appears as a whole word after the command
    started, the client prints once on stderr `box: <option> after the command is handed to the command, not to box; put box options before the command (or write -- before the command to silence this)`
-   and goes on unchanged (the word stays in the command). With `--` there is no warning.
+   and goes on unchanged (the word stays in the command). With `--` there is no warning. One case is refused instead (exit 2, nothing
+   run, no box made, no worktree moved): `--host <name>` after the command where `<name>` is one of the configured build servers; the
+   line gives the corrected call.
 3b. **A foreground call ends with its starter.** Without a terminal and without `--detach`, the client remembers its parent process id at
    start and looks at it every second (`BOXD_ORPHAN_CHECK_MS`, a test hook). When it changed (the process that started the call is gone)
    the client prints `box: the process that started this call is gone; ending the call (use --detach for work that must outlive its starter)`

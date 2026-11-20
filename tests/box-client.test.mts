@@ -1547,6 +1547,15 @@ test("a box option after the command, with no --, is handed to the command: one 
   assert.equal(runBox(["--no-sync", "cargo", "--version"]).err, "box: exit 0 on test\n", "only box's own options are named");
 });
 
+test("--host <one of the build servers> after the command, with no --, is refused: nothing runs, no box is made, no worktree moves", () => {
+  const r = runBox(["ls", "-l", "--host", "test"], { env: { HOME: servers([{ name: "test" }]).home } });
+  assert.equal(r.code, 2);
+  assert.equal(r.err, 'box: --host test after the command would be handed to "ls", not to box, and test is one of your build servers: nothing was run. Write box --host test ls -l (boxes are listed by box ps, runs by box runs); to hand it to the command, put -- before the command\n');
+  assert.deepEqual(r.calls, []);
+  assert.match(runBox(["--no-sync", "vite", "--host", "0.0.0.0"]).err, /^box: --host after the command is handed/, "a value that is no build server stays a warning");
+  assert.equal(runBox(["--no-sync", "--", "ls", "--host", "test"]).err, "box: exit 0 on test\n", "an explicit -- hands it to the command");
+});
+
 test("--pull of a path that is not in the box says so in one line; any other rsync failure keeps its words", () => {
   const remote = path.join(root, "remote-empty");
   mkdirSync(path.join(remote, "jobs", box, "src"), { recursive: true });
