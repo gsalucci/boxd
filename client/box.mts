@@ -22,7 +22,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-export const VERSION = "0.4.63";
+export const VERSION = "0.4.64";
 const BOX = /^[a-z0-9][a-z0-9_.-]{0,62}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const MAC = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i;
@@ -909,14 +909,16 @@ function worktreeHere(dir: string): boolean {
   try { return g.status === 0 && realpathSync(g.stdout.trim()) === realpathSync(dir); } catch { return false; }
 }
 // One ssh call to a host the collector already knows is awake, bounded: a host that stops answering is given up on.
-function ask(host: string, words: string): Promise<{ code: number; out: string }> {
+function ask(host: string, words: string, opts?: { wait?: boolean }): Promise<{ code: number; out: string; err: string }> {
   return new Promise((resolve) => {
+    // wait: the one call that removes a box, which may take minutes: no limit, and the server's standard error is kept.
     const c = spawn("ssh", ["-o", "ConnectTimeout=3", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=2", `boxd-${host}`, words],
-      { stdio: ["ignore", "pipe", "ignore"], timeout: 30_000 });
-    let out = "";
-    c.stdout.on("data", (d: Buffer) => { out += d; });
-    c.on("error", () => resolve({ code: 255, out }));
-    c.on("close", (code) => resolve({ code: code ?? 255, out }));
+      opts?.wait ? { stdio: ["ignore", "pipe", "pipe"] } : { stdio: ["ignore", "pipe", "ignore"], timeout: 30_000 });
+    let out = "", err = "";
+    c.stdout?.on("data", (d: Buffer) => { out += d; });
+    c.stderr?.on("data", (d: Buffer) => { err += d; });
+    c.on("error", () => resolve({ code: 255, out, err }));
+    c.on("close", (code) => resolve({ code: code ?? 255, out, err }));
   });
 }
 
@@ -1051,8 +1053,11 @@ async function dropCall(args: string[], env: Env, mode: "drop" | "stop" = "drop"
       return refuse(`box ${t.box} on ${host} still has a command running in it; ${nothing}${hint}`);
     }
   }
-  const dropped = await ask(host, `pod ${mode} ${t.box}`);
-  if (dropped.code !== 0) return refuse(`${host}: ${mode === "stop" ? "stopping" : "removing"} ${t.box} failed (exit ${dropped.code}); record kept`);
+  const dropped = await ask(host, `pod ${mode} ${t.box}`, { wait: true });
+  if (dropped.code !== 0) {
+    const said = lastLine(dropped.err).replace(/^boxd-pod: /, "");
+    return refuse(`${host}: ${mode === "stop" ? "stopping" : "removing"} ${t.box} failed (exit ${dropped.code})${said === "-" ? "" : `: ${said}`}; record kept`);
+  }
   if (mode === "stop") { process.stdout.write(`box stop: stopped ${host} box ${t.box}; its files are kept\n`); return 0; }
   rmSync(entryFile(env, host, t.box), { force: true });
   try { appendFileSync(path.join(stateDir(env), "gc.log"), `${[new Date().toISOString(), host, t.box, worktree, "asked"].join("\t")}\n`); } catch { /* evidence only */ }

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.64
+
+- `box drop` and `box stop` wait as long as the server needs. Before, the client gave the removal 30 seconds: a box with a large folder on a busy host printed `removing <box> failed (exit 255); record kept` while the server went on removing, and a second try met that removal's lock.
+- A refused `box drop` or `box stop` prints the server's own words: `box drop: <host>: removing <box> failed (exit 125): box <box> is being made or removed right now; not removed; record kept`. Before, only the exit code was shown. The server's text for a held lock now says `made or removed`, since a removal still going on holds the same lock.
+
 ## 0.4.63
 
 - The host line of `pod report` ends with two new fields, `group_swap_used_mb` and `group_swap_max_mb`: the swap the build group uses and its limit (`memory.swap.current`, `memory.swap.max`; a dash when unreadable or unlimited). When the two are close the group has no swap left to give, and the next memory burst at the cap ends in a kill; until now nothing in the report showed that state.

@@ -91,7 +91,7 @@ if [ -n "\${FAKE_HOSTS:-}" ]; then
     *" pod list") cat "$FAKE_HOSTS/$h.list" 2>/dev/null; exit 0;;
     *" pod ps "*) cat "$FAKE_HOSTS/$h.ps.\${*##* }" 2>/dev/null; exit 0;;
     *" pod stop "*) exit "$(cat "$FAKE_HOSTS/$h.stop.exit" 2>/dev/null || echo 0)";;
-    *" pod drop "*) cat "$FAKE_HOSTS/$h.drop.out" 2>/dev/null; exit "$(cat "$FAKE_HOSTS/$h.drop.exit" 2>/dev/null || echo 0)";;
+    *" pod drop "*) cat "$FAKE_HOSTS/$h.drop.out" 2>/dev/null; [ ! -f "$FAKE_HOSTS/$h.drop.err" ] || cat "$FAKE_HOSTS/$h.drop.err" >&2; exit "$(cat "$FAKE_HOSTS/$h.drop.exit" 2>/dev/null || echo 0)";;
     *" pod run "*) if [ -f "$FAKE_HOSTS/$h.run.refuse" ] && [ "$(cat "$FAKE_HOSTS/$h.run.refuse")" -gt 0 ]; then
         echo $(( $(cat "$FAKE_HOSTS/$h.run.refuse") - 1 )) > "$FAKE_HOSTS/$h.run.refuse"
         [ ! -f "$FAKE_HOSTS/$h.run.pre" ] || cat "$FAKE_HOSTS/$h.run.pre" >&2
@@ -1965,6 +1965,16 @@ test("drop: a failed pod drop keeps the record and says the exit code", () => {
   assert.match(r.err, /box drop: test: removing .* failed \(exit 1\); record kept\n/);
   assert.notEqual(getEntry(s, "test", rp.box), undefined);
   assert.deepEqual(gcLog(s), []);
+});
+
+test("drop: a refused pod drop says the server's words", () => {
+  const s = servers([{ name: "test", status: FREE }]), rp = newRepo();
+  hostFile(s, "test", "list", LINE(rp.box, "stopped")); hostFile(s, "test", "drop.exit", "125"); putEntry(s, "test", rp.box, rp.top);
+  hostFile(s, "test", "drop.err", "boxd-pod: box X is being made or removed right now; not removed\n");
+  const r = go(rp, s, ["drop"], { BOXD_HOST: "test" });
+  assert.equal(r.code, 1);
+  assert.ok(r.err.includes(`box drop: test: removing ${rp.box} failed (exit 125): box X is being made or removed right now; not removed; record kept\n`), r.err);
+  assert.notEqual(getEntry(s, "test", rp.box), undefined);
 });
 
 test("drop: a sleeping host is never contacted, one line, exit 1, record kept", async () => {

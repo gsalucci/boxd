@@ -21,7 +21,7 @@ PROC=${BOXD_PROC:-/proc}   # test hook, like BOXD_MEMINFO: where `pod report` fi
 KVM=${BOXD_KVM:-/dev/kvm}   # test hook: the device a --kvm box gets
 ROUTE=${BOXD_ROUTE:-/proc/net/route}   # test hooks: the routing table and the network interface folder `pod report` reads
 NETDIR=${BOXD_NET:-/sys/class/net}
-VERSION=0.4.63
+VERSION=0.4.64
 # Keys that may only read, one "<type> <key> [comment]" per line (view_only below); and the largest answer of pod calls and pod log.
 VIEW_KEYS=${BOXD_VIEW_KEYS:-/etc/boxd/view_keys}
 READ_MAX=${BOXD_READ_MAX:-1048576}
@@ -795,7 +795,7 @@ pod_drop() {
     [ -z "${2:-}" ] || [ "$2" = idle ] || die "unknown command"
     if [ ! -d "$WORK/jobs/$1" ]; then pod_stop "$1"; return; fi
     if [ "${2:-}" = idle ]; then drop_box "$1" "worktree gone" "$(date +%s)" || noroom "box $1 has a run or a call going; kept"; return; fi
-    drop_box "$1" "worktree gone" "$(date +%s)" force || die "box $1 is being made right now; not removed"
+    drop_box "$1" "worktree gone" "$(date +%s)" force || die "box $1 is being made or removed right now; not removed"
 }
 
 # The shared package caches of every box (cache/pod, /cache inside): one download serves all boxes of the host, which also
