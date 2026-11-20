@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.62
+
+- `box runs` says when a running run looks hung: a run that wrote nothing to its standard output or standard error for an hour or more gets one line on standard error, `box runs: <box> run <id> on <host> has written nothing for <time>; it may hang (box log --state shows quiet=, box stop --run ends it)`. The table on standard output is unchanged. A run hung for four hours unseen because only `box log --state` showed the silence.
+
 ## 0.4.61
 
 - `--host <name>` written after the command, where `<name>` is one of your build servers, is now refused (exit 2) before anything runs. Before, the client only warned and went on: `box ls --host big` ran `ls --host big` as the command, and when the worktree's own server was full it made a new box on another server and moved the worktree there. The refusal prints the corrected call (`box --host big ls`) and names `box ps` and `box runs` as the listings. A value that is no build server (`vite --host 0.0.0.0`) keeps the warning, and `--` before the command hands the option to the command as before.

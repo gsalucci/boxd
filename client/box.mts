@@ -22,7 +22,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-export const VERSION = "0.4.61";
+export const VERSION = "0.4.62";
 const BOX = /^[a-z0-9][a-z0-9_.-]{0,62}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const MAC = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i;
@@ -39,7 +39,8 @@ export const HELP = `usage: box [options] [--] <command...>
                                        (an allowed registry); then \`box --image <ref>\` uses the pushed copy
        box runs                        the detached runs still running on the build servers (those of this machine's boxes): host, box,
                                        run id, age, worktree and the last line of the output, tab separated; a sleeping server is
-                                       not woken, only named; changes nothing
+                                       not woken, only named; changes nothing. A run that wrote nothing to its output for an
+                                       hour or more gets one more line on standard error: it may hang
        box runs --host <name>          only the runs on that build server (not woken if asleep); combines with --pod, --follow and --tail
        box runs --pod <pattern>        only the runs of boxes whose name matches <pattern> (\`*\` any characters, \`?\` one, the rest literal; repeatable)
        box runs --follow [--tail <n>]  the same, then waits until all of those runs have ended and prints one line for each as it
@@ -1141,6 +1142,9 @@ async function runsCall(args: string[], env: Env): Promise<number> {
       const tail = await ask(h.host, `pod log ${r.box} ${r.id} ${Math.max(0, Number(r.bytes) - 2048)}`);
       const body = tail.code === 0 ? tail.out.slice(tail.out.indexOf("\n") + 1) : "";
       out.push([h.host, r.box, r.id, runAge(r.id, now), r.worktree, lastLine(body)].join("\t"));
+      // A run that wrote nothing for an hour may hang (one hung for four hours unseen): say so beside the table, which stays as it was.
+      const quiet = Number(/^[^\n]*\tquiet=(\d{1,9})(?=[\t\n])/.exec(tail.code === 0 ? tail.out : "")?.[1] ?? 0);
+      if (quiet >= 3600) process.stderr.write(`box runs: ${r.box} run ${r.id} on ${h.host} has written nothing for ${duration(quiet)}; it may hang (box log --state shows quiet=, box stop --run ends it)\n`);
     }
   }
   if (follow && pending.size) process.stderr.write(out.map((l) => `${l}\n`).join(""));

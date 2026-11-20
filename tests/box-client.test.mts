@@ -1603,11 +1603,12 @@ test("box runs: one tab separated line per running detached run of this machine'
     "",
   ].join("\n"));
   hostFile(s, "tower", `log.${id}`, `${head(5000, 2952, 5000, "running")}half a li\nstep 2\t\x1b[31mred\x1b[0m\n\n`);
-  hostFile(s, "tower", "log.20261116-094000-0001", head(100, 0, 100, "running"));
+  hostFile(s, "tower", "log.20261116-094000-0001", head(100, 0, 100, "running").replace("\n", "\tage=4000\tquiet=3725\n"));
   hostFile(s, "laptop", "report", "run\tbox=w-3\tid=20261116-091500-0003\tstate=running\texit=-\tbytes=9\tchanged=1\n");
-  hostFile(s, "laptop", "log.20261116-091500-0003", `${head(9, 0, 9, "running")}${"x".repeat(300)}\n`);
+  hostFile(s, "laptop", "log.20261116-091500-0003", `${head(9, 0, 9, "running").replace("\n", "\tage=4000\tquiet=3599\n")}${"x".repeat(300)}\n`);
   const r = go(newRepo(), s, ["runs"], { BOXD_NOW: String(NOW) });
   assert.equal(r.code, 0, r.err);
+  assert.equal(r.err, "box runs: w-2 run 20261116-094000-0001 on tower has written nothing for 1h02m; it may hang (box log --state shows quiet=, box stop --run ends it)\n", "one line for the run silent an hour or more, none below");
   assert.deepEqual(r.out.trimEnd().split("\n"), [
     `tower\tw-1\t${id}\t15m00s\t/home/me/w1\tstep 2 [31mred[0m`,
     "tower\tw-2\t20261116-094000-0001\t5m00s\t/home/me/w2\t-",
