@@ -992,6 +992,24 @@ eq "a later call without --user keeps the account and says nothing" 0 "$(grep -c
 setup; pod "pod run $box --vm -- $B64"
 eq "a new machine box says it runs commands as root and that an account needs --user at creation" "boxd-pod: new machine box $box: commands run as root; an ordinary account needs --user at creation" "$(grep '^boxd-pod: new ' "$T/e/err")"
 eq "a new machine box says the memory and processors its size gives on this host" "boxd-pod: machine box $box: size large on this host is 8192 MB of memory and 4 processors (--size small, medium, large or xlarge at creation)" "$(grep 'on this host is' "$T/e/err")"
+# A box made again over a folder that an earlier box used (here after pod stop) says once what is kept and what is new; a first call and a call into the running box say nothing.
+again() { grep -c '^boxd-pod: .* box '"$box"': made again' "$T/e/err"; }
+setup; pod "pod run $box -- $B64"
+eq "a first call into a new container box prints no made-again line" 0 "$(again)"
+pod "pod stop $box"; pod "pod run $box -- $B64"
+eq "a container box made again after pod stop says what was kept and what is new" "boxd-pod: container box $box: made again from its image: /job and /cache were kept; everything else is new (the home folder outside /job, packages installed with the system's package tool)" "$(grep 'made again' "$T/e/err")"
+pod "pod run $box -- $B64"
+eq "a second call into the running container box prints no made-again line" 0 "$(again)"
+setup; pod "pod run $box --vm -- $B64"
+eq "a first call into a new machine box prints no made-again line" 0 "$(again)"
+pod "pod stop $box"; pod "pod run $box -- $B64"
+eq "a machine box made again after pod stop says what was kept and what is new" "boxd-pod: machine box $box: made again from its image: /job and /cache were kept; everything else is new (the home folder outside /job, packages installed with the system's package tool)" "$(grep 'made again' "$T/e/err")"
+pod "pod run $box -- $B64"
+eq "a second call into the running machine box prints no made-again line" 0 "$(again)"
+setup; pod "pod run $box --vm --user -- $B64"; pod "pod stop $box"; pod "pod run $box -- $B64"
+eq "a --user machine box made again keeps its home, the line says so" "boxd-pod: machine box $box: made again from its image: /job and /cache were kept; everything else is new (packages installed with the system's package tool)" "$(grep 'made again' "$T/e/err")"
+setup; pod "pod run $box --user -- $B64"; pod "pod stop $box"; pod "pod run $box -- $B64"
+eq "a --user container box made again keeps its home, the line says so" "boxd-pod: container box $box: made again from its image: /job and /cache were kept; everything else is new (packages installed with the system's package tool)" "$(grep 'made again' "$T/e/err")"
 setup; mkdir -p "$BOXD_CGROOT/boxd"; printf 'oom_kill 3\n' > "$BOXD_CGROOT/boxd/memory.events"
 export FAKE_EXEC_EXIT=137 FAKE_EXEC_CRASH=4 FAKE_BLOCK_EXEC=1
 pod "pod run $box --detach 20261115-140000-0001 -- $B64"; read -r _ <&3

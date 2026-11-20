@@ -21,7 +21,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-export const VERSION = "0.4.57";
+export const VERSION = "0.4.58";
 const BOX = /^[a-z0-9][a-z0-9_.-]{0,62}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const MAC = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i;
@@ -52,7 +52,7 @@ export const HELP = `usage: box [options] [--] <command...>
                                        stays stopped); --follow keeps reading until the run ended and exits with its code (last line on standard error then: "box: run <run> exit <code> on <host>"); --tail <n> (0 to 100000) prints only the
                                        last <n> lines of what the log holds at first (then, with --follow, all that comes after); --state prints no log, only one line
                                        <run> state=running|ended exit=<code> (exit=- while running or when the run ended without a code), tab separated; an ended run adds
-                                       ended=<time in UTC, like 2026-11-16T17:48:47Z> and, when the server knows when the run began, seconds=<wall seconds>; for a running run also age (seconds since it started) and quiet (seconds since its log last grew):
+                                       ended=<time in UTC, like 2026-11-16T17:48:47Z> and, when the server knows when the run began, seconds=<wall seconds>; for a running run also age (seconds since it started) and quiet (seconds since the run last printed to standard output or standard error; files it writes do not count):
                                        "box log <run> --follow --tail 20" shows how an ended run ended, and exits with its code
        box log <run> --events [--pod <name>] [--host <name>]
                                        after a --detach run ended: the server's own record of what could have disturbed it (memory stalls, kills

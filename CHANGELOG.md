@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.58
+
+- A box made again over its kept folder (after `box stop`, the idle time limit, an eviction, `--recreate` or an image rebuild) says so once on standard error: `boxd-pod: machine box <box>: made again from its image: /job and /cache were kept; everything else is new (the home folder outside /job, packages installed with the system's package tool)`, the same for a container box; a `--user` box, whose home is `/job/home`, is told only of the packages. A plugin in the home folder and libraries installed in a stopped machine were gone on its next call and nothing said why. A first call prints what it printed before.
+- The help and the contract say that `quiet=` of `box log <run> --state` is the silence of the run's standard output and standard error; files the run writes do not count.
+
 ## 0.4.57
 
 - `box log <run> --state` on a running run adds `age=<seconds since the run started>` and `quiet=<seconds since its log last grew>` after `exit=-`, both computed on the host: a silent run shows without a call into the box, and a clock difference between the host and the caller cannot mislead. An ended run's line is unchanged. `pod log` sends the two words after `exit` for a running run.

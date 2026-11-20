@@ -21,7 +21,7 @@ PROC=${BOXD_PROC:-/proc}   # test hook, like BOXD_MEMINFO: where `pod report` fi
 KVM=${BOXD_KVM:-/dev/kvm}   # test hook: the device a --kvm box gets
 ROUTE=${BOXD_ROUTE:-/proc/net/route}   # test hooks: the routing table and the network interface folder `pod report` reads
 NETDIR=${BOXD_NET:-/sys/class/net}
-VERSION=0.4.57
+VERSION=0.4.58
 # Keys that may only read, one "<type> <key> [comment]" per line (view_only below); and the largest answer of pod calls and pod log.
 VIEW_KEYS=${BOXD_VIEW_KEYS:-/etc/boxd/view_keys}
 READ_MAX=${BOXD_READ_MAX:-1048576}
@@ -1297,7 +1297,7 @@ pod_run() {
     local box=${1:-} image="" imgfile="" vm="" container="" queued="" user="" cuser="" kvm="" ckvm="" ulabels="" recreate="" snapshot="" run="" b64="" tty="" name J out rc
     local -a envs=()
     local size="" have="" lim="" asked="" pk pick chosen="" used_mb=0 cap_mb=0 max="" box_fit_mb box_why
-    local kengine="" kuser="" kkvm="" kimage="" gmine="" gother="" k v2 newid="" changed="" rebuilt="" full engine=container cid="" sc="" pc="" vc="" cimg="" cst="" vimg="" vst="" other mine cur st create="" start="" n
+    local kengine="" kuser="" kkvm="" kimage="" gmine="" gother="" k v2 newid="" changed="" rebuilt="" full engine=container cid="" sc="" pc="" vc="" cimg="" cst="" vimg="" vst="" other mine cur st create="" start="" again="" n
     shift
     CALL_T0=${EPOCHREALTIME//[!0-9]/} CALL_BOX=$box CALL_ENGINE=container
     [[ $box =~ $BOX_RE ]] || die "bad box name"
@@ -1582,6 +1582,7 @@ pod_run() {
     if [ ! -e "$J/.last-used" ] && out=$(awk -F'\t' -v b="$box" '$2 == b {l = $0} END {print l}' "$WORK/cache/evictions.log" 2>/dev/null) && [ -n "$out" ]; then
         echo "boxd-pod: the folder of this box was removed on $(date -d "@${out%%$'\t'*}" +%F) (${out##*$'\t'}); it starts empty" >&2
     fi
+    [ -z "$create" ] || [ ! -e "$J/.last-used" ] || again=1   # the folder was used by an earlier box: this one is made again over it (read before the stamp is touched)
     touch "$J/.last-used"   # inside the lock, so reap never sees a box without a stamp
     # Which build the box was made from; a box made from another image has no record, so the next build replaces it.
     if [ -n "$create" ]; then
@@ -1646,6 +1647,12 @@ pod_run() {
             [ -z "$chosen" ] || echo "boxd-pod: machine box $box: size $size chosen from its past need of $chosen MB (give --size to choose yourself)" >&2
         elif [ -n "$user" ]; then echo "boxd-pod: new container box $box: commands run as an ordinary account (--user)" >&2
         else echo "boxd-pod: new container box $box: commands run as root; an ordinary account needs --user at creation" >&2; fi
+        # A box made again over a kept folder (after pod stop, the idle time limit, an eviction or --recreate): /job and /cache stay, the rest of
+        # its file system is new. With --user the home is /job/home, so it stays.
+        if [ -n "$again" ]; then
+            local rest="the home folder outside /job, packages installed with the system's package tool"; [ -z "$user" ] || rest="packages installed with the system's package tool"
+            echo "boxd-pod: $([ -n "$vm" ] && echo machine || echo container) box $box: made again from its image: /job and /cache were kept; everything else is new ($rest)" >&2
+        fi
     fi
 
     local -a eng
