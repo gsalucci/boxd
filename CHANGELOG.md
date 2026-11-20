@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.60
+
+- A call waiting with `--wait` no longer stays behind idle machines. An idle machine (no run or call for `BOXD_VM_IDLE_MIN`, 300 seconds) gives its room to the next machine that asks, but the waiting line's own check (`pod queue`) still counted the memory such machines hold and answered no, so the call that removes them was never made: two waiting launches sat 15 minutes and more behind two machines whose runs had ended. `pod queue` now answers yes when only the measured memory refuses and an idle machine exists.
+- A call that runs a command on a host whose 1 minute load is above its processor count is told so once on standard error: `boxd-pod: this host is busy: load <load> on <n> processors, <k> other boxes run commands; this command will be slow (wait, or use another build server)`. Admission stays by memory; the line only tells.
+
 ## 0.4.59
 
 - The line of a box made again over its kept folder (0.4.58) ends with the way to keep what it names as new: `...; build those into the image with --image-file to keep them`. A Containerfile in the worktree, given with `--image-file`, is the place for setup that must come back after a stop, for a container box and a machine box alike.

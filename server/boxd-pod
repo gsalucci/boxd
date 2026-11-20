@@ -21,7 +21,7 @@ PROC=${BOXD_PROC:-/proc}   # test hook, like BOXD_MEMINFO: where `pod report` fi
 KVM=${BOXD_KVM:-/dev/kvm}   # test hook: the device a --kvm box gets
 ROUTE=${BOXD_ROUTE:-/proc/net/route}   # test hooks: the routing table and the network interface folder `pod report` reads
 NETDIR=${BOXD_NET:-/sys/class/net}
-VERSION=0.4.59
+VERSION=0.4.60
 # Keys that may only read, one "<type> <key> [comment]" per line (view_only below); and the largest answer of pod calls and pod log.
 VIEW_KEYS=${BOXD_VIEW_KEYS:-/etc/boxd/view_keys}
 READ_MAX=${BOXD_READ_MAX:-1048576}
@@ -458,7 +458,8 @@ box_young() { [ $(($(date +%s) - $(stamp_of "$1"))) -le "$VM_IDLE_MIN" ]; }
 # BOXD_VM_IDLE_MIN seconds (300), not being made and with no run or call in it: the reaper's own two locks, so a run in flight
 # is never touched. With SKIP_IDLE set, vm_used and vm_commit leave such machines out: `pod status` answers with the room they
 # would give. shortcut: the measured memory still holds what idle machines use, so `pod status` can say no where `pod run`
-# would make room; upgrade by measuring each machine when that is seen.
+# would make room; upgrade by measuring each machine when that is seen. queue_fits (the waiting line's yes) answers yes in that case too
+# (since 0.4.60): when the only rule left is the measured one and another machine is idle, `pod run` removes it.
 VM_IDLE_MIN=${BOXD_VM_IDLE_MIN:-300}
 [[ $VM_IDLE_MIN =~ ^[0-9]+$ ]] || die "BOXD_VM_IDLE_MIN must be a number"
 vm_idle() {
@@ -483,6 +484,15 @@ vm_evict_idle() {
     ) || return 1
     echo "boxd-pod: the idle machine of box ${best#pod-} was removed to make room for this one" >&2
     printf '%s\t%s\t%s\n' "$(date +%s)" "${best#pod-}" "idle machine removed, ${1#pod-} asked for room" >>"$WORK/cache/evictions.log" 2>/dev/null || true
+}
+# vm_has_idle <own sandbox name>: succeeds when some other running machine is idle (vm_idle), so that vm_evict_idle has one to remove.
+vm_has_idle() {
+    local b st rows
+    rows=$(vm_rows 2>/dev/null) || return 1
+    while IFS=$'\t' read -r b _ st; do
+        [ -n "$b" ] && [ "$b" != "${1:-}" ] && [ "$st" = running ] && vm_idle "$b" && return 0
+    done <<<"$rows"
+    return 1
 }
 # vm_calm: succeeds when a running machine has no run or call in it (not busy): one that was too young to be removed above.
 vm_calm() {
@@ -590,9 +600,12 @@ queue_look() {
 # queue_fits <box> <need>: whether that box's call would be admitted now, by the check a real ask gets (idle machines count as gone, as the
 # eviction would make them, but none is removed here).
 queue_fits() {
-    local box_fit_mb box_why
+    local box_fit_mb box_why hope
     case $2 in
-        vm\ *) [ -z "$(SKIP_IDLE=1 vm_refusal "pod-$1" "${2#vm }")" ] ;;
+        # As in pod_run: the measured memory still holds what idle machines use, so that rule alone refusing (with idle machines left
+        # out) is a yes while one is idle: pod run removes it. Nothing idle left, or another rule refusing: no.
+        vm\ *) hope=$(SKIP_IDLE=1 vm_refusal "pod-$1" "${2#vm }")
+            [ -z "$hope" ] || { [[ $hope == *" MB in use + "* ]] && vm_has_idle "pod-$1"; } ;;
         *) ! box_busy "$1" || return 1   # a call into a busy box needs no room
            SKIP_IDLE=1 box_fit "$1"; [ -z "$box_why" ] ;;
     esac
@@ -1653,6 +1666,19 @@ pod_run() {
             local rest="the home folder outside /job, packages installed with the system's package tool"; [ -z "$user" ] || rest="packages installed with the system's package tool"
             echo "boxd-pod: $([ -n "$vm" ] && echo machine || echo container) box $box: made again from its image: /job and /cache were kept; everything else is new ($rest; build those into the image with --image-file to keep them)" >&2
         fi
+    fi
+
+    # Said for every call that runs a command (2026-11-20: three whole build suites ran at once on a 16 processor host, load 20, a 155 second test
+    # took 35 minutes and nothing told the caller). Admission stays by memory only; this only tells. Whole numbers: the integer part of the 1 minute load
+    # against the processor count. shortcut: the other boxes are counted by box_busy (a run or call), not by what they use; upgrade when that misleads.
+    local busy_l1 busy_k=0 busy_b busy_st busy_who
+    read -r busy_l1 _ 2>/dev/null <"$PROC/loadavg" || busy_l1=0   # 2>/dev/null first: the shell reports a missing file before a later redirection applies
+    if [[ $busy_l1 =~ ^([0-9]+) ]] && [ "${BASH_REMATCH[1]}" -gt "$(nproc)" ]; then
+        while IFS=$'\t' read -r busy_b _ busy_st _; do
+            [ "$busy_st" = running ] && [ "$busy_b" != "$box" ] && box_busy "$busy_b" && busy_k=$((busy_k + 1))
+        done <<<"$(box_rows $(have_msb && echo 1) 2>/dev/null)"
+        case $busy_k in 0) busy_who="no other box runs a command" ;; 1) busy_who="1 other box runs a command" ;; *) busy_who="$busy_k other boxes run commands" ;; esac
+        echo "boxd-pod: this host is busy: load $busy_l1 on $(nproc) processors, $busy_who; this command will be slow (wait, or use another build server)" >&2
     fi
 
     local -a eng

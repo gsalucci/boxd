@@ -125,6 +125,7 @@ case $1 in
     rm) last "$@"
         # as the real engine does: its own progress line on standard error (seen on laptop, 2026-11-17); FAKE_RM_EXIT makes the removal fail
         [ -z "${FAKE_RM_EXIT:-}" ] || { echo "  x Failed             $n" >&2; exit "$FAKE_RM_EXIT"; }
+        [ -z "${FAKE_RM_STAT:-}" ] || cp "$FAKE_RM_STAT" "$BOXD_CGROOT/boxd/memory.stat"   # a removal frees the memory it held (the measure the case chose)
         rm -f "$FAKE_VM_STATE/$n"; echo "  ✓ Removed             $n" >&2 ;;
     image) case $2 in ls) cat "${FAKE_VM_IMAGE_LIST:-/dev/null}"; exit 0 ;; rm) [ "${FAKE_RMI_REFUSE:-}" != "$3" ] || exit 1; exit 0 ;; esac   # the cached images: a header, then "<reference> <digest> <size> <created>"
         last "$@"; cat "$FAKE_VM_IMAGES/$(echo "$n" | tr / _)" 2>/dev/null || exit 1 ;;   # inspect prints the image id
@@ -215,7 +216,7 @@ setup() {
     W=$T/e/work
     export BOXD_WORK=$W FAKE_STATE=$T/e/state FAKE_LOG=$T/e/podman.log FAKE_RSYNC=$T/e/rsync FAKE_KEEP=$T/e/keep \
         FAKE_GIT=$T/e/git FAKE_OVERLAP=$T/e/overlap FAKE_EV=$T/e/ev FAKE_REL=$T/e/rel FAKE_BLOCK=$T/e/block \
-        BOXD_KVM=$T/e/kvm   # absent unless a case makes it: the host's own /dev/kvm never leaks into a case
+        BOXD_PROC=$T/e/proc BOXD_KVM=$T/e/kvm   # absent unless a case makes it: the host's own /dev/kvm never leaks into a case
     mkdir -p "$T/e/imgs" "$T/e/archives" "$T/e/vmstate" "$T/e/vmimgs"
     export FAKE_IMAGES=$T/e/imgs BOXD_IMAGES_DIR=$T/e/archives FAKE_VM_STATE=$T/e/vmstate FAKE_VM_IMAGES=$T/e/vmimgs \
         FAKE_MSB_LOG=$T/e/msb.log FAKE_MSB_ENV=$T/e/msb.env FAKE_VM_BLOCK=$T/e/vmblock BOXD_POD_CLEAN=$T/e/clean \
@@ -1687,5 +1688,53 @@ rm -f "$W/cache/queue/"*
 qroom; mkdir -p "$W/home" "$W/tmp" "$W/cache" "$W/jobs"; chmod 555 "$W"; pod "pod run y --queued -- $B64"; chmod 755 "$W"
 eq "waiting line: the ticket is written when the work area's top folder cannot be written, and the call is refused, not hung" "75 yes" "$rc $(have y)"
 unhold; CASE_ENV=()
+
+# The waiting line answers yes when only idle machines hold the measured memory (2026-11-20: two idle machines of 12288 MB, two waiting
+# calls refused for 15 minutes: the measured memory still holds what idle machines use, so the check with idle machines left out said no and
+# pod run, which removes them, was never called). Cap 8192 MB, two medium machines; the measure is 7000 MB while they run and 3000 MB once one
+# is removed (FAKE_RM_STAT: the fake engine writes that file over the cgroup's when it removes a machine). No step waits on time.
+mem_in_use() { printf 'anon %s\nshmem 0\n' $(($1 * 1048576)) > "$BOXD_CGROOT/boxd/memory.stat"; }
+idle_pair() { two_machines; mem_in_use 7000; printf 'anon %s\nshmem 0\n' $((3000 * 1048576)) > "$T/e/after.stat"; touch -d @100 "$W/jobs/b1/.last-used"; touch -d @200 "$W/jobs/b2/.last-used"; }
+QUEUE_REFUSED="boxd-pod: no room for another virtual machine now; first in line; busy now: none"
+idle_pair; pod "pod queue n vm small"
+eq "waiting line, idle machines: only they hold the measured memory, pod queue says yes (0) and removes nothing" "0 yes yes" "$rc $(hasvm b1) $(hasvm b2)"
+CASE_ENV=(FAKE_RM_STAT="$T/e/after.stat"); pod "pod run n --vm --size small --queued -- $B64"
+eq "waiting line, idle machines: the call pod queue said yes to starts after pod run removes the longest unused machine" "0 no yes yes" "$rc $(hasvm b1) $(hasvm b2) $(hasvm n)"
+eq "waiting line, idle machines: pod run tells the caller of the removal" "boxd-pod: the idle machine of box b1 was removed to make room for this one" "$(grep -i 'removed' "$T/e/err")"
+# Nothing idle is left to remove: no, not an endless yes (the measure stays 7000 MB when the engine's removal changes nothing).
+idle_pair; CASE_ENV=(); pod "pod run n --vm --size small --queued -- $B64"; pod "pod queue n vm small"
+eq "waiting line, idle machines: after pod run removed every idle machine and still refuses, pod queue says no" "75 no no" "$rc $(hasvm b1) $(hasvm b2)"
+# (b) the same machines busy, or young: no.
+idle_pair; : > "$W/jobs/b1/.running"; : > "$W/jobs/b2/.running"; holdbox b1; exec 9<"$W/jobs/b2/.running"; flock -s 9
+pod "pod queue n vm small"; eq "waiting line, idle machines: machines with a run or call in them are not idle, pod queue says no, text unchanged" "75 ${QUEUE_REFUSED%none}b1, b2" "$rc $(sed 's/ (since [0-9:]*)//g' "$T/e/out")"
+exec 9<&-; unhold
+idle_pair; touch "$W/jobs/b1/.last-used" "$W/jobs/b2/.last-used"; pod "pod queue n vm small"
+eq "waiting line, idle machines: young machines are not idle, pod queue says no, text unchanged" "75 $QUEUE_REFUSED" "$rc $(cat "$T/e/out")"
+# (c) with idle machines left out another rule refuses (the size of the busy machine and the large one asked): no.
+cg8; pod "pod run b1 --vm --size small -- $B64"; pod "pod run b2 --vm --size medium -- $B64"; mem_in_use 0
+touch -d @100 "$W/jobs/b2/.last-used"; touch -d @100 "$W/jobs/b1/.last-used"; : > "$W/jobs/b1/.running"; holdbox b1
+pod "pod queue n vm large"; eq "waiting line, idle machines: the busy machines' sizes alone refuse it, pod queue says no and removes nothing" "75 yes yes" "$rc $(hasvm b1) $(hasvm b2)"
+unhold; CASE_ENV=()
+
+# A call that runs a command on a busy host is told so (2026-11-20: three build suites at once on a 16 processor host, load 20, a 155 second
+# test took 35 minutes and nothing said so). The fake nproc says 8; the load comes from the fake proc folder (BOXD_PROC), whole numbers.
+busy_line() { grep -c 'this host is busy' "$T/e/err"; }
+load_is() { mkdir -p "$T/e/proc"; echo "$1 5.00 5.00 1/200 999" > "$T/e/proc/loadavg"; CASE_ENV=(BOXD_PROC="$T/e/proc" BOXD_BOX_RESERVE=0); }
+cg8; load_is 9999.00; pod "pod run y -- $B64"
+eq "busy host: a command on a loaded host gets one line, no other box runs one" "0 1 boxd-pod: this host is busy: load 9999.00 on 8 processors, no other box runs a command; this command will be slow (wait, or use another build server)" "$rc $(busy_line) $(grep 'this host is busy' "$T/e/err")"
+cg8; load_is 9999.00; ctrbox x; holdbox x; pod "pod run y -- $B64"
+eq "busy host: one other box runs a command" "boxd-pod: this host is busy: load 9999.00 on 8 processors, 1 other box runs a command; this command will be slow (wait, or use another build server)" "$(grep 'this host is busy' "$T/e/err")"
+ctrbox w; exec 9<"$W/jobs/w/.running"; flock -s 9; pod "pod run y -- $B64"
+eq "busy host: two other boxes run commands, the line is said once" "1 boxd-pod: this host is busy: load 9999.00 on 8 processors, 2 other boxes run commands; this command will be slow (wait, or use another build server)" "$(busy_line) $(grep 'this host is busy' "$T/e/err")"
+pod "pod run x -- $B64"; eq "busy host: the box's own busy call is not counted as another" "1 boxd-pod: this host is busy: load 9999.00 on 8 processors, 1 other box runs a command; this command will be slow (wait, or use another build server)" "$(busy_line) $(grep 'this host is busy' "$T/e/err")"
+pod "pod run y --detach r1 -- $B64"; eq "busy host: a detached run is told too" 1 "$(busy_line)"
+pod "pod queue y box"; eq "busy host: pod queue says nothing about it" 0 "$(busy_line)"
+exec 9<&-; unhold
+load_is 8.99; pod "pod run y -- $B64"; eq "busy host: a load below the processor count prints no line" 0 "$(busy_line)"
+load_is 8.00; pod "pod run y -- $B64"; eq "busy host: a load equal to the processor count prints no line" 0 "$(busy_line)"
+load_is 9.00; pod "pod run y -- $B64"; eq "busy host: a load above the processor count by a whole number prints the line" 1 "$(busy_line)"
+load_is 0.00; pod "pod run y -- $B64"; eq "busy host: an idle host prints no line" 0 "$(busy_line)"
+CASE_ENV=(BOXD_PROC="$T/e/none"); pod "pod run y -- $B64"; eq "busy host: an unreadable load prints no line" 0 "$(busy_line)"
+CASE_ENV=()
 
 [ "$fails" -eq 0 ] && echo "ALL OK" || { echo "$fails FAILED"; exit 1; }
