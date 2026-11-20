@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.65
+
+- New word `box pull <path>... [--host <name>] [--pod <name>]`: copies paths of this worktree's box (its files under `/job/src` on the build server) back into the working folder and runs nothing in the box, so a stopped box, also a stopped virtual machine, stays stopped and needs no room on the host. Before, fetching results later meant `box --no-sync --pull <path> true`, which started a stopped machine for every read. A leading `/` or a `..` in a path is refused (exit 2); a path that is not in the box prints `box: nothing at <path> in the box, nothing pulled`. The hints after a detached run name the new form. Because `pull` is now a box word, a program of that name run in the box needs `--` before it. No server change.
+
 ## 0.4.64
 
 - `box drop` and `box stop` wait as long as the server needs. Before, the client gave the removal 30 seconds: a box with a large folder on a busy host printed `removing <box> failed (exit 255); record kept` while the server went on removing, and a second try met that removal's lock.

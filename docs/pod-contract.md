@@ -900,8 +900,8 @@ run from inside a worktree (git toplevel of the current directory; `--shards <n>
    which repeats the run's `--host <name>` (when given), `--pod <name>`, `--image <ref>` and `--vm` (without them it would name another box,
    or be refused with 125 for the image or the engine). The run id is the time of the clock of the machine the client runs on, in its
    local time zone (not the host's clock, not coordinated universal time); `box runs` reads it back that way. After the log line it prints one more:
-   `files outside /job go when the idle box is removed (after the host's time limit, 30 minutes by default); keep results under /job/src and fetch them later with: box [--host <name>] [--pod <name>] --no-sync --pull <path> true`
-   (`--pull` runs after a foreground call, so that call is a `true` that starts the box if needed; the rsync reads the job folder, which stays).
+   `files outside /job go when the idle box is removed (after the host's time limit, 30 minutes by default); keep results under /job/src and fetch them later with: box pull <path> [--host <name>] [--pod <name>]`
+   (`box pull <path>...` copies paths of `jobs/<box>/src` back with rsync and runs nothing in the box, so a stopped box or machine stays stopped; it resolves host and box as `box log` does, refuses a leading `/` or a `..` segment with exit 2, and stops at the first path that fails, a missing one printing `box: nothing at <path> in the box, nothing pulled`. `--pull` runs after a foreground call.)
    `--pull` together with `--detach` is never carried out (the run has not ended when the client returns): the client says so on stderr
    (`box: --pull is ignored with --detach ...`) and goes on.
    Silence report (owner decision 2026-11-13): a foreground call that is not on a terminal passes the command's

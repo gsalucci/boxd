@@ -10,6 +10,7 @@
 //   box log <run> --events [--pod <name>] [--host <name>]
 //   box forward [--host <name>] [--pod <name>] <local-port> <box-port>
 //   box vnc [--host <name>] [--pod <name>] [--port <box-port>]
+//   box pull <path>... [--host <name>] [--pod <name>]
 //   box drop [--pod <name>] [--host <name>]
 //   box stop [--pod <name>] [--host <name>]
 //   box stop --run <run> [--pod <name>] [--host <name>]
@@ -22,7 +23,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-export const VERSION = "0.4.64";
+export const VERSION = "0.4.65";
 const BOX = /^[a-z0-9][a-z0-9_.-]{0,62}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const MAC = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i;
@@ -66,6 +67,10 @@ export const HELP = `usage: box [options] [--] <command...>
                                        (0 picks a free local port); one ssh per connection, no sync, starts nothing; Ctrl+C stops
        box vnc [--host <name>] [--pod <name>] [--port <box-port>]
                                        forward (default box port 5900) and open vnc://<loopback>:<port> with xdg-open
+       box pull <path>... [--host <name>] [--pod <name>]
+                                       copies each path (relative to the worktree, from the box's files on the build server) back into your working
+                                       folder with no command run in the box: a stopped box, also a stopped machine, stays stopped. Same host and
+                                       box as box log; stops at the first path that fails (one that is not in the box says so and exits with the copy's code); no leading / and no ..
        box drop [--pod <name>] [--host <name>]
                                        removes this worktree's box and its files on the build server now, and its record here, for a worktree you
                                        delete yourself (run it from inside the worktree, before deleting it): the collector would wait 15 minutes
@@ -82,7 +87,7 @@ export const HELP = `usage: box [options] [--] <command...>
                                        owns ("unknown owner", nothing is touched) and reports commands running over 6 hours;
                                        --dry-run only says what it would do. Runs by itself after an ordinary call, at most every
                                        15 minutes ($BOXD_GC=0 turns that off); records in ~/.local/state/boxd
-The words setup, runs, hosts, image, ps, log, forward, vnc, drop, stop and gc must come first (box drop --host <name>): after an option, as in box --host <name> drop,
+The words setup, runs, hosts, image, ps, log, forward, vnc, pull, drop, stop and gc must come first (box drop --host <name>): after an option, as in box --host <name> drop,
 they are refused (exit 2); to run a program of that name in the box, write -- before it.
 Syncs the git worktree you are in to the build server, runs <command> in this worktree's own box (a podman
 container or, with --vm, a small virtual machine; the same box on every call) and passes its exit code through; once the command was handed to a server, the last line on standard error is "box: exit <code> on <host>" (not with --detach or --shards). Use sh -c '...' for shell syntax.
@@ -1232,7 +1237,7 @@ async function shardsCall(keep: string[], words: string[], base: string, n: numb
 }
 
 // The words box handles itself, dispatched on args[0] in main: they must come first. Keep this list in step with that dispatch.
-const BOX_WORDS = ["setup", "runs", "ps", "hosts", "log", "forward", "vnc", "drop", "stop", "gc", "image"];
+const BOX_WORDS = ["setup", "runs", "ps", "hosts", "log", "forward", "vnc", "drop", "stop", "gc", "image", "pull"];
 
 // `inner`: set by box --shards for each of its own calls: the call is detached with this run id, is never on a terminal, prints no run lines
 // and says the host it ran on.
@@ -1244,6 +1249,7 @@ export function main(args: string[], env: Env = process.env, inner?: { run: stri
   if (args[0] === "log") return logCall(args.slice(1), env);
   if (args[0] === "forward" || args[0] === "vnc") return forwardCall(args[0], args.slice(1), env);
   if (args[0] === "drop" || args[0] === "stop") return dropCall(args.slice(1), env, args[0]);
+  if (args[0] === "pull") return pullCall(args.slice(1), env);
   if (args[0] === "gc") return gcCall(args.slice(1), env);
   if (args[0] === "image") return args[1] === "push" ? imagePush(args.slice(2), env) : usage("box image: only \"box image push\" exists");
   const flags: string[] = [], pulls: string[] = [], includes: string[] = [];
@@ -1341,7 +1347,7 @@ export function main(args: string[], env: Env = process.env, inner?: { run: stri
   const p = plan(toplevel, run ? [...flags, "--detach", run] : flags, argv);
   if ("error" in p) return usage(p.error);
   // A detached call returns before the command ends, so nothing is there to pull yet (finish() never reaches the pulls).
-  if (run && pulls.length) process.stderr.write("box: --pull is ignored with --detach (the run has not ended when box returns); fetch later with: box --no-sync --pull <path> true\n");
+  if (run && pulls.length) process.stderr.write("box: --pull is ignored with --detach (the run has not ended when box returns); fetch later with: box pull <path>\n");
   const stdio = { stdio: "inherit" } as const;
   const tty = !inner && process.stdin.isTTY && process.stdout.isTTY;
   const minutes = Number(psAfter), { box, remote } = p;
@@ -1512,11 +1518,19 @@ export function main(args: string[], env: Env = process.env, inner?: { run: stri
     // box log reads the log from the server without starting the box (a stopped box stays stopped).
     const same = [...(hostFlag ? ["--host", hostFlag] : []), ...flags.flatMap((f, j) => f === "--pod" ? [f, flags[j + 1] as string] : [])];
     if (code === 0) process.stdout.write(`run ${run}\nread its log: ${["box", "log", run, ...same].join(" ")} (--follow waits for the end and exits with its code)\n`
-      + `files outside /job go when the idle box is removed (after the host's time limit, 30 minutes by default); keep results under /job/src and fetch them later with: ${["box", ...same, "--no-sync", "--pull", "<path>", "true"].join(" ")}\n`);
+      + `files outside /job go when the idle box is removed (after the host's time limit, 30 minutes by default); keep results under /job/src and fetch them later with: ${["box", "pull", "<path>", ...same].join(" ")}\n`);
     return code;
   }
   if (code === 125) return code; // the box never ran the command
-  for (const given of pulls) {
+  const failed = pullPaths(pulls, host, box, toplevel);
+  return failed ? code || failed : code;
+  }
+}
+
+// Copies each path (relative to the worktree) from the box's files on the server into the working folder, without running anything in the box.
+// Stops at the first failure and returns its exit code; 0 when every path came.
+function pullPaths(paths: string[], host: string, box: string, toplevel: string): number {
+  for (const given of paths) {
     // Into the parent folder: rsync copies a folder INTO an existing destination, so `--pull out` gave out/out.
     const rel = given.replace(/\/+$/, "");
     const r = spawnSync("rsync", ["-a", "--mkpath", `boxd-${host}:jobs/${box}/src/${rel}`, `${path.dirname(`${toplevel}/${rel}`)}/`], { stdio: ["inherit", "inherit", "pipe"], encoding: "utf8" });
@@ -1524,10 +1538,31 @@ export function main(args: string[], env: Env = process.env, inner?: { run: stri
     const missing = r.status !== 0 && /(link_stat|change_dir) ".*" failed: No such file or directory/.test(r.stderr);
     if (missing) process.stderr.write(`box: nothing at ${rel} in the box, nothing pulled\n`);
     else process.stderr.write(r.stderr);
-    if (r.status !== 0) { if (!missing) process.stderr.write(`box: pull ${rel} failed\n`); return code || (r.status ?? 1); }
+    if (r.status !== 0) { if (!missing) process.stderr.write(`box: pull ${rel} failed\n`); return r.status ?? 1; }
   }
-  return code;
+  return 0;
+}
+
+// box pull <path>...: the files of this worktree's box come back with no command run in the box, so a stopped box stays stopped.
+// Resolved as box log does (--host, --pod, the worktree's record); no probe, no wake.
+function pullCall(args: string[], env: Env): number {
+  let hostFlag: string | undefined, pod: string | undefined;
+  const paths: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i] as string, v = args[i + 1];
+    if (a === "--help" || a === "-h") { process.stdout.write(`${HELP}\n`); return 0; }
+    if ((a === "--host" || a === "--pod") && v !== undefined) { if (a === "--host") hostFlag = v; else pod = v; i++; }
+    else if (!a.startsWith("--")) paths.push(a);
+    else return usage(`box pull: unknown option ${a}`);
   }
+  if (!paths.length) return usage("box pull: give at least one path, relative to the worktree");
+  const bad = paths.find((p) => p.startsWith("/") || p.split("/").includes(".."));
+  if (bad !== undefined) return usage(`box pull: ${bad} must be inside the worktree: no leading / and no .. in the path`);
+  const t = readTarget(hostFlag, pod, env);
+  if (typeof t === "string") return usage(t);
+  const top = spawnSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).stdout.trim();
+  if (!top) return usage("box pull: run it inside the git worktree the files belong to");
+  return pullPaths(paths, t.HOST.replace(/^boxd-/, ""), t.box, top);
 }
 
 // A call whose output is passed through, watched for silence: after `afterMs` with nothing on stdout or

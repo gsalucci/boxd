@@ -53,7 +53,7 @@ queue around `box`; a refusal waiting cannot fix, like a missing image, still ex
   which makes a new empty one. With the power module on, the server stays awake until the run ends.
   A box takes one detached run at a time unless the runs share no files: all runs of a box use `/job/src`, and the server says on stderr when one is already going.
   `--pull` does nothing with `--detach`. **A detached run's results must be under `/job/src`** (files elsewhere, like `/tmp`, go when the idle box
-  is removed); fetch them later with `box --no-sync --pull <path> true`. `box log <id>` keeps the full output on the server, so a long test
+  is removed); fetch them later with `box pull <path>` (it runs nothing in the box, so a stopped box or machine stays stopped). `box log <id>` keeps the full output on the server, so a long test
   output need not pass through you: read the end of it (`box log <id> | tail -n 50`) instead of printing it in the call.
 - `box runs` lists the detached runs still running on the servers (host, box, run id, age, worktree, last output line, tab separated), so you
   can see your work in flight without lock files of your own. It never wakes a sleeping server (it names it). A run that wrote nothing

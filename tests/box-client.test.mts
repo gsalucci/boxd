@@ -273,19 +273,46 @@ test("--detach sends a run id, prints it and the log command", () => {
   const id = /^ssh boxd-test pod run \S+ --detach (\d{8}-\d{6}-[0-9a-f]{4}) -- /.exec(r.calls[0] ?? "")?.[1];
   assert.ok(id, r.calls[0]);
   assert.match(r.out, new RegExp(`^run ${id}\\nread its log: box log ${id} \\(--follow waits for the end and exits with its code\\)\\n`));
-  assert.match(r.out, /\nfiles outside \/job go when the idle box is removed \(after the host's time limit, 30 minutes by default\); keep results under \/job\/src and fetch them later with: box --no-sync --pull <path> true\n$/);
+  assert.match(r.out, /\nfiles outside \/job go when the idle box is removed \(after the host's time limit, 30 minutes by default\); keep results under \/job\/src and fetch them later with: box pull <path>\n$/);
 });
 
-test("--detach: the fetch command it prints works (same host and box, --no-sync, a pull after a `true`), and --pull with --detach is said to do nothing", () => {
+test("--detach: the fetch command it prints works (same host and box, a pull with no command run), and --pull with --detach is said to do nothing", () => {
   const r = runBox(["--no-sync", "--host", "test", "--pod", "shared", "--detach", "--pull", "out", "sleep", "9"]);
   assert.equal(r.code, 0);
-  assert.match(r.err, /^box: --pull is ignored with --detach .*fetch later with: box --no-sync --pull <path> true\n$/);
+  assert.match(r.err, /^box: --pull is ignored with --detach .*fetch later with: box pull <path>\n$/);
   assert.equal(r.calls.length, 1, "no pull was tried");
   const fetch = /fetch them later with: (box .*)\n$/.exec(r.out)?.[1]?.replace("<path>", "dist/x").split(" ").slice(1);
-  assert.deepEqual(fetch, ["--host", "test", "--pod", "shared", "--no-sync", "--pull", "dist/x", "true"]);
+  assert.deepEqual(fetch, ["pull", "dist/x", "--host", "test", "--pod", "shared"]);
   const again = runBox(fetch ?? []);
-  assert.deepEqual(again.calls, [`ssh boxd-test pod run shared -- ${b64("true")}`, `rsync -a --mkpath boxd-test:jobs/shared/src/dist/x ${top}/dist/`]);
+  assert.deepEqual(again.calls, [`rsync -a --mkpath boxd-test:jobs/shared/src/dist/x ${top}/dist/`]);
   assert.equal(runBox(["--no-sync", "--detach", "sleep", "9"]).err, "", "nothing to warn about without --pull");
+});
+
+test("box pull copies the paths back with rsync and runs nothing in the box (no ssh call)", () => {
+  const r = runBox(["pull", "out/report.txt", "a.txt"]);
+  assert.equal(r.code, 0);
+  assert.deepEqual(r.calls, [
+    `rsync -a --mkpath boxd-test:jobs/${box}/src/out/report.txt ${top}/out/`,
+    `rsync -a --mkpath boxd-test:jobs/${box}/src/a.txt ${top}/`,
+  ]);
+  assert.deepEqual(runBox(["pull", "--host", "test", "--pod", "shared", "x/"]).calls, [`rsync -a --mkpath boxd-test:jobs/shared/src/x ${top}/`]);
+});
+
+test("box pull with no path, an unknown option, an absolute path or a .. path is a usage error (exit 2) and calls nothing", () => {
+  for (const [v, text] of [[["pull"], /^box pull: give at least one path/], [["pull", "--bogus", "x"], /^box pull: unknown option --bogus/], [["pull", "--host", "test"], /^box pull: give at least one path/],
+    [["pull", "/etc/passwd"], /^box pull: \/etc\/passwd must be inside the worktree/], [["pull", "ok", "../x"], /^box pull: \.\.\/x must be inside the worktree/], [["pull", "a/../../x"], /must be inside the worktree/]] as const) {
+    const r = runBox([...v]);
+    assert.equal(r.code, 2, v.join(" "));
+    assert.match(r.err, text);
+    assert.deepEqual(r.calls, [], v.join(" "));
+  }
+});
+
+test("box pull of a path that is not in the box says nothing was pulled and exits nonzero, stopping at it", () => {
+  const r = runBox(["pull", "gone.txt", "b.txt"], { env: { FAKE_RSYNC_ERR: 'rsync: [sender] link_stat "/x/gone.txt" failed: No such file or directory (2)' } });
+  assert.equal(r.code, 12);
+  assert.equal(r.err, "box: nothing at gone.txt in the box, nothing pulled\n");
+  assert.equal(r.calls.length, 1, "stopped at the first failure");
 });
 
 test("--vm reaches the remote line after --image", () => {
