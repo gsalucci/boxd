@@ -21,7 +21,7 @@ PROC=${BOXD_PROC:-/proc}   # test hook, like BOXD_MEMINFO: where `pod report` fi
 KVM=${BOXD_KVM:-/dev/kvm}   # test hook: the device a --kvm box gets
 ROUTE=${BOXD_ROUTE:-/proc/net/route}   # test hooks: the routing table and the network interface folder `pod report` reads
 NETDIR=${BOXD_NET:-/sys/class/net}
-VERSION=0.4.62
+VERSION=0.4.63
 # Keys that may only read, one "<type> <key> [comment]" per line (view_only below); and the largest answer of pod calls and pod log.
 VIEW_KEYS=${BOXD_VIEW_KEYS:-/etc/boxd/view_keys}
 READ_MAX=${BOXD_READ_MAX:-1048576}
@@ -1205,7 +1205,11 @@ pod_report() {
         "$gmax" "$gcur" "${pr[0]:--}" "${pr[1]:--}" "${pr[2]:--}" "${pr[3]:--}" "${oom:--}" "$psome" "$pfull" "$ntx" "$nlc"
     printf '\tvm_used=%s\tvm_max=%s\tvm_room=%s\tvm_mem_mb=%s\tbox_mem_mb=%s\tdisk_pct=%s\tdisk_total_mb=%s\tdisk_used_mb=%s\tttl=%s\twork_own=%s\twork_shared=%s\tevict_at=%s\tevict_to=%s\tkeep_days=%s' \
         "${S[vm_used]}" "${S[vm_max]}" "${S[vm_room]}" "$(lim_mb "$VM_LIMITS")" "$(ctr_limit_mb)" "${S[disk_pct]}" "$dt" "$du" "$TTL" "$own" "$shared" "$EVICT_AT" "$EVICT_TO" "$KEEP_DAYS"
-    printf '\tpower=%s\tidle_checks=%s\tidle_count=%s\tidle_last=%s\treset_at=%s\tkeepawake=%s\twaiting=%s\n' "$power" "$ic" "${cnt:--}" "${last:--}" "$rat" "$ka" "${S[waiting]:-0}"
+    printf '\tpower=%s\tidle_checks=%s\tidle_count=%s\tidle_last=%s\treset_at=%s\tkeepawake=%s\twaiting=%s' "$power" "$ic" "${cnt:--}" "${last:--}" "$rat" "$ka" "${S[waiting]:-0}"
+    local swu="-" swm="-" v   # the group's swap: used, and its limit (a dash for `max` or unreadable)
+    { v=$(<"$CGROUP/memory.swap.current"); } 2>/dev/null && [[ $v =~ ^[0-9]+$ ]] && swu=$((v / 1048576))
+    { v=$(<"$CGROUP/memory.swap.max"); } 2>/dev/null && [[ $v =~ ^[0-9]+$ ]] && swm=$((v / 1048576))
+    printf '\tgroup_swap_used_mb=%s\tgroup_swap_max_mb=%s\n' "$swu" "$swm"
     have_msb && vmrows=1
     rows=$(box_rows $vmrows) || exit 125   # a failed engine listing is no list (see pod_list)
     while IFS=$'\t' read -r box image state engine; do

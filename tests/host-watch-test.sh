@@ -25,6 +25,14 @@ run() { printf 'run\tbox=%s\tid=%s\tstate=%s\texit=-\tbytes=0\tchanged=1\n' "$@"
 out=$($W check tower "$T/good" $NOW)
 [ -z "$out" ] && ok "a healthy report has no finding" || bad "a healthy report has no finding: $out"
 
+# The group's swap nearly full (90 percent of its limit) is a finding; below that, or with no limit known, it is not.
+sed '1s/$/\tgroup_swap_used_mb=8139\tgroup_swap_max_mb=8192/' "$T/good" > "$T/swap"
+has "swap cushion full" "the boxes have 8139 of their 8192 MB of swap in use" "$($W check tower "$T/swap" $NOW)"
+sed '1s/$/\tgroup_swap_used_mb=7372\tgroup_swap_max_mb=8192/' "$T/good" > "$T/swap"
+out=$($W check tower "$T/swap" $NOW); [ -z "$out" ] && ok "swap below 90 percent is no finding" || bad "swap below 90 percent is no finding: $out"
+sed '1s/$/\tgroup_swap_used_mb=8139\tgroup_swap_max_mb=-/' "$T/good" > "$T/swap"
+out=$($W check tower "$T/swap" $NOW); [ -z "$out" ] && ok "swap with no limit is no finding" || bad "swap with no limit is no finding: $out"
+
 # Every rule broken at once.
 { host 24000 4 3 80 12 held; box a vm running $((NOW - 60)) 8192 no 0; box b vm running $((NOW - 60)) 8192 no 0
   box c vm running $((NOW - 60)) 8192 no 0; box d vm running $((NOW - 60)) 4096 no 0

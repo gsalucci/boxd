@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.63
+
+- The host line of `pod report` ends with two new fields, `group_swap_used_mb` and `group_swap_max_mb`: the swap the build group uses and its limit (`memory.swap.current`, `memory.swap.max`; a dash when unreadable or unlimited). When the two are close the group has no swap left to give, and the next memory burst at the cap ends in a kill; until now nothing in the report showed that state.
+
 ## 0.4.62
 
 - `box runs` says when a running run looks hung: a run that wrote nothing to its standard output or standard error for an hour or more gets one line on standard error, `box runs: <box> run <id> on <host> has written nothing for <time>; it may hang (box log --state shows quiet=, box stop --run ends it)`. The table on standard output is unchanged. A run hung for four hours unseen because only `box log --state` showed the silence.

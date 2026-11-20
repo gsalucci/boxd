@@ -830,6 +830,12 @@ CASE_ENV=(BOXD_MEMINFO="$W/meminfo"); pod "pod status"
 eq "pod status: after images come the host's available memory and the group's used and maximum" $'mem_avail_mb=9000\tgroup_mem_used_mb=3\tgroup_mem_max_mb=8192' "$(awk -F'\t' '{ print $(NF-8) "\t" $(NF-7) "\t" $(NF-6) }' "$T/e/out")"
 eq "pod status: mem_free_mb stays the group's accounting" mem_free_mb=8189 "$(tr '\t' '\n' < "$T/e/out" | grep '^mem_free_mb=')"
 pod "pod report"; eq "pod report: its host line has the same three figures as pod status" $'mem_avail_mb=9000\tgroup_mem_max_mb=8192\tgroup_mem_used_mb=3' "$(head -1 "$T/e/out" | tr '\t' '\n' | grep -E '^(mem_avail_mb|group_mem_max_mb|group_mem_used_mb)=' | paste -sd'\t')"
+# The host line ends with the group's swap: memory.swap.current and memory.swap.max in megabytes, a dash when unreadable (and for `max`).
+hostend() { head -n 1 "$T/e/out" | awk -F'\t' '{ print $(NF-1) "\t" $NF }' | tr '\t' ' '; }
+echo 8534360064 > "$BOXD_CGROOT/boxd/memory.swap.current"; echo 8589934592 > "$BOXD_CGROOT/boxd/memory.swap.max"; pod "pod report"
+eq "pod report: the host line ends with the group's swap used and maximum" "group_swap_used_mb=8139 group_swap_max_mb=8192" "$(hostend)"
+echo max > "$BOXD_CGROOT/boxd/memory.swap.max"; pod "pod report"; eq "pod report: swap maximum is a dash for max" "group_swap_used_mb=8139 group_swap_max_mb=-" "$(hostend)"
+rm -f "$BOXD_CGROOT/boxd/memory.swap.current" "$BOXD_CGROOT/boxd/memory.swap.max"; pod "pod report"; eq "pod report: both swap figures are dashes when unreadable" "group_swap_used_mb=- group_swap_max_mb=-" "$(hostend)"
 CASE_ENV=()
 
 # The version `pod status` prints is the release version: the one of the package template (0.4.0 was printed by a 0.4.9 package).
