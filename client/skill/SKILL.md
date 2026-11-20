@@ -108,7 +108,7 @@ queue around `box`; a refusal waiting cannot fix, like a missing image, still ex
 - **The sync sends only what git counts as the worktree.** A file git ignores (a `*.log` journal, a state folder) does not reach the box
   unless named: `--include <path>` (file or folder, repeatable). The other way round, ignored files a run made in the box stay there
   between calls; `--clean` deletes them first, so the box's source folder is exactly your worktree (use it for measurements).
-- `box log <id> --state` answers "is it still running" in one line (`<id>`, `state=running|ended`, `exit=<code>`, and for an ended run `ended=<UTC time>` and `seconds=<wall seconds>`), without reading the log.
+- `box log <id> --state` answers "is it still running" in one line (`<id>`, `state=running|ended`, `exit=<code>`, and for an ended run `ended=<UTC time>` and `seconds=<wall seconds>`; for a running run `age=<seconds since it started>` and `quiet=<seconds since its log last grew>`), without reading the log.
 - `box log <id> --follow` ends standard error with `box: run <id> exit <code> on <host>` once the run has ended, so a wrapper that loses the exit code still shows it.
 - `box log <id> --follow --tail 20` answers "how did it end" for a run that has ended (its last 20 lines), and exits with the run's code.
 - `box log <id> --events` after a detached run ended (a paid measurement): the host's own record of what could have disturbed it, one `key=value` per line: memory stall milliseconds and

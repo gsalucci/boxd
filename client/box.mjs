@@ -21,7 +21,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-export const VERSION = "0.4.56";
+export const VERSION = "0.4.57";
 const BOX = /^[a-z0-9][a-z0-9_.-]{0,62}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const MAC = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i;
@@ -52,11 +52,11 @@ export const HELP = `usage: box [options] [--] <command...>
                                        stays stopped); --follow keeps reading until the run ended and exits with its code (last line on standard error then: "box: run <run> exit <code> on <host>"); --tail <n> (0 to 100000) prints only the
                                        last <n> lines of what the log holds at first (then, with --follow, all that comes after); --state prints no log, only one line
                                        <run> state=running|ended exit=<code> (exit=- while running or when the run ended without a code), tab separated; an ended run adds
-                                       ended=<time in UTC, like 2026-11-16T17:48:47Z> and, when the server knows when the run began, seconds=<wall seconds>:
+                                       ended=<time in UTC, like 2026-11-16T17:48:47Z> and, when the server knows when the run began, seconds=<wall seconds>; for a running run also age (seconds since it started) and quiet (seconds since its log last grew):
                                        "box log <run> --follow --tail 20" shows how an ended run ended, and exits with its code
        box log <run> --events [--pod <name>] [--host <name>]
                                        after a --detach run ended: the server's own record of what could have disturbed it (memory stalls, kills
-                                       for memory, in a machine box guest_kills, a full /job: disk_full, network card stalls, other boxes busy, other runs of the same box: siblings), one key=value per line; exit 0 when the record covers the
+                                       for memory, in a machine box guest_kills and machine_size and machine_mb (the size the run began with), a full /job: disk_full, network card stalls, other boxes busy, other runs of the same box: siblings), one key=value per line; exit 0 when the record covers the
                                        whole run, 3 when it does not (the reason on standard error, the lines still printed); excludes --follow, --tail, --state
        box forward [--host <name>] [--pod <name>] <local-port> <box-port>
                                        reach a port of this worktree's running container box (loopback inside it) on the loopback address here
@@ -912,7 +912,9 @@ export async function logCall(args, env) {
         if (state) {
             // ended/seconds: only digits are believed (an older server sends neither); the instant is printed in UTC without milliseconds.
             const ended = kv.state === "ended" && /^\d{1,12}$/.test(kv.ended ?? "") ? `\tended=${new Date(Number(kv.ended) * 1000).toISOString().replace(".000Z", "Z")}` : "", secs = ended && /^\d{1,9}$/.test(kv.seconds ?? "") ? `\tseconds=${kv.seconds}` : "";
-            process.stdout.write(`${run}\tstate=${kv.state}\texit=${/^\d{1,3}$/.test(kv.exit ?? "") ? kv.exit : "-"}${ended}${secs}\n`);
+            // age/quiet: a running run only, digits only (an older server sends neither).
+            const live = kv.state === "running" ? ["age", "quiet"].map((k) => (/^\d{1,9}$/.test(kv[k] ?? "") ? `\t${k}=${kv[k]}` : "")).join("") : "";
+            process.stdout.write(`${run}\tstate=${kv.state}\texit=${/^\d{1,3}$/.test(kv.exit ?? "") ? kv.exit : "-"}${ended}${secs}${live}\n`);
             return 0;
         }
         const body = r.stdout.subarray(nl + 1);

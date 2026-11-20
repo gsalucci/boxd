@@ -21,7 +21,7 @@ PROC=${BOXD_PROC:-/proc}   # test hook, like BOXD_MEMINFO: where `pod report` fi
 KVM=${BOXD_KVM:-/dev/kvm}   # test hook: the device a --kvm box gets
 ROUTE=${BOXD_ROUTE:-/proc/net/route}   # test hooks: the routing table and the network interface folder `pod report` reads
 NETDIR=${BOXD_NET:-/sys/class/net}
-VERSION=0.4.56
+VERSION=0.4.57
 # Keys that may only read, one "<type> <key> [comment]" per line (view_only below); and the largest answer of pod calls and pod log.
 VIEW_KEYS=${BOXD_VIEW_KEYS:-/etc/boxd/view_keys}
 READ_MAX=${BOXD_READ_MAX:-1048576}
@@ -928,7 +928,7 @@ run_exit() { local l; l=$(tail -n 1 "$1" 2>/dev/null); [[ $l =~ ^EXIT\ ([0-9]+)$
 run_alive() { local pg; [ -e "$1" ] && { read -r pg < "$1"; } 2>/dev/null && [[ $pg =~ ^[0-9]+$ ]] && kill -0 -- "-$pg" 2>/dev/null; }
 
 pod_log() {
-    local box=${1:-} id=${2:-} f st=ended ex=- size from next WIN off end= born extra=
+    local box=${1:-} id=${2:-} f st=ended ex=- size from next WIN off end= born extra= now
     [[ $box =~ $BOX_RE ]] || die "bad box name"
     [[ $id =~ $RUN_RE ]] || die "bad run id"
     off=$(read_offset "${3:-}") || exit 125
@@ -941,6 +941,12 @@ pod_log() {
         extra=$'\tended='$end
         born=$(stat -c %W "$f" 2>/dev/null) || born=
         [[ $born =~ ^[1-9][0-9]*$ ]] && [ "$end" -ge "$born" ] && extra+=$'\tseconds='$((end - born))
+    fi
+    # A running run's age and silence, since the birth time and the last write of its log, one clock reading; a word is left out when its time is unreadable.
+    if [ "$st" = running ]; then
+        now=$(date +%s); born=$(stat -c %W "$f" 2>/dev/null) || born=; end=$(stat -c %Y "$f" 2>/dev/null) || end=
+        [[ $born =~ ^[1-9][0-9]*$ ]] && [ "$now" -ge "$born" ] && extra+=$'\tage='$((now - born))
+        [[ $end =~ ^[0-9]+$ ]] && extra+=$'\tquiet='$((now > end ? now - end : 0))
     fi
     window "$f" "$off"
     printf 'log\tsize=%s\tfrom=%s\tnext=%s\tstate=%s\texit=%s%s\n' "$size" "$from" "$next" "$st" "$ex" "$extra"
@@ -957,7 +963,7 @@ snap_read() {
     [[ ${a[time]:-} =~ ^[0-9]+$ ]]
 }
 pod_events() {
-    local box=${1:-} id=${2:-} f ev st=ended ex=- why=- eng=- s=- e=- sec=- k b i l first=- cn now oth=- sib=- os oe hs= he= full=yes jp=- jf=-
+    local box=${1:-} id=${2:-} f ev st=ended ex=- why=- eng=- s=- e=- sec=- k b i l first=- cn now oth=- sib=- os oe hs= he= full=yes jp=- jf=- msz=- mmb=-
     local -A S=() E=() X=() O=() D=() B=()
     [[ $box =~ $BOX_RE ]] || die "bad box name"
     [[ $id =~ $RUN_RE ]] || die "bad run id"
@@ -1009,10 +1015,13 @@ pod_events() {
     done
     # How full /job was at the end, a level and not a difference, so it stands after a restart; a dash with no end record or no reading.
     [ -n "$he" ] && [[ ${E[job_disk_pct]:-} =~ ^[0-9]+$ ]] && { jp=${E[job_disk_pct]}; [ "$jp" -ge 99 ] && jf=yes || jf=no; }
+    # The machine size the run began with (the start record), a level like the disk, so it stands after a restart; a dash for an old record or a container box.
+    [ -n "$hs" ] && [[ ${S[machine_size]:-} =~ ^(small|medium|large|xlarge)$ ]] && msz=${S[machine_size]}
+    [ -n "$hs" ] && [[ ${S[machine_mb]:-} =~ ^[0-9]+$ ]] && mmb=${S[machine_mb]}
     [ "$why" = - ] || full=no
     printf 'events\tbox=%s\tid=%s\tengine=%s\tstate=%s\tcomplete=%s\twhy=%s\tstart=%s\tend=%s\tseconds=%s\texit=%s' "$box" "$id" "$eng" "$st" "$full" "$why" "$s" "$e" "$sec" "$ex"
-    printf '\tgroup_stall_ms=%s\tgroup_stall_some_ms=%s\tkills=%s\tkills_by_cap=%s\tbox_stall_ms=%s\tbox_stall_some_ms=%s\tbox_kills=%s\tbox_limit_kills=%s\tnet_tx_timeouts=%s\tnet_link_changes=%s\tothers=%s\tsiblings=%s\tguest_kills=%s\tjob_disk_pct=%s\tdisk_full=%s\n' \
-        "${D[group_full_ms]}" "${D[group_some_ms]}" "${D[group_kills]}" "${D[group_cap_kills]}" "${D[box_full_ms]}" "${D[box_some_ms]}" "${D[box_kills]}" "${D[box_limit_kills]}" "${D[net_tx_timeouts]}" "${D[net_link_changes]}" "$oth" "$sib" "${D[guest_kills]}" "$jp" "$jf"
+    printf '\tgroup_stall_ms=%s\tgroup_stall_some_ms=%s\tkills=%s\tkills_by_cap=%s\tbox_stall_ms=%s\tbox_stall_some_ms=%s\tbox_kills=%s\tbox_limit_kills=%s\tnet_tx_timeouts=%s\tnet_link_changes=%s\tothers=%s\tsiblings=%s\tguest_kills=%s\tjob_disk_pct=%s\tdisk_full=%s\tmachine_size=%s\tmachine_mb=%s\n' \
+        "${D[group_full_ms]}" "${D[group_some_ms]}" "${D[group_kills]}" "${D[group_cap_kills]}" "${D[box_full_ms]}" "${D[box_some_ms]}" "${D[box_kills]}" "${D[box_limit_kills]}" "${D[net_tx_timeouts]}" "${D[net_link_changes]}" "$oth" "$sib" "${D[guest_kills]}" "$jp" "$jf" "$msz" "$mmb"
 }
 
 # pod end <box> <run>: ends one detached run and nothing else (docs/pod-contract.md, "Ending a detached run"). Its processes carry
@@ -1125,7 +1134,7 @@ set -- $(df -P /job | tail -n 1); d=${5%\%}; echo "${v:--} ${d:--}"' </dev/null 
 # events_snapshot <box> <vm|container>: what `pod events` differences, one key=value line each, a dash when unreadable (docs/pod-contract.md).
 # All counters only grow, so the end minus the start is what happened in between. A machine has no group of its own: every box word is a dash.
 events_snapshot() {
-    local some full ntx nlc bl pid c g="" bs=- bf=- bk=- bc=- boot gk=- jd=-
+    local some full ntx nlc bl pid c g="" bs=- bf=- bk=- bc=- boot gk=- jd=- ms=- mm=- sz
     read -r some full ntx nlc < <(stall_counters)
     if [ "$2" != vm ]; then
         bl=$(podman container inspect --format '{{.State.Pid}} {{.Config.Labels}}' "pod-$1" </dev/null 2>/dev/null); pid=${bl%% *}
@@ -1133,11 +1142,13 @@ events_snapshot() {
         jd=$(df --output=pcent "$WORK/jobs/$1" 2>/dev/null | tail -n 1 | tr -dc 0-9); jd=${jd:--}
         [ -z "$g" ] || { read -r bs bf < <(pressure_ms "$g"); bk=$(event_count "$g/memory.events" oom_kill); bc=$(event_count "$g/memory.events.local" oom); }
     fi
-    [ "$2" != vm ] || read -r gk jd < <(guest_read "$1")
+    # The size the box's machine has (the run began with it), by the idiom of the eviction line; both dashes for a container box.
+    [ "$2" != vm ] || { read -r gk jd < <(guest_read "$1"); sz=$(cat "$WORK/jobs/$1/.vm-size" 2>/dev/null); case $sz in small|medium|xlarge) ;; *) sz=large ;; esac; ms=$sz; mm=$(lim_mb "$(size_lim "$sz")"); mm=${mm:--}; }
     boot=$(awk '$1 == "btime" { print $2 }' /proc/stat)
     printf 'engine=%s\ntime=%s\nboot=%s\ngroup_some_ms=%s\ngroup_full_ms=%s\nnet_tx_timeouts=%s\nnet_link_changes=%s\ngroup_kills=%s\ngroup_cap_kills=%s\n' \
         "$2" "$(date +%s)" "${boot:--}" "$some" "$full" "$ntx" "$nlc" "$(event_count "$CGROUP/memory.events" oom_kill)" "$(event_count "$CGROUP/memory.events.local" oom)"
     printf 'box_some_ms=%s\nbox_full_ms=%s\nbox_kills=%s\nbox_limit_kills=%s\nguest_kills=%s\njob_disk_pct=%s\n' "$bs" "$bf" "$bk" "$bc" "$gk" "$jd"
+    printf 'machine_size=%s\nmachine_mb=%s\n' "$ms" "$mm"
 }
 # events_write <file> <box> <vm|container>: the snapshot under a temporary name, then renamed, so a reader never sees half of it.
 events_write() { mkdir -p "${1%/*}" && events_snapshot "$2" "$3" >"$1.new" && mv -f "$1.new" "$1"; }
@@ -1664,7 +1675,7 @@ pod_run() {
         # The wrapper's own words are fixed (with this script's functions for the note of a machine that ended); the client's
         # words travel as arguments only. The shared lock on .running tells reap this box is busy.
         # The event record (pod events) goes to $WORK/cache/events, which no mount of the box shows: the box folder is mounted whole.
-        CGROOT=$CGROOT PROC=$PROC ROUTE=$ROUTE NETDIR=$NETDIR WORK=$WORK setsid bash -c "$(declare -f vm_alive oom_kills vm_end_note ctr_end_note stall_counters pressure_ms event_count guest_read events_snapshot events_write)"'
+        CGROOT=$CGROOT PROC=$PROC ROUTE=$ROUTE NETDIR=$NETDIR WORK=$WORK VM_LIMITS=$VM_LIMITS setsid bash -c "$(declare -f vm_alive oom_kills vm_end_note ctr_end_note stall_counters pressure_ms event_count guest_read lim_mb size_lim events_snapshot events_write)"'
             j=$1; log=$2; CGROUP=$3; sb=$4; bx=$5; ev=$6; shift 6
             echo $$ > "${log%.log}.pid"
             k0=$(oom_kills)

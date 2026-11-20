@@ -1433,8 +1433,13 @@ setsid sh -c 'echo $$ > "$1"; echo up >&3; read x < "$2"' _ "$W/jobs/x/runs/live
 echo "EXIT 0" > "$W/jobs/x/runs/done.log"; pod "pod log x done 0"
 eq "pod log: an ended run (no record left) is read without a word on standard error" "state=ended	exit=0|" "$(head -1 "$T/e/out" | cut -f5-6)|$(cat "$T/e/err")"
 pod "pod report"; eq "pod report: no word on standard error for ended runs either" "" "$(cat "$T/e/err")"
-pod "pod log x live 0"; eq "pod log: a run whose group lives is running" "state=running	exit=-" "$(head -1 "$T/e/out" | cut -f5-)"
+touch -d @1000000 "$W/jobs/x/runs/live.log"; pod "pod log x live 0"; eq "pod log: a run whose group lives is running" "state=running	exit=-" "$(head -1 "$T/e/out" | cut -f5-6)"
+# A running run's header ends with age (now minus the creation time, left out without one) and quiet (now minus the last write, set here with touch, so at least the time since 1000000).
+hq=$(head -1 "$T/e/out" | tr '\t' '\n' | sed -n 's/^quiet=//p'); ha=$(head -1 "$T/e/out" | tr '\t' '\n' | sed -n 's/^age=//p')
+eq "pod log: a running run's quiet is digits, at least the time since its set last write" yes "$([[ $hq =~ ^[0-9]+$ ]] && [ "$hq" -ge $(($(date +%s) - 1000001)) ] && echo yes || echo no)"
+eq "pod log: a running run's age is digits (absent only where the file system gives no creation time)" yes "$([[ $ha =~ ^[0-9]+$ ]] || ! [[ $(stat -c %W "$W/jobs/x/runs/live.log" 2>/dev/null) =~ ^[1-9] ]] && echo yes || echo no)"
 eq "pod log: a running run's header has neither ended nor seconds" 0 "$(head -1 "$T/e/out" | grep -c 'ended=\|seconds=')"
+pod "pod log x done 0"; eq "pod log: an ended run's header has neither age nor quiet" 0 "$(head -1 "$T/e/out" | grep -c 'age=\|quiet=')"
 # An ended run's header ends with ended=<modification time> and seconds=<that minus the creation time>; the time is set with touch, never read from the clock.
 born=$(stat -c %W "$W/jobs/x/runs/done.log" 2>/dev/null); [[ $born =~ ^[1-9][0-9]*$ ]] || born=
 if [ -n "$born" ]; then touch -d "@$((born + 37))" "$W/jobs/x/runs/done.log"; want="state=ended	exit=0	ended=$((born + 37))	seconds=37"
@@ -1512,7 +1517,7 @@ evsetup() {
 evwait() { [ -e "$W/jobs/$box/runs/$1.log" ] || { echo "FAIL event record: run $1 did not start: $(cat "$T/e/err" 2>/dev/null | head -n 1)"; return; }; until grep -q "^EXIT" "$W/jobs/$box/runs/$1.log" 2>/dev/null; do sleep 0.05; done; }   # the end record is written before EXIT
 evwords() { grep -v '^time=\|^boot=' "$1" | paste -sd'|'; }
 evsetup; pod "pod run $box --detach 20261118-100000-0001 -- $B64"; evwait 20261118-100000-0001; EV=$W/cache/events/$box
-want="engine=container|group_some_ms=2500|group_full_ms=1200|net_tx_timeouts=3|net_link_changes=7|group_kills=3|group_cap_kills=2|box_some_ms=700|box_full_ms=300|box_kills=5|box_limit_kills=4|guest_kills=-|job_disk_pct=37"
+want="engine=container|group_some_ms=2500|group_full_ms=1200|net_tx_timeouts=3|net_link_changes=7|group_kills=3|group_cap_kills=2|box_some_ms=700|box_full_ms=300|box_kills=5|box_limit_kills=4|guest_kills=-|job_disk_pct=37|machine_size=-|machine_mb=-"
 eq "event record: the start snapshot of a container run" "$want" "$(evwords "$EV/20261118-100000-0001.start")"
 eq "event record: the end snapshot of a container run" "$want" "$(evwords "$EV/20261118-100000-0001.end")"
 eq "event record: time and boot are numbers" "2" "$(grep -c '^time=[0-9]\+$\|^boot=[0-9]\+$' "$EV/20261118-100000-0001.start")"
@@ -1564,7 +1569,7 @@ eq "pod end, wrapper ends first: the note, then the wrapper's own EXIT, and no o
 # a machine box: the four words of an own group are dashes
 setup; mkdir -p "$BOXD_CGROOT/boxd"; CASE_ENV=(BOXD_ROUTE="$T/e/noroute" BOXD_NET="$T/e/nonet"); printf 'oom 0\noom_kill 3\n' > "$BOXD_CGROOT/boxd/memory.events"
 pod "pod run $box --vm --detach 20261118-100000-0003 -- $B64"; evwait 20261118-100000-0003
-eq "event record: a machine run: engine vm, no own group, the build group's words, the unreadable ones dashes" "engine=vm|group_some_ms=-|group_full_ms=-|net_tx_timeouts=-|net_link_changes=-|group_kills=3|group_cap_kills=-|box_some_ms=-|box_full_ms=-|box_kills=-|box_limit_kills=-|guest_kills=-|job_disk_pct=-" "$(evwords "$W/cache/events/$box/20261118-100000-0003.end")"
+eq "event record: a machine run: engine vm, no own group, the build group's words, the unreadable ones dashes" "engine=vm|group_some_ms=-|group_full_ms=-|net_tx_timeouts=-|net_link_changes=-|group_kills=3|group_cap_kills=-|box_some_ms=-|box_full_ms=-|box_kills=-|box_limit_kills=-|guest_kills=-|job_disk_pct=-|machine_size=large|machine_mb=8192" "$(evwords "$W/cache/events/$box/20261118-100000-0003.end")"
 pod "pod events $box 20261118-100000-0003"
 eq "event record: a machine run whose build group cannot be read in full is not complete" "engine=vm complete=no why=counter-unreadable" "$(tr '\t' '\n' < "$T/e/out" | grep -E '^(engine|complete|why)=' | paste -sd' ')"
 # a view-only key may ask for it, and asking writes nothing
@@ -1572,8 +1577,9 @@ before=$(find "$W" | sort | md5sum)
 eq "pod events writes nothing (no stamp, no lock, no folder, no call log line)" "$before" "$(pod "pod events $box 20261118-100000-0003"; find "$W" | sort | md5sum)"
 # a machine box: the guest's own kills and the disk of /job, read inside the machine at the start and at the end (one exec each)
 vmrun() { setup; mkdir -p "$BOXD_CGROOT/boxd"; CASE_ENV=(BOXD_ROUTE="$T/e/noroute" BOXD_NET="$T/e/nonet"); printf 'oom 0\noom_kill 3\n' > "$BOXD_CGROOT/boxd/memory.events"; export FAKE_GUEST_READS=$T/e/guest; printf '%b' "$1" > "$FAKE_GUEST_READS"
-    pod "pod run $box --vm --detach $2 -- $B64"; evwait "$2"; pod "pod events $box $2"; unset FAKE_GUEST_READS; }
+    pod "pod run $box --vm ${3:+--size $3} --detach $2 -- $B64"; evwait "$2"; pod "pod events $box $2"; unset FAKE_GUEST_READS; }
 evw() { tr '\t' '\n' < "$T/e/out" | grep -E '^(guest_kills|job_disk_pct|disk_full)=' | paste -sd' '; }
+evsz() { tr '\t' '\n' < "$T/e/out" | grep -E '^(machine_size|machine_mb)=' | paste -sd' '; }
 vmrun '1 10\n3 99\n' 20261120-100000-0001
 eq "event record: a machine run reads the guest's kill counter and /job at the start and at the end, one exec each" "guest_kills=1|job_disk_pct=10 guest_kills=3|job_disk_pct=99 2" "$(grep -h '^guest_kills\|^job_disk_pct' "$W/cache/events/$box/20261120-100000-0001.start" | paste -sd'|') $(grep -h '^guest_kills\|^job_disk_pct' "$W/cache/events/$box/20261120-100000-0001.end" | paste -sd'|') $(grep -c 'boxd-guest-read' "$FAKE_MSB_LOG")"
 eq "event record: guest kills are the difference of the counter, 99 percent of /job is full" "guest_kills=2 job_disk_pct=99 disk_full=yes" "$(evw)"
@@ -1583,10 +1589,16 @@ vmrun '1 10\n' 20261120-100000-0003; eq "event record: a read that fails at the 
 setup; mkdir -p "$BOXD_CGROOT/boxd"; export FAKE_GUEST_READS=$T/e/guest FAKE_EXEC_CRASH=4; printf '1 10\n' > "$FAKE_GUEST_READS"
 pod "pod run $box --vm --detach 20261120-100000-0005 -- $B64"; evwait 20261120-100000-0005; pod "pod events $box 20261120-100000-0005"; unset FAKE_GUEST_READS FAKE_EXEC_CRASH
 eq "event record: a machine that is gone at the end is not asked (a plain exec would start it again): dashes, one read only" "guest_kills=- job_disk_pct=- disk_full=- 1" "$(evw) $(grep -c 'boxd-guest-read' "$FAKE_MSB_LOG")"
+# the machine size the run began with, a level from the start record: xlarge from the box's .vm-size, large (this test's BOXD_VM_LIMITS, 8G) with no record, dashes for a container box and for an old record
+vmrun '1 10\n1 10\n' 20261120-100000-0007 xlarge; eq "event record: a machine run of an xlarge box: its size and megabytes" "machine_size=xlarge machine_mb=12288" "$(evsz)"
+vmrun '1 10\n1 10\n' 20261120-100000-0008; eq "event record: a machine box with no size record is large, the megabytes of the host's default" "machine_size=large machine_mb=8192" "$(evsz)"
+cw=$(tr '\t' '\n' < "$T/e/out" | grep -E '^(complete|why)=' | paste -sd' '); sed -i '/^machine_/d' "$W/cache/events/$box/20261120-100000-0008.start"; pod "pod events $box 20261120-100000-0008"
+eq "event record: an old start record without the words: dashes, complete and why unchanged" "machine_size=- machine_mb=- $cw" "$(evsz) $(tr '\t' '\n' < "$T/e/out" | grep -E '^(complete|why)=' | paste -sd' ')"
 # a container box: no guest kills, the disk word comes from the box folder on the host
 setup; mkdir -p "$BOXD_CGROOT/boxd"; export FAKE_DF=$T/e/df; echo 99 > "$FAKE_DF"
 pod "pod run $box --detach 20261120-100000-0006 -- $B64"; evwait 20261120-100000-0006; pod "pod events $box 20261120-100000-0006"; unset FAKE_DF
 eq "event record: a container run: no guest kills, the host's df of the box folder, 99 percent is full" "guest_kills=- job_disk_pct=99 disk_full=yes" "$(evw)"
+eq "event record: a container run: no machine size" "machine_size=- machine_mb=-" "$(evsz)"
 # a box busy now, with a stamp not after the end of the window, was busy in it: a foreground call in progress is not in the call log yet
 evsetup; mkdir -p "$W/jobs/fg" "$EV"; : > "$W/jobs/fg/.running"; touch -d @1050 "$W/jobs/fg/.last-used"
 printf 'time=1000\nboot=5\nengine=container\n' > "$EV/r1.start"; printf 'time=1100\nboot=5\nengine=container\n' > "$EV/r1.end"; mkdir -p "$W/jobs/$box/runs" "$W/cache"; : > "$W/jobs/$box/runs/r1.log"

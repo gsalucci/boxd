@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.57
+
+- `box log <run> --state` on a running run adds `age=<seconds since the run started>` and `quiet=<seconds since its log last grew>` after `exit=-`, both computed on the host: a silent run shows without a call into the box, and a clock difference between the host and the caller cannot mislead. An ended run's line is unchanged. `pod log` sends the two words after `exit` for a running run.
+- A run's event record (`box log <run> --events`, `pod events`) ends with `machine_size=` and `machine_mb=`: the size a machine box's run began with, from the start record; a dash for a container box and for records written before this version. They never change `complete` or `why`.
+
 ## 0.4.56
 
 - `box log <run> --follow` ends standard error with `box: run <run> exit <code> on <host>` once the run has ended (also with 129, when the run ended without a code), as a foreground call ends with `box: exit <code> on <host>` since 0.4.54: long work goes detached, and that is where a wrapper that loses the exit code needs it in its log. Not printed without `--follow`. Standard output is unchanged.

@@ -149,7 +149,7 @@ box --image-file ci/Containerfile make test          # the box's image built fro
 box --vm --size small -- nproc                       # 2 processors and 2 GB; medium, large and xlarge (8 processors, 12 GB) exist
 box --vm --env API_TOKEN ./deploy-check              # hand over one secret from your environment
 box --detach make release                            # background run; prints how to read its log
-box log <run> --state                                # still running, or ended: exit code, when, how long
+box log <run> --state                                # still running (how old, how long its log was silent), or ended: exit code, when, how long
 box log <run> --follow                               # wait for the end, exit with the run's code; last line: box: run <run> exit <code> on <host>
 box --pull target/out make                           # copy results back
 box --git cargo test                                 # /job/src is a git repository at this worktree's own commit

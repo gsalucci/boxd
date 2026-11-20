@@ -982,6 +982,12 @@ test("box log --state: one line with the state and the code, no log text, one ca
   assert.equal(st("\tended=1794851327\tseconds=1234567890"), "run-1\tstate=ended\texit=3\tended=2026-11-16T17:48:47Z\n");
   for (const bad of ["\tended=17a", "\tended=1234567890123", "\tended=", "\tended=-5\tseconds=3", "\tseconds=3", "\tsecret=x"]) assert.equal(st(bad), "run-1\tstate=ended\texit=3\n", bad);
   assert.equal(st("\tended=1794851327\tseconds=5", "running"), "run-1\tstate=running\texit=3\n");
+  // age/quiet: a running run only, digits only; an older server sends neither
+  assert.equal(st("\tage=120\tquiet=45", "running"), "run-1\tstate=running\texit=3\tage=120\tquiet=45\n");
+  assert.equal(st("\tage=120", "running"), "run-1\tstate=running\texit=3\tage=120\n");
+  assert.equal(st("\tage=12a\tquiet=-5", "running"), "run-1\tstate=running\texit=3\n");
+  assert.equal(st("\tage=1234567890\tquiet=45", "running"), "run-1\tstate=running\texit=3\tquiet=45\n");
+  assert.equal(st("\tage=120\tquiet=45"), "run-1\tstate=ended\texit=3\n");
 });
 
 test("box log without --follow does not wait for a running run and exits 0; an ended run without an EXIT code follows to 129", () => {
