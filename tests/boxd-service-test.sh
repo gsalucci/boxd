@@ -39,6 +39,7 @@ EOF
 cat > "$T/bin/sleep" <<EOF
 #!/bin/sh
 echo "sleep \$*" >> "$T/calls"
+[ -n "\${FAKE_ZRAM_AFTER:-}" ] && [ "\$(grep -c "^sleep" "$T/calls")" -ge "\$FAKE_ZRAM_AFTER" ] && printf "%s\n" "\$FAKE_ZRAM_LINE" >> "\$BOXD_SWAPS"
 exit 1
 EOF
 cat > "$T/bin/fake-sshd" <<EOF
@@ -127,7 +128,7 @@ eq "memory cap defaults to 85 percent of memory" 850000K "$(cat "$T/cg/boxd/memo
 eq "swap cap defaults to 25 percent of memory" 250000K "$(cat "$T/cg/boxd/memory.swap.max")"
 eq "no memory.high" max "$(cat "$T/cg/boxd/memory.high")"
 eq "the first boot clears the boxes, then the sshd starts with port, account and no exemption" \
-   "chown boxd:boxd $T/cg/boxd $T/cg/boxd/cgroup.procs $T/cg/boxd/cgroup.subtree_control $T/cg/boxd/cgroup.threads|chown boxd:boxd $T/cg/boxd/sshd $T/cg/boxd/sshd/cgroup.procs $T/cg/boxd/sshd/cgroup.threads|runuser -l boxd -c boxd-pod clear|sshd -D -e -f /etc/boxd/sshd_config -o Port=2222 -o AllowUsers=boxd -o MaxStartups=100:30:200" "$(calls)"
+   "chown boxd:boxd $T/cg/boxd $T/cg/boxd/cgroup.procs $T/cg/boxd/cgroup.subtree_control $T/cg/boxd/cgroup.threads|chown boxd:boxd $T/cg/boxd/sshd $T/cg/boxd/sshd/cgroup.procs $T/cg/boxd/sshd/cgroup.threads|runuser -l boxd -c boxd-pod clear boot|sshd -D -e -f /etc/boxd/sshd_config -o Port=2222 -o AllowUsers=boxd -o MaxStartups=100:30:200" "$(calls)"
 eq "the boot marker exists" yes "$([ -e "$T/clean" ] && echo yes || echo no)"
 : > "$T/calls"; sh "$SV/boxd-sshd/run" >/dev/null 2>&1
 eq "a second start in the same boot does not clear the boxes again" 0 "$(calls | grep -c 'boxd-pod clear')"
@@ -154,6 +155,23 @@ out=$(sh "$SV/boxd-sshd/run" 2>&1); eq "zram swap: the tower's 24G and 8G pass w
 printf 'BOXD_MEM_MAX=28G\nBOXD_SWAP_MAX=8G\n' > "$T/none.conf"
 out=$(sh "$SV/boxd-sshd/run" 2>&1); eq "zram swap: the tower's old 28G is warned about" 1 "$(grep -c 'boxd-sshd: BOXD_MEM_MAX' <<<"$out")"
 printf 'MemTotal:       1000000 kB\n' > "$T/meminfo"; : > "$T/none.conf"; printf 'Filename\tType\tSize\tUsed\tPriority\n/swap/swapfile file\t400000\t0\t100\n' > "$T/swaps"
+# At boot the zram service may switch its swap on after the build sshd starts; the run file waits for it (once a second, 30 times).
+ZLINE='/dev/zram0 partition\t400000\t0\t32767\n'
+sleeps() { grep -c '^sleep 1$' "$T/calls"; }
+: > "$T/none.conf"; printf 'Filename\tType\tSize\tUsed\tPriority\n' > "$T/swaps"; touch "$T/svdir/zramen"
+: > "$T/calls"; out=$(sh "$SV/boxd-sshd/run" 2>&1)
+eq "zramen enabled, no zram swap ever: 30 waits, one line, the cap computed without it" "30 1 850000K" \
+   "$(sleeps) $(grep -c 'the zram swap did not come up in 30 seconds; the cap is computed without it' <<<"$out") $(cat "$T/cg/boxd/memory.max")"
+printf "Filename\tType\tSize\tUsed\tPriority\n$ZLINE" > "$T/swaps"
+: > "$T/calls"; out=$(sh "$SV/boxd-sshd/run" 2>&1)
+eq "zramen enabled, zram swap already on: no wait, the zram part is taken off the cap" "0 0 725000K" "$(sleeps) $(grep -c 'did not come up' <<<"$out") $(cat "$T/cg/boxd/memory.max")"
+rm "$T/svdir/zramen"; printf 'Filename\tType\tSize\tUsed\tPriority\n' > "$T/swaps"
+: > "$T/calls"; out=$(sh "$SV/boxd-sshd/run" 2>&1)
+eq "zramen not enabled: no wait, no line" "0 0 850000K" "$(sleeps) $(grep -c 'did not come up' <<<"$out") $(cat "$T/cg/boxd/memory.max")"
+touch "$T/svdir/zramen"; : > "$T/calls"
+out=$(FAKE_ZRAM_AFTER=3 FAKE_ZRAM_LINE="/dev/zram0 partition	400000	0	32767" sh "$SV/boxd-sshd/run" 2>&1)
+eq "zram swap appears during the wait: it ends at once and the zram part is taken off the cap" "3 0 725000K" "$(sleeps) $(grep -c 'did not come up' <<<"$out") $(cat "$T/cg/boxd/memory.max")"
+rm "$T/svdir/zramen"; printf 'Filename\tType\tSize\tUsed\tPriority\n/swap/swapfile file\t400000\t0\t100\n' > "$T/swaps"
 unset BOXD_CGROOT BOXD_MEMINFO
 
 # 6. down files

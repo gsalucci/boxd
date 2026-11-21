@@ -21,7 +21,7 @@ PROC=${BOXD_PROC:-/proc}   # test hook, like BOXD_MEMINFO: where `pod report` fi
 KVM=${BOXD_KVM:-/dev/kvm}   # test hook: the device a --kvm box gets
 ROUTE=${BOXD_ROUTE:-/proc/net/route}   # test hooks: the routing table and the network interface folder `pod report` reads
 NETDIR=${BOXD_NET:-/sys/class/net}
-VERSION=0.4.68
+VERSION=0.4.69
 # Keys that may only read, one "<type> <key> [comment]" per line (view_only below); and the largest answer of pod calls and pod log.
 VIEW_KEYS=${BOXD_VIEW_KEYS:-/etc/boxd/view_keys}
 READ_MAX=${BOXD_READ_MAX:-1048576}
@@ -1299,7 +1299,12 @@ term_runs() {
 
 # Local only: detached runs get SIGTERM, then every box on both engines goes; files stay.
 pod_clear() {
-    local n
+    local n d
+    # Only at the first start of a boot: podman keeps its run state of the earlier boot under TMPDIR when the account has no runtime folder, and refuses every command until it is gone.
+    if [ "${1:-}" = boot ] && [ -z "${XDG_RUNTIME_DIR:-}" ]; then
+        d=${TMPDIR:-/tmp}/storage-run-$(id -u)
+        rm -rf "$d/containers" "$d/libpod/tmp"
+    fi
     term_runs
     podman rm -af </dev/null >/dev/null || die "podman rm -af failed"
     if have_msb; then
@@ -1963,7 +1968,7 @@ elif [ "${1:-}" = reap ] || [ "${1:-}" = clear ]; then
     HOME=$(getent passwd "$(id -un)" | cut -d: -f6)
     cd "$HOME" || cd /   # podman refuses to run from a folder this account cannot enter
     [ -r /etc/profile.d/boxd-env.sh ] && . /etc/profile.d/boxd-env.sh
-    if [ "$1" = clear ]; then pod_clear; else shift; reap "$@"; fi
+    if [ "$1" = clear ]; then pod_clear "${2:-}"; else shift; reap "$@"; fi
 else
     die "unknown command"
 fi

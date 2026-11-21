@@ -702,6 +702,16 @@ eq "clear: podman rm -af" "rm -af" "$(cat "$FAKE_LOG")"
 eq "clear: msb rm -f once per pod-* sandbox, others untouched" "rm -f pod-v1|rm -f pod-v2" "$(grep '^rm' "$FAKE_MSB_LOG" | sort | paste -sd'|')"
 eq "clear leaves no box" "other" "$(ls "$FAKE_VM_STATE")"
 pod "pod clear"; eq "clear is not reachable over ssh" 125 "$rc"
+pod "pod clear boot"; eq "clear boot is not reachable over ssh either" 125 "$rc"
+# clear boot: podman's run state of the earlier boot goes (two fixed folders) when the account has no runtime folder
+setup; SR=$T/e/tmp/storage-run-$(id -u); mkdir -p "$SR/containers" "$SR/libpod/tmp" "$SR/other"
+runstate() { for d in containers libpod/tmp other; do [ -d "$SR/$d" ] && printf %s "$d "; done; }
+env -u XDG_RUNTIME_DIR TMPDIR=$T/e/tmp bash "$POD" clear </dev/null >/dev/null 2>&1
+eq "plain clear leaves podman's run state" "containers libpod/tmp other " "$(runstate)"
+env XDG_RUNTIME_DIR=$T/e/xdg TMPDIR=$T/e/tmp bash "$POD" clear boot </dev/null >/dev/null 2>&1
+eq "clear boot with a runtime folder leaves podman's run state" "containers libpod/tmp other " "$(runstate)"
+env -u XDG_RUNTIME_DIR TMPDIR=$T/e/tmp bash "$POD" clear boot </dev/null >"$T/e/out" 2>&1; rc=$?
+eq "clear boot without a runtime folder removes the two folders, not the sibling, and still clears" "0 cleared other " "$rc $(cat "$T/e/out") $(runstate)"
 # pod stop: the engine's own "Removed" line stays out of the caller's output; a failed removal still says so and exits non-zero
 setup; vmbox s1; pod "pod stop s1"
 eq "stop of a machine box: exit 0, nothing printed, the engine's line is not passed on" "0||" "$rc|$(cat "$T/e/out")|$(cat "$T/e/err")"

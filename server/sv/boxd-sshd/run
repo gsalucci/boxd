@@ -19,7 +19,14 @@ kb() { case $1 in max) ;; *[Kk]) echo "${1%?}" ;; *[Mm]) echo $((${1%?} * 1024))
 # cap plus 8 GiB swapped to zram, and the host ran out before the cap, so the kernel killed a machine box). It counts at half
 # its size (build memory compressed about 2.5 to 1 there), up to the size of the zram devices.
 # shortcut: a fixed 2 to 1 ratio, when a host compresses worse: read the ratio from /sys/block/zram*/mm_stat.
-zram_kb=$(awk '$1 ~ /^\/dev\/zram/ { s += $3 } END { print s + 0 }' "${BOXD_SWAPS:-/proc/swaps}" 2>/dev/null)
+# At boot this ran before the zram service switched its swap on (2026-11-21), so the cap came out about 2 GB too high; wait for it.
+SWAPS=${BOXD_SWAPS:-/proc/swaps}
+if [ -e "${SVDIR:-/var/service}/zramen" ] && ! grep -q '^/dev/zram' "$SWAPS" 2>/dev/null; then
+    n=0
+    while [ $n -lt 30 ] && ! grep -q '^/dev/zram' "$SWAPS" 2>/dev/null; do sleep 1; n=$((n + 1)); done
+    grep -q '^/dev/zram' "$SWAPS" 2>/dev/null || echo "boxd-sshd: the zram swap did not come up in 30 seconds; the cap is computed without it"
+fi
+zram_kb=$(awk '$1 ~ /^\/dev\/zram/ { s += $3 } END { print s + 0 }' "$SWAPS" 2>/dev/null)
 swap_kb=$(kb "$SWAP"); [ -n "$swap_kb" ] && [ "$swap_kb" -lt "${zram_kb:-0}" ] || swap_kb=${zram_kb:-0}
 zram_ram_kb=$((swap_kb / 2))
 MEM=${BOXD_MEM_MAX:-$((total_kb * 85 / 100 - zram_ram_kb))K}
@@ -47,7 +54,7 @@ chown "$U:$U" $CG/sshd $CG/sshd/cgroup.procs $CG/sshd/cgroup.threads
 # Once per boot, before any build session: microsandbox trusts a process id recorded before the reboot, so
 # its boxes are removed first; boxd-pod reap skips virtual machines until the marker exists. /run is memory.
 CLEAN=${BOXD_POD_CLEAN:-/run/boxd-pod.clean}
-[ -e "$CLEAN" ] || { runuser -l "$U" -c 'boxd-pod clear' && : > "$CLEAN"; }
+[ -e "$CLEAN" ] || { runuser -l "$U" -c 'boxd-pod clear boot' && : > "$CLEAN"; }
 # MaxStartups: sshd's default drops connections past 10 that have not logged in yet, and a few sessions polling their
 # runs reach that (2026-11-15: "drop connection #10 ... MaxStartups", seen by clients as a connection reset).
 set -- -D -e -f /etc/boxd/sshd_config -o "Port=${BOXD_PORT:-2222}" -o "AllowUsers=$U" -o MaxStartups=100:30:200

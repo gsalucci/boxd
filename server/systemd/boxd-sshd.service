@@ -5,7 +5,7 @@
 # which the packaged /etc/boxd/boxd.conf names as BOXD_CGROUP; sshd-run refuses to start when the two disagree.
 [Unit]
 Description=boxd build sshd (capped cgroup, forced command boxd-pod)
-After=network.target
+After=network.target zramswap.service
 
 [Service]
 Type=simple

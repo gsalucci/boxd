@@ -25,12 +25,14 @@ run() { printf 'run\tbox=%s\tid=%s\tstate=%s\texit=-\tbytes=0\tchanged=1\n' "$@"
 out=$($W check tower "$T/good" $NOW)
 [ -z "$out" ] && ok "a healthy report has no finding" || bad "a healthy report has no finding: $out"
 
-# The group's swap nearly full (90 percent of its limit) is a finding; below that, or with no limit known, it is not.
+# The group's swap nearly full (90 percent of its limit) with its memory at 85 percent of the cap is a finding; with less of either, or with no limit known, it is not.
 sed '1s/$/\tgroup_swap_used_mb=8139\tgroup_swap_max_mb=8192/' "$T/good" > "$T/swap"
+out=$($W check tower "$T/swap" $NOW); [ -z "$out" ] && ok "full swap with memory far from the cap is no finding" || bad "full swap with memory far from the cap is no finding: $out"
+sed -i '1s/group_mem_used_mb=9000/group_mem_used_mb=21000/' "$T/swap"
 has "swap cushion full" "the boxes have 8139 of their 8192 MB of swap in use" "$($W check tower "$T/swap" $NOW)"
-sed '1s/$/\tgroup_swap_used_mb=7372\tgroup_swap_max_mb=8192/' "$T/good" > "$T/swap"
+sed '1s/group_mem_used_mb=9000/group_mem_used_mb=21000/; 1s/$/\tgroup_swap_used_mb=7372\tgroup_swap_max_mb=8192/' "$T/good" > "$T/swap"
 out=$($W check tower "$T/swap" $NOW); [ -z "$out" ] && ok "swap below 90 percent is no finding" || bad "swap below 90 percent is no finding: $out"
-sed '1s/$/\tgroup_swap_used_mb=8139\tgroup_swap_max_mb=-/' "$T/good" > "$T/swap"
+sed '1s/group_mem_used_mb=9000/group_mem_used_mb=21000/; 1s/$/\tgroup_swap_used_mb=8139\tgroup_swap_max_mb=-/' "$T/good" > "$T/swap"
 out=$($W check tower "$T/swap" $NOW); [ -z "$out" ] && ok "swap with no limit is no finding" || bad "swap with no limit is no finding: $out"
 
 # Every rule broken at once.

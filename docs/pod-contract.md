@@ -477,7 +477,8 @@ logs nothing: the log never creates the folder, and a failed write is ignored.
   before it writes the `EXIT` line; `clear` waits up to about 10 s for each group to end and drops stale records),
   then `podman rm -af`, then `msb rm -f` for every `pod-*` sandbox. Prints `cleared`. Files stay.
   - `server/sv/boxd-sshd/run` runs it once per boot before `exec sshd`:
-    `[ -e /run/boxd-pod.clean ] || { runuser -l build -c 'boxd-pod clear' && : > /run/boxd-pod.clean; }`.
+    `[ -e /run/boxd-pod.clean ] || { runuser -l build -c 'boxd-pod clear boot' && : > /run/boxd-pod.clean; }`.
+    With the word `boot` (only there, never from the finish file or `boxd-reset`) `clear` first removes podman's run state of the earlier boot when the account has no `XDG_RUNTIME_DIR`: exactly `${TMPDIR:-/tmp}/storage-run-<uid>/containers` and `.../libpod/tmp`, which podman asks to have deleted after a reboot and refuses every command until then. Under systemd the same run file does this.
     `/run` lives in memory, so the marker is gone after a reboot. Why: microsandbox trusts a process id recorded
     before the reboot (its issue 1642, open); at that point no build session exists, so a stale signal can
     only hit the clearing process itself.
@@ -789,7 +790,7 @@ The call log line is unchanged (a refusal or a failed build is a 125 line with i
 
 ## Memory budget
 
-The cgroup `/sys/fs/cgroup/boxd`: `memory.max` `BOXD_MEM_MAX` (default 85 % of the host's memory less half of the swap the group may put on zram, computed when `boxd-sshd` starts), `memory.swap.max` `BOXD_SWAP_MAX` (default 25 %), no `memory.high` (the spike showed
+The cgroup `/sys/fs/cgroup/boxd`: `memory.max` `BOXD_MEM_MAX` (default 85 % of the host's memory less half of the swap the group may put on zram, computed when `boxd-sshd` starts; where the zram service is enabled it first waits up to 30 s for the zram swap to be on, else the cap is computed without it), `memory.swap.max` `BOXD_SWAP_MAX` (default 25 %), no `memory.high` (the spike showed
 it makes a runaway job crawl instead of dying). Per container box 12G of memory and 4G of swap
 (`--memory-swap 16g`). Swap is 16G of compressed memory (zram, zstd, service `zramen`, enabled by `boxd-setup` when the package is installed). A new virtual machine (a creation or the start of a stopped one) is admitted when the memory the build group
 really uses (`anon` plus `shmem` of its `memory.stat`, plus `memory.swap.current`) plus the memory of its size (`small` 2G, `medium` 4G, `xlarge` 12G, `large`

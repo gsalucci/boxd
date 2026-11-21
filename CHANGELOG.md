@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.69
+
+A build host that reboots comes back by itself.
+
+- After a reboot every `pod` command could fail with `current system boot ID differs from cached boot ID; an unhandled reboot has occurred` and `boxd-pod: podman ps failed`. The build account has no runtime folder, so podman keeps its run state under the work area, on disk, and refuses to work after a reboot until two folders there are gone. The once-per-boot step of the build sshd (`boxd-pod clear boot`) now removes exactly those two folders before it clears the boxes.
+- Under runit the build sshd computed the memory cap before the zram service had switched its swap on, so the half of that swap that counts as memory was not taken off and the cap came out too high (about 2 GB on a 16 GB host). It now waits up to 30 seconds for the zram swap when the `zramen` service is enabled, and says so when it never comes. Under systemd the unit is ordered after `zramswap.service`.
+
 ## 0.4.68
 
 - A call made with `--wait` that had to wait now says when it goes on: `box: room on <host> after waiting <time>; starting`, on standard error, right before the command is handed to the host. Until now the caller saw `box: waiting for room, ...` and then nothing until the command's own output, and could not tell how long the wait had been. The time counts from the first wait; if the host refuses again (a lost race) and the call waits again, the line comes again before the next attempt. A call that never waited prints nothing new. Client only.
