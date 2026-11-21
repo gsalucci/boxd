@@ -1689,14 +1689,17 @@ test("box runs with nothing running says so, exit 0; a sleeping host is named an
 // --wait: BOXD_WAIT_MS makes the interval short; nothing depends on it, the fake hosts change their answer by probe number.
 const TIGHT = realStatus(1, 100);
 const waits = (rp: Repo, s: Servers, args: string[]) => go(rp, s, ["--wait", ...args], { BOXD_WAIT_MS: "1" });
+// The "room on" line carries a measured time, so tests that compare the whole standard error leave it out.
+const unroom = (e: string) => e.replace(/^box: room on .*\n/m, "");
 
 test("--wait: no host has room, so it says so once with the reasons, says again only when they change, and goes on when room appears", () => {
   const s = servers([{ name: "tower", status: FULL }, { name: "laptop", status: FULL }]), rp = newRepo();
   hostFile(s, "tower", "status.2", `${TIGHT}\n`); hostFile(s, "tower", "status.3", `${FREE}\n`);
   const r = waits(rp, s, ["--vm", "true"]);
   assert.equal(r.code, 0, r.err);
-  assert.equal(r.err, "box: waiting for room, asking every 0.001 seconds:\n  tower: 3 of 3 running\n  laptop: 3 of 3 running\n"
+  assert.equal(unroom(r.err), "box: waiting for room, asking every 0.001 seconds:\n  tower: 3 of 3 running\n  laptop: 3 of 3 running\n"
     + "box: the reasons changed: tower: 0 MB in use + 8192 MB asked > 100 MB cap; laptop: 3 of 3 running\nbox: exit 0 on tower\n");
+  assert.match(r.err, /^box: waiting for room.*\n[^]*^box: room on \S+ after waiting .+; starting$/m, "told after the waiting line");
   assert.equal(probes(r.calls).length, 6, "every host is asked again on each round");
   assert.deepEqual(rest(r.calls), [sync(rp, "tower"), runLine(rp, "tower", "--vm")], "nothing was synced or run while waiting");
   assert.equal(rp.placed(), "tower\n");
@@ -1709,7 +1712,7 @@ test("--wait: a placed worktree whose host refuses at the call and cannot be ask
   hostFile(s, "tower", "run.refuse", "1\n");
   const r = waits(rp, s, ["--no-sync", "--vm", "true"]);
   assert.equal(r.code, 0, r.err);
-  assert.equal(r.err, "boxd-pod: no room for another virtual machine (3 of 3 running); wait for one to end or stop one\n"
+  assert.equal(unroom(r.err), "boxd-pod: no room for another virtual machine (3 of 3 running); wait for one to end or stop one\n"
     + "box: waiting for room, asking every 0.001 seconds:\n  tower: no room (the server refused the call)\nbox: exit 0 on tower\n");
   assert.equal(r.calls.filter((c) => c === runLine(rp, "tower", "--vm")).length, 2);
   assert.ok(!r.calls.some((c) => c.includes("boxd-laptop") && !c.endsWith(" pod status")), "the other host is only asked its status, nothing is synced or run there");
@@ -1722,7 +1725,7 @@ test("--wait: the lost race with no host left (a placement this call made is dro
   const r = waits(rp, s, ["--no-sync", "--vm", "true"]);
   assert.equal(r.code, 0, r.err);
   assert.equal(r.calls.filter((c) => c === runLine(rp, "tower", "--vm")).length, 2);
-  assert.match(r.err, /box: waiting for room, asking every 0\.001 seconds:\n  tower: no room \(the server refused the call\)\nbox: exit 0 on tower\n$/);
+  assert.match(unroom(r.err), /box: waiting for room, asking every 0\.001 seconds:\n  tower: no room \(the server refused the call\)\nbox: exit 0 on tower\n$/);
   assert.deepEqual(choices(s).map((l) => [l[3], l[4]]), [["tower", "order"], ["tower", "order"]]);
   assert.equal(rp.placed(), "tower\n");
 });
@@ -1744,6 +1747,7 @@ test("without --wait nothing changes: no room is still exit 75 at once, and --wa
   const r = go(newRepo(), s, ["--vm", "true"], { BOXD_WAIT_MS: "1" });
   assert.equal(r.code, NO_ROOM);
   assert.equal(probes(r.calls).length, 2);
+  assert.doesNotMatch(waits(newRepo(), servers([{ name: "tower", status: FREE }]), ["true"]).err, /room on/, "a call that never waited says nothing");
   assert.match(runBox(["--no-sync", "true", "--wait"]).err, /^box: --wait after the command/);
 });
 
@@ -1874,7 +1878,7 @@ test("--wait keeps asking while the medium size does not fit, and goes on when i
   hostFile(s, "tower", "status.2", `${fits("4096")}\n`);
   const r = waits(rp, s, ["--no-sync", "--vm", "--size", "medium", "true"]);
   assert.equal(r.code, 0, r.err);
-  assert.equal(r.err, "box: waiting for room, asking every 0.001 seconds:\n  tower: 3000 MB fit, 4096 MB asked\n  laptop: 3000 MB fit, 4096 MB asked\nbox: exit 0 on tower\n");
+  assert.equal(unroom(r.err), "box: waiting for room, asking every 0.001 seconds:\n  tower: 3000 MB fit, 4096 MB asked\n  laptop: 3000 MB fit, 4096 MB asked\nbox: exit 0 on tower\n");
   assert.equal(probes(r.calls).length, 4, "both hosts asked again");
 });
 
@@ -2582,7 +2586,7 @@ test("--wait for a container call: asks again until a host has memory for anothe
   hostFile(s, "laptop", "status.2", `${yesBox}\n`);
   const r = waits(rp, s, ["true"]);
   assert.equal(r.code, 0, r.err);
-  assert.equal(r.err, "box: waiting for room, asking every 0.001 seconds:\n  tower: no memory for another busy box (1000 MB fit, 4096 MB wanted)\n  laptop: no memory for another busy box (0 MB fit, 4096 MB wanted)\nbox: exit 0 on laptop\n");
+  assert.equal(unroom(r.err), "box: waiting for room, asking every 0.001 seconds:\n  tower: no memory for another busy box (1000 MB fit, 4096 MB wanted)\n  laptop: no memory for another busy box (0 MB fit, 4096 MB wanted)\nbox: exit 0 on laptop\n");
   assert.deepEqual(rest(r.calls), [sync(rp, "laptop"), runLine(rp, "laptop")]);
 });
 
@@ -2606,7 +2610,7 @@ test("a refusal for room after 3 KB of build lines on standard error: --wait wai
   hostFile(s, "tower", "run.refuse", "1\n"); hostFile(s, "tower", "run.pre", `${BUILD}\n`);
   const r = waits(rp, s, ["--no-sync", "--vm", "true"]);
   assert.equal(r.code, 0, r.err);
-  assert.match(r.err, /box: waiting for room, asking every 0.001 seconds:\n  tower: no room \(the server refused the call\)\nbox: exit 0 on tower\n$/);
+  assert.match(unroom(r.err), /box: waiting for room, asking every 0.001 seconds:\n  tower: no room \(the server refused the call\)\nbox: exit 0 on tower\n$/);
   assert.equal(r.calls.filter((c) => c === runLine(rp, "tower", "--vm")).length, 2);
 });
 test("a refusal for room after 3 KB of build lines, first placement without --wait: the next host with room is tried", () => {
@@ -2749,7 +2753,7 @@ test("--wait: moving is tried first, in the first round and in every later one; 
   const b = waits(rp, s, ["--vm", "true"]);
   assert.equal(b.code, 0, b.err);
   assert.match(b.err, /box: waiting for room, asking every 0\.001 seconds:\n  tower: 3 of 3 running\n/);
-  assert.ok(b.err.endsWith(MOVE_LINE + "box: exit 0 on laptop\n"), b.err);
+  assert.ok(unroom(b.err).endsWith(MOVE_LINE + "box: exit 0 on laptop\n"), b.err);
   assert.equal(reports(b.calls, "tower"), 2);
   assert.equal(rp.placed(), "laptop\n");
   assert.deepEqual(choices(s).map((l) => l[4]), ["moved"]);
@@ -3042,7 +3046,7 @@ test("--wait: while pod status shows no room the call asks the server for its pl
   hostFile(s, "tower", "queue.2", "boxd-pod: no room for another virtual machine now; 1 call waits ahead of this one (since 09:00); busy now: a (since 10:00)\n");
   const r = waits(rp, s, ["--no-sync", "--vm", "true"]);
   assert.equal(r.code, 0, r.err);
-  assert.equal(r.err, "box: waiting for room, asking every 0.001 seconds:\n  tower: 3 of 3 running\n  laptop: 3 of 3 running\n  tower: first in line; busy now: a (since 10:00)\n"
+  assert.equal(unroom(r.err), "box: waiting for room, asking every 0.001 seconds:\n  tower: 3 of 3 running\n  laptop: 3 of 3 running\n  tower: first in line; busy now: a (since 10:00)\n"
     + "box: the reasons changed: tower: 3 of 3 running; laptop: 3 of 3 running; tower: 1 call waits ahead of this one (since 09:00); busy now: a (since 10:00)\nbox: exit 0 on tower\n");
   assert.equal(r.calls.filter((c) => c.includes(" pod queue ")).length, 2, "the older server (laptop) is not asked");
   assert.ok(r.calls.every((c) => !c.includes("boxd-laptop") || c.endsWith(" pod status")));

@@ -23,7 +23,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-export const VERSION = "0.4.67";
+export const VERSION = "0.4.68";
 const BOX = /^[a-z0-9][a-z0-9_.-]{0,62}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const MAC = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i;
@@ -133,7 +133,7 @@ container or, with --vm, a small virtual machine; the same box on every call) an
                    again every 30 seconds ($BOXD_WAIT_MS) until the call can be placed, instead of exit 75 at once; a
                    worktree whose server is full moves first when it can. From server 0.4.41 the call keeps its place in
                    line: waiting callers are served in the order they first asked as far as memory allows, and the waiting line
-                   tells its place and what holds the room. A refusal that waiting cannot fix (no server with the image or with virtual machines, none
+                   tells its place and what holds the room. When room appears it prints "box: room on <host> after waiting <time>; starting". A refusal that waiting cannot fix (no server with the image or with virtual machines, none
                    reachable) still ends at once
   --pull <path>    after a foreground run, copy <path> (relative to the worktree) back; repeatable. Only changed
                    files travel (rsync)
@@ -1416,7 +1416,7 @@ export function main(args: string[], env: Env = process.env, inner?: { run: stri
   const quote = (w: string) => /^[\w@%+=:,./-]+$/.test(w) ? w : `'${w.replace(/'/g, `'\\''`)}'`;
 
   return (async () => {
-    let name = fixed, spare: string[] = [], fresh = false, waiting = false, shown = "";
+    let name = fixed, spare: string[] = [], fresh = false, waiting = false, shown = "", since = 0, told = false;
     // --wait: said once with the reasons, again (one line) only when the reasons change; holds nothing on any host. Like a foreground
     // call it also ends with its starter (looked at after each sleep). Returns true when it did.
     const starter = process.ppid, waitMs = Number(env.BOXD_WAIT_MS ?? 30_000);
@@ -1425,7 +1425,8 @@ export function main(args: string[], env: Env = process.env, inner?: { run: stri
       const text = lines.join("; ");
       if (!waiting) process.stderr.write(`box: waiting for room, asking every ${waitMs / 1000} seconds:\n${lines.map((l) => `  ${l}\n`).join("")}`);
       else if (text !== shown) process.stderr.write(`box: the reasons changed: ${text}\n`);
-      waiting = true; shown = text;
+      waiting = true; shown = text; told = false;
+      if (!since) since = Date.now();
       await new Promise((res) => setTimeout(res, waitMs));
       if (run || env.BOXD_KEEP_ORPHAN === "1" || process.ppid === starter) return false;
       process.stderr.write("box: the process that started this call is gone; no longer waiting\n");
@@ -1489,6 +1490,7 @@ export function main(args: string[], env: Env = process.env, inner?: { run: stri
       name = place(gitDir, c.host, true);
       if (name === c.host) { fresh = true; spare = c.room.slice(1); logChoice(env, box, req, name, c.reason, c.notes); }
     }
+    if (waiting && !told) { told = true; process.stderr.write(`box: room on ${name} after waiting ${duration(Math.round((Date.now() - since) / 1000))}; starting\n`); }
     let r = await attempt(name);
     // Lost race: the host had room when asked and none when the call arrived. Nothing ran, so the next host with room is tried.
     while (refused(r) && spare.length) {

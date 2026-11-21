@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.68
+
+- A call made with `--wait` that had to wait now says when it goes on: `box: room on <host> after waiting <time>; starting`, on standard error, right before the command is handed to the host. Until now the caller saw `box: waiting for room, ...` and then nothing until the command's own output, and could not tell how long the wait had been. The time counts from the first wait; if the host refuses again (a lost race) and the call waits again, the line comes again before the next attempt. A call that never waited prints nothing new. Client only.
+
 ## 0.4.67
 
 - `box pull <path>... --to <folder>`: the pulled paths land under that folder instead of the worktree, each keeping its relative form (`box pull out/report.txt --to /tmp/results` gives `/tmp/results/out/report.txt`). Before, results always landed inside the calling worktree and had to be moved out by hand. `--to` without a folder is refused (exit 2). Without `--to` nothing changes. No server change.

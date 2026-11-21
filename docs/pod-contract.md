@@ -1039,7 +1039,7 @@ Owner decisions 2026-11-13; the reasoning is in `docs/designs/load-management.md
   a reason time can change (`<n> of <m> machines`, `no memory for another machine`), or the call is refused at the host for room (the lost race
   with no host left, a placed worktree whose host is full), the client prints once on stderr `box: waiting for room, asking every 30 seconds:`
   and the usual reason lines, then probes and chooses again every 30 seconds (`BOXD_WAIT_MS`, a test hook; the word "30" in the message is
-  that interval in seconds) until the call can be placed, and goes on as a normal call (sync, run, pulls, collector). When the reasons
+  that interval in seconds) until the call can be placed, prints one line `box: room on <host> after waiting <time>; starting` (the time since the first wait; again before a later attempt that follows a new wait), and goes on as a normal call (sync, run, pulls, collector). When the reasons
   change it prints one line `box: the reasons changed: <host>: <reason>; ...`, and only then. A worktree this call placed is chosen afresh each
   round; a placed worktree is moved by itself only as "A placed worktree whose host has no room" says, and that is tried first in each round, so the call waits only while it cannot move. The probe is the same one: a sleeping host is never woken to ask, and
   counts as room as before. A refusal waiting cannot fix (no host with the image, none with virtual machines, none reachable) still exits 75 at
