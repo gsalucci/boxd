@@ -57,8 +57,9 @@ queue around `box`; a refusal waiting cannot fix, like a missing image, still ex
   output need not pass through you: read the end of it (`box log <id> | tail -n 50`) instead of printing it in the call.
 - `box runs` lists the detached runs still running on the servers (host, box, run id, age, worktree, last output line, tab separated), so you
   can see your work in flight without lock files of your own. It never wakes a sleeping server (it names it). A run that wrote nothing
-  to its standard output or standard error for an hour or more gets one more line on standard error ("has written nothing for 1h02m; it may hang"):
-  check it with `box log --state`, end it with `box stop --run`. A program that writes only to its own log file always looks silent.
+  to its standard output or standard error for an hour or more gets one more line on standard error ("has written nothing for 1h02m; it may hang, or it writes elsewhere"):
+  check it with `box log --state`, end it with `box stop --run`. A program that writes its progress only to files of its own looks silent:
+  launch it with `box --detach --alive <path>` (a file or folder of the worktree, relative, no `..` part); the newest change under that path then counts as output.
   `box runs --follow` blocks until all of the runs running at that moment have ended, printing `host`, `box`, run id and `exit=<code>` for each as it ends
   (`exit=-`: no code known); it exits 0 when every one ended with 0, otherwise 1; runs started later are not followed. Ask `box --version` for the client's version.
   `--pod '<pattern>'` (repeatable; `*` any characters, `?` one, the rest literal, over the whole box name as the box column shows it) keeps only your own boxes' runs, for the list and for the exit code of `--follow`; react to each end with `box runs --follow --pod 'rf-*' | while IFS=$'\t' read -r host box run code; do ...; done` (`code` is `exit=<n>`).

@@ -1,5 +1,5 @@
 // box: runs a command in the calling worktree's own box on a boxd build server (see docs/pod-contract.md).
-//   box [--host <name>] [--pod <name>] [--image <ref> | --image-file <path>] [--vm|--container] [--size small|medium|large|xlarge] [--user] [--kvm] [--recreate] [--no-sync] [--snapshot | --git | --commit <rev>] [--history] [--detach] [--wait] [--pull <path>]... [--] <command...>
+//   box [--host <name>] [--pod <name>] [--image <ref> | --image-file <path>] [--vm|--container] [--size small|medium|large|xlarge] [--user] [--kvm] [--recreate] [--no-sync] [--snapshot | --git | --commit <rev>] [--history] [--detach [--alive <path>]] [--wait] [--pull <path>]... [--] <command...>
 //   box --shards <n> [--tail <n>] [the usual run options] -- <command with {shard} and {shards}...>
 //   box image push [--host <name>] [--vm|--container] <ref>
 //   box setup <host> [--hostname <name>] [--port <n>] [--user <name>] [--identity <file>] [--wake <mac>,<mac> --broadcast <addr>] [--default]
@@ -22,7 +22,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-export const VERSION = "0.4.65";
+export const VERSION = "0.4.66";
 const BOX = /^[a-z0-9][a-z0-9_.-]{0,62}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const MAC = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i;
@@ -123,6 +123,9 @@ container or, with --vm, a small virtual machine; the same box on every call) an
                    any box and with its own installed dependencies. A start refused for room ends the call and leaves the runs already
                    started running (follow them with box runs --follow --pod '<name>-s*'; --wait queues instead). Not with --detach, --pull,
                    --no-sync, --snapshot, forward or vnc
+  --alive <path>   with --detach: a file or folder of the worktree (relative, no .. part) the run writes its progress to. Its newest
+                   change counts as output, so box runs does not call a run silent while it changes (box log --state quiet=). With --shards
+                   every shard's run gets it
   --wait           when no build server has room (for a machine, or memory for another busy container box), wait and ask
                    again every 30 seconds ($BOXD_WAIT_MS) until the call can be placed, instead of exit 75 at once; a
                    worktree whose server is full moves first when it can. From server 0.4.41 the call keeps its place in
@@ -206,9 +209,9 @@ export function boxFor(toplevel) {
 }
 // --env names: credentials only (the server checks the same pattern before putting the value in the engine's environment).
 export const SECRET = /^[A-Z][A-Z0-9_]{0,62}_(TOKEN|KEY|SECRET|PASSWORD)$/;
-// flags: --git (the client's own, never sent), --pod <name>, --image <ref>, --image-file <path>, --vm, --container, --size <word>, --user, --kvm, --env <name>, --recreate, --snapshot, --detach <run>; other flags are the client's own.
+// flags: --git (the client's own, never sent), --alive <path> (sent only with --detach), --pod <name>, --image <ref>, --image-file <path>, --vm, --container, --size <word>, --user, --kvm, --env <name>, --recreate, --snapshot, --detach <run>; other flags are the client's own.
 export function plan(toplevel, flags, argv) {
-    let pod, image, imageFile, run, recreate = false, snapshot = false, vm = false, container = false, user = false, kvm = false, size;
+    let pod, image, imageFile, run, alive, recreate = false, snapshot = false, vm = false, container = false, user = false, kvm = false, size;
     const envs = [];
     for (let i = 0; i < flags.length; i++) {
         const f = flags[i];
@@ -220,6 +223,8 @@ export function plan(toplevel, flags, argv) {
             imageFile = flags[++i];
         else if (f === "--detach")
             run = flags[++i];
+        else if (f === "--alive")
+            alive = flags[++i];
         else if (f === "--vm")
             vm = true;
         else if (f === "--container")
@@ -262,7 +267,10 @@ export function plan(toplevel, flags, argv) {
         return { error: `box: --env ${badEnv}: only names ending in _TOKEN, _KEY, _SECRET or _PASSWORD`, exit: 2 };
     if (run !== undefined && !/^[A-Za-z0-9_.-]{1,64}$/.test(run))
         return { error: "box: bad run id", exit: 2 };
-    const opts = [image && `--image ${image}`, imageFile && `--image-file ${imageFile}`, vm && "--vm", container && "--container", size && `--size ${size}`, user && "--user", kvm && "--kvm", ...envs.map((n) => `--env ${n}`), recreate && "--recreate", snapshot && "--snapshot", run && `--detach ${run}`].filter(Boolean);
+    // As --image-file: a plain relative path inside the worktree, which the server checks again.
+    if (alive !== undefined && (!/^[A-Za-z0-9_.-]+(\/[A-Za-z0-9_.-]+)*$/.test(alive) || alive.length > 200 || alive.split("/").some((c) => c === "." || c === "..")))
+        return { error: "box: --alive must be a relative path inside the worktree (letters, digits, . _ - and /; no .. part)", exit: 2 };
+    const opts = [image && `--image ${image}`, imageFile && `--image-file ${imageFile}`, vm && "--vm", container && "--container", size && `--size ${size}`, user && "--user", kvm && "--kvm", ...envs.map((n) => `--env ${n}`), recreate && "--recreate", snapshot && "--snapshot", run && `--detach ${run}`, run && alive && `--alive ${alive}`].filter(Boolean);
     if (image && /\s/.test(image))
         return { error: "box: bad image", exit: 2 };
     return { box, remote: ["pod run", box, ...opts, "--", Buffer.from(argv.join("\0")).toString("base64")].join(" ") };
@@ -1457,7 +1465,7 @@ async function runsCall(args, env) {
             // A run that wrote nothing for an hour may hang (one hung for four hours unseen): say so beside the table, which stays as it was.
             const quiet = Number(/^[^\n]*\tquiet=(\d{1,9})(?=[\t\n])/.exec(tail.code === 0 ? tail.out : "")?.[1] ?? 0);
             if (quiet >= 3600)
-                process.stderr.write(`box runs: ${r.box} run ${r.id} on ${h.host} has written nothing for ${duration(quiet)}; it may hang (box log --state shows quiet=, box stop --run ends it)\n`);
+                process.stderr.write(`box runs: ${r.box} run ${r.id} on ${h.host} has written nothing for ${duration(quiet)}; it may hang, or it writes elsewhere: launch such a job with --alive <path> (box log --state shows quiet=, box stop --run ends it)\n`);
         }
     }
     if (follow && pending.size)
@@ -1621,7 +1629,7 @@ export function main(args, env = process.env, inner) {
                 return usage("box: --tail needs a whole number from 0 to 100000");
             tail = Number(v);
         }
-        else if (a === "--pod" || a === "--size" || a === "--image" || a === "--image-file" || a === "--pull" || a === "--host" || a === "--ps-after" || a === "--env" || a === "--include" || a === "--commit") {
+        else if (a === "--pod" || a === "--size" || a === "--image" || a === "--image-file" || a === "--alive" || a === "--pull" || a === "--host" || a === "--ps-after" || a === "--env" || a === "--include" || a === "--commit") {
             const v = args[++i];
             if (v === undefined)
                 return usage(`box: ${a} needs a value`);
@@ -1650,6 +1658,8 @@ export function main(args, env = process.env, inner) {
         process.stderr.write(`box: "${w}" is a box word and must come first: box ${w} ${o}; to run a program named ${w} in the box, put -- before it: box ${o} -- ${argv.join(" ")}\n`);
         return 2;
     }
+    if (flags.includes("--alive") && !detach && shards === undefined)
+        return usage("box: --alive goes with --detach: it names the files the detached run writes, so box runs does not call it silent");
     if (tail !== undefined && shards === undefined)
         return usage("box: --tail goes with --shards (or with box runs --follow and box log)");
     if (shards !== undefined) {

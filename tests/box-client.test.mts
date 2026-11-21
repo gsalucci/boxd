@@ -276,6 +276,20 @@ test("--detach sends a run id, prints it and the log command", () => {
   assert.match(r.out, /\nfiles outside \/job go when the idle box is removed \(after the host's time limit, 30 minutes by default\); keep results under \/job\/src and fetch them later with: box pull <path>\n$/);
 });
 
+test("--alive <path> with --detach is sent to the server after the run id; without --detach or with a bad path nothing is sent (exit 2)", () => {
+  const r = runBox(["--no-sync", "--alive", "out/run", "--detach", "sleep", "9"]);
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.calls[0] ?? "", /^ssh boxd-test pod run \S+ --detach \d{8}-\d{6}-[0-9a-f]{4} --alive out\/run -- /);
+  const no = runBox(["--no-sync", "--alive", "out/run", "sleep", "9"]);
+  assert.deepEqual([no.code, no.calls.length], [2, 0]);
+  assert.match(no.err, /^box: --alive goes with --detach: /);
+  for (const bad of ["/abs", "a/../b", "a b", "./x"]) {
+    const b = runBox(["--no-sync", "--alive", bad, "--detach", "sleep", "9"]);
+    assert.deepEqual([b.code, b.calls.length], [2, 0], bad);
+    assert.ok(b.err.startsWith("box: --alive must be a relative path inside the worktree (letters, digits, . _ - and /; no .. part)\n"), bad);
+  }
+});
+
 test("--detach: the fetch command it prints works (same host and box, a pull with no command run), and --pull with --detach is said to do nothing", () => {
   const r = runBox(["--no-sync", "--host", "test", "--pod", "shared", "--detach", "--pull", "out", "sleep", "9"]);
   assert.equal(r.code, 0);
@@ -1635,7 +1649,7 @@ test("box runs: one tab separated line per running detached run of this machine'
   hostFile(s, "laptop", "log.20261116-091500-0003", `${head(9, 0, 9, "running").replace("\n", "\tage=4000\tquiet=3599\n")}${"x".repeat(300)}\n`);
   const r = go(newRepo(), s, ["runs"], { BOXD_NOW: String(NOW) });
   assert.equal(r.code, 0, r.err);
-  assert.equal(r.err, "box runs: w-2 run 20261116-094000-0001 on tower has written nothing for 1h02m; it may hang (box log --state shows quiet=, box stop --run ends it)\n", "one line for the run silent an hour or more, none below");
+  assert.equal(r.err, "box runs: w-2 run 20261116-094000-0001 on tower has written nothing for 1h02m; it may hang, or it writes elsewhere: launch such a job with --alive <path> (box log --state shows quiet=, box stop --run ends it)\n", "one line for the run silent an hour or more, none below");
   assert.deepEqual(r.out.trimEnd().split("\n"), [
     `tower\tw-1\t${id}\t15m00s\t/home/me/w1\tstep 2 [31mred[0m`,
     "tower\tw-2\t20261116-094000-0001\t5m00s\t/home/me/w2\t-",

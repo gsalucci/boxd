@@ -1472,6 +1472,28 @@ else touch -d @1000000 "$W/jobs/x/runs/done.log"; want="state=ended	exit=0	ended
 pod "pod log x done 0"; eq "pod log: an ended run's header says when it ended and how many seconds it took (no seconds without a creation time)" "$want" "$(head -1 "$T/e/out" | cut -f5-)"
 eq "pod log: ended equals the log's modification time" "$(stat -c %Y "$W/jobs/x/runs/done.log")" "$(head -1 "$T/e/out" | cut -f7 | cut -d= -f2)"
 if [ -n "$born" ]; then touch -d "@$((born - 5))" "$W/jobs/x/runs/done.log"; pod "pod log x done 0"; eq "pod log: a modification time before the creation time leaves seconds out" "state=ended	exit=0	ended=$((born - 5))" "$(head -1 "$T/e/out" | cut -f5-)"; fi
+# --alive: the newest change under the stored path of the box's src folder counts as output; set with touch, bounds only, never the clock's speed.
+A=$W/jobs/x/src; mkdir -p "$A/out/d" "$T/e/outside"; now=$(date +%s)
+aq() { pod "pod log x live 0"; head -1 "$T/e/out" | tr '\t' '\n' | sed -n 's/^quiet=//p'; }
+touch -d @1000000 "$W/jobs/x/runs/live.log"
+touch -d "@$((now - 5))" "$A/out/run"; echo out/run > "$W/jobs/x/runs/live.alive"; q=$(aq)
+eq "pod log: a file of --alive changed after the log's last write gives a small quiet" yes "$([[ $q =~ ^[0-9]+$ ]] && [ "$q" -lt 600 ] && echo yes || echo no)"
+touch -d @500000 "$A/out/run"; q=$(aq)
+eq "pod log: a file of --alive older than the log leaves the log's quiet" yes "$([[ $q =~ ^[0-9]+$ ]] && [ "$q" -ge $((now - 1000001)) ] && echo yes || echo no)"
+touch -d @500000 "$A/out/d/a"; touch -d "@$((now - 7))" "$A/out/d/b"; echo out/d > "$W/jobs/x/runs/live.alive"; q=$(aq)
+eq "pod log: a folder of --alive takes its newest file" yes "$([[ $q =~ ^[0-9]+$ ]] && [ "$q" -lt 600 ] && echo yes || echo no)"
+echo out/none > "$W/jobs/x/runs/live.alive"; q=$(aq)
+eq "pod log: a missing --alive path leaves the log's quiet" yes "$([[ $q =~ ^[0-9]+$ ]] && [ "$q" -ge $((now - 1000001)) ] && echo yes || echo no)"
+touch -d "@$((now - 3))" "$T/e/outside/f"; ln -s "$T/e/outside" "$A/lnk"; echo lnk > "$W/jobs/x/runs/live.alive"; q=$(aq)
+eq "pod log: an --alive path that is a link out of src is ignored" yes "$([[ $q =~ ^[0-9]+$ ]] && [ "$q" -ge $((now - 1000001)) ] && echo yes || echo no)"
+echo ../outside > "$W/jobs/x/runs/live.alive"; q=$(aq)
+eq "pod log: a stored --alive value with a .. part is ignored" yes "$([[ $q =~ ^[0-9]+$ ]] && [ "$q" -ge $((now - 1000001)) ] && echo yes || echo no)"
+echo "EXIT 0" > "$W/jobs/x/runs/done.log"; echo out/run > "$W/jobs/x/runs/done.alive"; pod "pod log x done 0"
+eq "pod log: an ended run's header is the same with a stored --alive path" 0 "$(head -1 "$T/e/out" | grep -c 'age=\|quiet=')"
+pod "pod run $box --detach r9 --alive ../x -- $B64"; eq "pod run: --alive with a .. part is refused" "125 boxd-pod: bad alive path" "$rc $(cat "$T/e/err")"
+pod "pod run $box --detach r9 --alive /abs -- $B64"; eq "pod run: an absolute --alive path is refused" "125 boxd-pod: bad alive path" "$rc $(cat "$T/e/err")"
+pod "pod run $box --detach r9 --alive 'a;b' -- $B64"; eq "pod run: an --alive path with other characters is refused" 125 "$rc"
+pod "pod run $box --alive out -- $B64"; eq "pod run: --alive without --detach is refused" "125 boxd-pod: --alive goes with --detach" "$rc $(cat "$T/e/err")"
 exec 6>"$T/e/rel"; exec 6>&-; wait "$lp"
 
 # --clean: the client's sync may also delete what its filter leaves out

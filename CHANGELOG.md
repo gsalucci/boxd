@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.66
+
+- New option `--alive <path>` for a detached run (`box --detach --alive <path> ...`): a file or folder of the worktree the run writes its progress to. Its newest change counts as output, so `quiet=` of `box log --state` and the silence line of `box runs` follow the job's own records. Before, a job that wrote only to its own files was reported as silent for hours while it worked. The path is relative, with no `..` part; a folder is read at most 4 levels down and links are never followed; a missing path changes nothing. The server keeps the path in `runs/<run>.alive` and removes it with the run. The silence line of `box runs` now names the option. With `--shards` every shard's run gets it.
+
 ## 0.4.65
 
 - New word `box pull <path>... [--host <name>] [--pod <name>]`: copies paths of this worktree's box (its files under `/job/src` on the build server) back into the working folder and runs nothing in the box, so a stopped box, also a stopped virtual machine, stays stopped and needs no room on the host. Before, fetching results later meant `box --no-sync --pull <path> true`, which started a stopped machine for every read. A leading `/` or a `..` in a path is refused (exit 2); a path that is not in the box prints `box: nothing at <path> in the box, nothing pulled`. The hints after a detached run name the new form. Because `pull` is now a box word, a program of that name run in the box needs `--` before it. No server change.

@@ -21,7 +21,7 @@ PROC=${BOXD_PROC:-/proc}   # test hook, like BOXD_MEMINFO: where `pod report` fi
 KVM=${BOXD_KVM:-/dev/kvm}   # test hook: the device a --kvm box gets
 ROUTE=${BOXD_ROUTE:-/proc/net/route}   # test hooks: the routing table and the network interface folder `pod report` reads
 NETDIR=${BOXD_NET:-/sys/class/net}
-VERSION=0.4.65
+VERSION=0.4.66
 # Keys that may only read, one "<type> <key> [comment]" per line (view_only below); and the largest answer of pod calls and pod log.
 VIEW_KEYS=${BOXD_VIEW_KEYS:-/etc/boxd/view_keys}
 READ_MAX=${BOXD_READ_MAX:-1048576}
@@ -940,8 +940,22 @@ run_exit() { local l; l=$(tail -n 1 "$1" 2>/dev/null); [[ $l =~ ^EXIT\ ([0-9]+)$
 # shortcut: after a reboot another process group of this account could carry the same number; then the run reads as running until that group ends.
 run_alive() { local pg; [ -e "$1" ] && { read -r pg < "$1"; } 2>/dev/null && [[ $pg =~ ^[0-9]+$ ]] && kill -0 -- "-$pg" 2>/dev/null; }
 
+# alive_mtime <box> <record>: the newest modification time (seconds) under the path the record names, a path of the box's src folder;
+# fails (no word) for no record, a bad value, a missing path, a link, a path that resolves outside src, or no time. Bounded: regular
+# files at most 4 levels down, links never followed.
+alive_mtime() {
+    local p src full t
+    IFS= read -r p < "$2" 2>/dev/null || return 1
+    [[ $p =~ ^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$ && ${#p} -le 200 && /$p/ != */./* && /$p/ != */../* ]] || return 1
+    src=$(realpath "$WORK/jobs/$1/src" 2>/dev/null) || return 1
+    [ ! -L "$src/$p" ] || return 1
+    full=$(realpath -e "$src/$p" 2>/dev/null) && [[ $full == "$src"/* ]] || return 1
+    t=$(find -P "$full" -maxdepth 4 -type f -printf '%T@\n' 2>/dev/null | cut -d. -f1 | sort -n | tail -n 1)
+    [[ $t =~ ^[0-9]+$ ]] && echo "$t"
+}
+
 pod_log() {
-    local box=${1:-} id=${2:-} f st=ended ex=- size from next WIN off end= born extra= now
+    local box=${1:-} id=${2:-} al f st=ended ex=- size from next WIN off end= born extra= now
     [[ $box =~ $BOX_RE ]] || die "bad box name"
     [[ $id =~ $RUN_RE ]] || die "bad run id"
     off=$(read_offset "${3:-}") || exit 125
@@ -959,6 +973,8 @@ pod_log() {
     if [ "$st" = running ]; then
         now=$(date +%s); born=$(stat -c %W "$f" 2>/dev/null) || born=; end=$(stat -c %Y "$f" 2>/dev/null) || end=
         [[ $born =~ ^[1-9][0-9]*$ ]] && [ "$now" -ge "$born" ] && extra+=$'\tage='$((now - born))
+        # A run that wrote its progress to files of its own names them (--alive): their newest change counts as output.
+        if [[ $end =~ ^[0-9]+$ ]]; then al=$(alive_mtime "$box" "${f%.log}.alive") && [ "$al" -gt "$end" ] && end=$al; fi
         [[ $end =~ ^[0-9]+$ ]] && extra+=$'\tquiet='$((now > end ? now - end : 0))
     fi
     window "$f" "$off"
@@ -1067,7 +1083,7 @@ pod_end() {
         echo "EXIT 143" >>"$f"
     fi
     [ ! -e "$ev.start" ] || [ -e "$ev.end" ] || events_write "$ev.end" "$box" "$eg"
-    rm -f "$pf"
+    rm -f "$pf" "${pf%.pid}.alive"
     touch "$WORK/jobs/$box/.last-used" 2>/dev/null
     echo "ended run $id in box $box"
     logcall 0 "ended run $id"
@@ -1277,7 +1293,7 @@ term_runs() {
         if [[ $pg =~ ^[0-9]+$ ]] && kill -TERM -- "-$pg" 2>/dev/null; then
             for i in $(seq 100); do kill -0 -- "-$pg" 2>/dev/null || break; sleep 0.1; done
         fi
-        rm -f "$f"
+        rm -f "$f" "${f%.pid}.alive"
     done < <(find "$WORK/jobs" -mindepth 3 -maxdepth 3 -path '*/runs/*.pid' -type f 2>/dev/null)
 }
 
@@ -1311,7 +1327,7 @@ image_stale_now() {
 }
 
 pod_run() {
-    local box=${1:-} image="" imgfile="" vm="" container="" queued="" user="" cuser="" kvm="" ckvm="" ulabels="" recreate="" snapshot="" run="" b64="" tty="" name J out rc
+    local box=${1:-} image="" imgfile="" vm="" container="" queued="" user="" cuser="" kvm="" ckvm="" ulabels="" recreate="" snapshot="" run="" alive="" b64="" tty="" name J out rc
     local -a envs=()
     local size="" have="" lim="" asked="" pk pick chosen="" used_mb=0 cap_mb=0 max="" box_fit_mb box_why
     local kengine="" kuser="" kkvm="" kimage="" gmine="" gother="" k v2 newid="" changed="" rebuilt="" full engine=container cid="" sc="" pc="" vc="" cimg="" cst="" vimg="" vst="" other mine cur st create="" start="" again="" n
@@ -1335,11 +1351,17 @@ pod_run() {
             --queued) queued=1; shift ;;
             --snapshot) snapshot=1; shift ;;
             --detach) [[ ${2:-} =~ $RUN_RE ]] || die "bad run id"; run=$2; shift 2 ;;
+            --alive) [ $# -ge 2 ] || die "--alive needs a value"; alive=$2; shift 2 ;;
             --) shift; [ $# -eq 1 ] || die "expected exactly one command word after --"; b64=$1; break ;;
             *) die "bad option $1" ;;
         esac
     done
     [ -n "$b64" ] || die "missing command"
+    # --alive: a plain relative path inside the box's src folder (as --image-file), meaningful for a detached run only.
+    if [ -n "$alive" ]; then
+        [ -n "$run" ] || die "--alive goes with --detach"
+        [[ $alive =~ ^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$ && ${#alive} -le 200 && /$alive/ != */./* && /$alive/ != */../* ]] || die "bad alive path"
+    fi
     local n v
     for n in "${envs[@]}"; do
         v=BOXD_SECRET_$n
@@ -1705,6 +1727,7 @@ pod_run() {
         while IFS= read -r rp; do run_alive "$J/runs/$rp.pid" && live+=("$rp"); done < <(find "$J/runs" -maxdepth 1 -name "*.pid" -type f -printf "%f\n" 2>/dev/null | sed "s/\.pid$//" | sort)
         [ ${#live[@]} = 0 ] || echo "boxd-pod: run ${live[0]} is still going in this box${live[1]:+ (and $((${#live[@]} - 1)) more)}; both use the same /job/src" >&2
         : > "$J/runs/$run.log"
+        if [ -n "$alive" ]; then echo "$alive" > "$J/runs/$run.alive"; else rm -f "$J/runs/$run.alive"; fi
         # The shared lock is taken here and the wrapper inherits it (it also takes its own below): the box is busy from now on, so the
         # next admission, which gets the room lock back at once, counts it.
         exec 8>>"$J/.running"; flock -s 8; exec 7>&-
@@ -1723,7 +1746,7 @@ pod_run() {
             events_write "$ev.end" "$bx" "$eg"
             if [ -n "$sb" ]; then vm_end_note "$sb" "$bx" "$k0"; else ctr_end_note "$bx" "$k0" "$rc"; fi >>"$log"
             touch "$j/.last-used"
-            rm -f "${log%.log}.pid"
+            rm -f "${log%.log}.pid" "${log%.log}.alive"
             echo "EXIT $rc" >>"$log"' _ "$J" "$J/runs/$run.log" "$CGROUP" "${vm:+$name}" "$box" "$WORK/cache/events/$box/$run" "${eng[@]}" "${argv[@]}" \
             </dev/null >/dev/null 2>&1 &
         echo "$run"

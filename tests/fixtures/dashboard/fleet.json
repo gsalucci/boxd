@@ -1,7 +1,7 @@
 {
  "schema": 1,
  "generatedAt": 1794571200000,
- "version": "0.4.65",
+ "version": "0.4.66",
  "hosts": [
   {
    "id": "tower",
@@ -9,7 +9,7 @@
    "detail": "",
    "sleeps": true,
    "addr": "192.0.2.72",
-   "version": "0.4.65",
+   "version": "0.4.66",
    "report": true,
    "seenAt": 1794571198000,
    "sinceAt": 1794559800000,
@@ -421,19 +421,19 @@
   {
    "host": "tower",
    "name": "boxd",
-   "version": "0.4.65",
+   "version": "0.4.66",
    "status": "active"
   },
   {
    "host": "tower",
    "name": "boxd-sshd",
-   "version": "0.4.65",
+   "version": "0.4.66",
    "status": "active"
   },
   {
    "host": "tower",
    "name": "boxd-power",
-   "version": "0.4.65",
+   "version": "0.4.66",
    "status": "active"
   },
   {
