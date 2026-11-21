@@ -306,7 +306,7 @@ for ((i = 0; i < n; i++)); do
     want=$(j .exit); eq "$name: exit code" "$want" "$rc"
     if [ "$(j 'has("stdout")')" = true ]; then eq "$name: stdout" "$(j .stdout)" "$(cat "$T/e/out")"; fi
     if [ "$(j 'has("stdout_re")')" = true ]; then re=$(j .stdout_re); [[ $(cat "$T/e/out") =~ $re ]] && r=match || r="no match: $(cat "$T/e/out")"; eq "$name: stdout matches" match "$r"; fi
-    if [ "$(j 'has("stderr")')" = true ]; then eq "$name: stderr" "$(j .stderr | paths)" "$(cat "$T/e/err")"; fi
+    if [ "$(j 'has("stderr")')" = true ]; then eq "$name: stderr" "$(j .stderr | paths)" "$(grep -v "/cache is kept and shared" "$T/e/err")"; fi   # that line has its own case
     if [ "$(j 'has("stderr_re")')" = true ]; then re=$(j .stderr_re | paths); [[ $(cat "$T/e/err") =~ $re ]] && r=match || r="no match: $(cat "$T/e/err")"; eq "$name: stderr matches" match "$r"; fi
     if [ "$want" = 125 ] || [ "$want" = 75 ]; then eq "$name: one boxd-pod line on stderr" 1 "$(grep -c '^boxd-pod: ' "$T/e/err")"; fi
     if [ "$(j 'has("rsync_called_with")')" = true ]; then
@@ -991,7 +991,7 @@ eq "a container box is created with a raised out-of-memory score" yes "$(grep -q
 ctrkill() {   # ctrkill <exit code> <oom kills before> <after>: exit code and standard error of a foreground call
     setup; mkdir -p "$BOXD_CGROOT/boxd"; printf 'oom_kill %s\n' "$2" > "$BOXD_CGROOT/boxd/memory.events"
     CASE_ENV=(FAKE_EXEC_EXIT="$1" FAKE_EXEC_CRASH="$3"); pod "pod run $box -- $B64"; CASE_ENV=()
-    echo "$rc $(grep -v "^boxd-pod: new " "$T/e/err")"
+    echo "$rc $(grep -v -e "^boxd-pod: new " -e "/cache is kept and shared" "$T/e/err")"
 }
 eq "container, killed by the out-of-memory killer: exit 137 and the line" "137 boxd: the command in box $box was killed (exit 137): the host's out-of-memory killer ended a process of the boxes meanwhile (kernel log: dmesg)" "$(ctrkill 137 3 4)"
 eq "container, exit 137 without a kill in the cgroup: no line" "137 " "$(ctrkill 137 3 3)"
@@ -1000,6 +1000,7 @@ eq "container, another exit code while a kill happened: no line" "1 " "$(ctrkill
 setup; pod "pod run $box -- $B64"
 eq "a new container box says it runs commands as root" "boxd-pod: new container box $box: commands run as root; an ordinary account needs --user at creation" "$(grep '^boxd-pod: new ' "$T/e/err")"
 eq "the creation line is not on standard output" 0 "$(grep -c 'new container box' "$T/e/out")"
+eq "a new box is told once that /cache is shared" "1 0" "$(grep -c "^boxd-pod: box $box: /cache is kept and shared by every box of this host" "$T/e/err") $(grep -c '/cache is kept and shared' "$T/e/out")"
 pod "pod run $box -- $B64"
 eq "a later call into the same box says nothing about the account" 0 "$(grep -c '^boxd-pod: new ' "$T/e/err")"
 setup; pod "pod run $box --user -- $B64"

@@ -21,7 +21,7 @@ PROC=${BOXD_PROC:-/proc}   # test hook, like BOXD_MEMINFO: where `pod report` fi
 KVM=${BOXD_KVM:-/dev/kvm}   # test hook: the device a --kvm box gets
 ROUTE=${BOXD_ROUTE:-/proc/net/route}   # test hooks: the routing table and the network interface folder `pod report` reads
 NETDIR=${BOXD_NET:-/sys/class/net}
-VERSION=0.4.69
+VERSION=0.4.70
 # Keys that may only read, one "<type> <key> [comment]" per line (view_only below); and the largest answer of pod calls and pod log.
 VIEW_KEYS=${BOXD_VIEW_KEYS:-/etc/boxd/view_keys}
 READ_MAX=${BOXD_READ_MAX:-1048576}
@@ -1691,6 +1691,8 @@ pod_run() {
             [ -z "$chosen" ] || echo "boxd-pod: machine box $box: size $size chosen from its past need of $chosen MB (give --size to choose yourself)" >&2
         elif [ -n "$user" ]; then echo "boxd-pod: new container box $box: commands run as an ordinary account (--user)" >&2
         else echo "boxd-pod: new container box $box: commands run as root; an ordinary account needs --user at creation" >&2; fi
+        # A tool installed into the cache by one job is found by every later box (a browser put there made a skipped test run and hang, 2026-11-21).
+        echo "boxd-pod: box $box: /cache is kept and shared by every box of this host (package caches, XDG_CACHE_HOME=/cache/xdg): a job finds there what earlier jobs put" >&2
         # A box made again over a kept folder (after pod stop, the idle time limit, an eviction or --recreate): /job and /cache stay, the rest of
         # its file system is new. With --user the home is /job/home, so it stays.
         if [ -n "$again" ]; then

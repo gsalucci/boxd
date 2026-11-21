@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.70
+
+A new box says that its cache is shared.
+
+- When a call makes a box, a second line on standard error follows the one about the account: `boxd-pod: box <box>: /cache is kept and shared by every box of this host (package caches, XDG_CACHE_HOME=/cache/xdg): a job finds there what earlier jobs put`. A browser that one job installed under the cache made a test in a later box stop skipping and hang; the skill said so, the box did not.
+
 ## 0.4.69
 
 A build host that reboots comes back by itself.
