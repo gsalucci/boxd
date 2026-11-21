@@ -10,7 +10,7 @@
 //   box log <run> --events [--pod <name>] [--host <name>]
 //   box forward [--host <name>] [--pod <name>] <local-port> <box-port>
 //   box vnc [--host <name>] [--pod <name>] [--port <box-port>]
-//   box pull <path>... [--host <name>] [--pod <name>]
+//   box pull <path>... [--to <folder>] [--host <name>] [--pod <name>]
 //   box drop [--pod <name>] [--host <name>]
 //   box stop [--pod <name>] [--host <name>]
 //   box stop --run <run> [--pod <name>] [--host <name>]
@@ -22,7 +22,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-export const VERSION = "0.4.66";
+export const VERSION = "0.4.67";
 const BOX = /^[a-z0-9][a-z0-9_.-]{0,62}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const MAC = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i;
@@ -65,10 +65,11 @@ export const HELP = `usage: box [options] [--] <command...>
                                        (0 picks a free local port); one ssh per connection, no sync, starts nothing; Ctrl+C stops
        box vnc [--host <name>] [--pod <name>] [--port <box-port>]
                                        forward (default box port 5900) and open vnc://<loopback>:<port> with xdg-open
-       box pull <path>... [--host <name>] [--pod <name>]
+       box pull <path>... [--to <folder>] [--host <name>] [--pod <name>]
                                        copies each path (relative to the worktree, from the box's files on the build server) back into your working
                                        folder with no command run in the box: a stopped box, also a stopped machine, stays stopped. Same host and
                                        box as box log; stops at the first path that fails (one that is not in the box says so and exits with the copy's code); no leading / and no ..
+                                       --to <folder>: the paths land under that folder (each keeps its relative form) instead of the worktree
        box drop [--pod <name>] [--host <name>]
                                        removes this worktree's box and its files on the build server now, and its record here, for a worktree you
                                        delete yourself (run it from inside the worktree, before deleting it): the collector would wait 15 minutes
@@ -2018,9 +2019,9 @@ function pullPaths(paths, host, box, toplevel) {
     return 0;
 }
 // box pull <path>...: the files of this worktree's box come back with no command run in the box, so a stopped box stays stopped.
-// Resolved as box log does (--host, --pod, the worktree's record); no probe, no wake.
+// Resolved as box log does (--host, --pod, the worktree's record); no probe, no wake. --to puts the files under another folder.
 function pullCall(args, env) {
-    let hostFlag, pod;
+    let hostFlag, pod, to;
     const paths = [];
     for (let i = 0; i < args.length; i++) {
         const a = args[i], v = args[i + 1];
@@ -2033,6 +2034,12 @@ function pullCall(args, env) {
                 hostFlag = v;
             else
                 pod = v;
+            i++;
+        }
+        else if (a === "--to") {
+            if (!v)
+                return usage("box pull: --to needs a folder");
+            to = path.resolve(v);
             i++;
         }
         else if (!a.startsWith("--"))
@@ -2048,7 +2055,7 @@ function pullCall(args, env) {
     const t = readTarget(hostFlag, pod, env);
     if (typeof t === "string")
         return usage(t);
-    const top = spawnSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).stdout.trim();
+    const top = to ?? spawnSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).stdout.trim();
     if (!top)
         return usage("box pull: run it inside the git worktree the files belong to");
     return pullPaths(paths, t.HOST.replace(/^boxd-/, ""), t.box, top);

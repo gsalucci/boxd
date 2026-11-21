@@ -312,6 +312,19 @@ test("box pull copies the paths back with rsync and runs nothing in the box (no 
   assert.deepEqual(runBox(["pull", "--host", "test", "--pod", "shared", "x/"]).calls, [`rsync -a --mkpath boxd-test:jobs/shared/src/x ${top}/`]);
 });
 
+test("box pull --to lands the paths under another folder, with no ssh call; --to without a value is a usage error", () => {
+  const dest = path.join(root, "pull-to");
+  const r = runBox(["pull", "out/report.txt", "--to", dest]);
+  assert.equal(r.code, 0);
+  assert.deepEqual(r.calls, [`rsync -a --mkpath boxd-test:jobs/${box}/src/out/report.txt ${dest}/out/`]);
+  for (const v of [["pull", "x", "--to"], ["pull", "x", "--to", ""]]) {
+    const e = runBox(v);
+    assert.equal(e.code, 2, v.join(" "));
+    assert.equal(e.err.split("\n")[0], "box pull: --to needs a folder");
+    assert.deepEqual(e.calls, [], v.join(" "));
+  }
+});
+
 test("box pull with no path, an unknown option, an absolute path or a .. path is a usage error (exit 2) and calls nothing", () => {
   for (const [v, text] of [[["pull"], /^box pull: give at least one path/], [["pull", "--bogus", "x"], /^box pull: unknown option --bogus/], [["pull", "--host", "test"], /^box pull: give at least one path/],
     [["pull", "/etc/passwd"], /^box pull: \/etc\/passwd must be inside the worktree/], [["pull", "ok", "../x"], /^box pull: \.\.\/x must be inside the worktree/], [["pull", "a/../../x"], /must be inside the worktree/]] as const) {
