@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.76
+
+- The first call of a worktree now passes over a busy build server: among the servers with room, one whose load is above its
+  processor count comes after every calm one (for `--vm` too). Until now the choice looked at free memory only, and the same test
+  suite was measured at 1015 seconds on a loaded server against 443 on a calm one. It is only an order: a busy server is still
+  chosen when it is the only one with room, and a server that reports no load behaves as before. The choice line names the
+  reason: `<host>=busy, load 35 on 12 processors`.
+
 ## 0.4.75
 
 - `box ps` without `--pod`, when the build server has no such box, now adds one line: the name it asked is this worktree's own

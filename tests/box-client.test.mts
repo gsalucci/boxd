@@ -597,7 +597,7 @@ function realStatus(vmRunning: number, capMb?: number): string {
   const r = spawnSync("bash", [path.join(REPO, "server/boxd-pod")], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
     env: { PATH: `${sbin}:${process.env.PATH ?? ""}`, HOME: home, BOXD_CONF: "/nonexistent", BOXD_WORK: work, BOXD_IMAGES_DIR: imgs, BOXD_CGROOT: path.join(d, "cg"), BOXD_VM_MAX: "3", SSH_ORIGINAL_COMMAND: "pod status" } });
   assert.equal(r.status, 0, r.stderr);
-  return r.stdout.trim().replace(/version=[^\t]+/, "version=0.4.40");   // an old server, stated here: tests must not inherit the client's VERSION (a server from 0.4.41 gets --queued and pod queue)
+  return r.stdout.trim().replace(/load1=[^\t]+/, "load1=0.10").replace(/cpus=[^\t]+/, "cpus=8").replace(/version=[^\t]+/, "version=0.4.40");   // an old server, stated here: tests must not inherit the client's VERSION (a server from 0.4.41 gets --queued and pod queue)
 }
 const FULL = realStatus(3), FREE = realStatus(1);
 const REFUSAL = "boxd-pod: no room for another virtual machine (3 of 3 running); wait for one to end or stop one";
@@ -700,6 +700,29 @@ test("spread: a new container worktree goes to the host with the most free memor
   assert.equal(choose([{ name: "tower", state: "asleep" }, { name: "laptop", state: "awake", status: big }], { vm: true }).host, "laptop", "an asleep host comes after an awake one with a cap");
   assert.equal(choose([{ name: "tower", state: "asleep" }, { name: "laptop", state: "awake", status: big }], { vm: false }).host, "tower", "a container: an asleep host runs nothing, most room");
   assert.equal(pick(FULL, FREE, true).reason, "overflow", "the first host had no room: still overflow");
+});
+
+// A host whose load1 is above its cpus is busy: after every calm host with room, the order inside each group unchanged, still chosen when alone.
+test("a busy host (load1 above cpus) comes after the calm ones with room; it is only an order", () => {
+  const withLoad = (s: string, load1?: string, cpus?: string) => s.split("\t").filter((w) => !/^(load1|cpus)=/.test(w)).concat(load1 === undefined ? [] : [`load1=${load1}`], cpus === undefined ? [] : [`cpus=${cpus}`]).join("\t");
+  const calm = withLoad(realStatus(1, 20000), "1.5", "12"), busy = withLoad(realStatus(1, 30000), "35", "12");
+  const two = (a: string, b: string, vm: boolean) => choose([{ name: "tower", state: "awake", status: a }, { name: "laptop", state: "awake", status: b }], { vm });
+  const a = two(busy, calm, false);
+  assert.deepEqual([a.host, a.room], ["laptop", ["laptop", "tower"]], "(a) the busy host has more free memory and still comes last");
+  assert.deepEqual(a.notes, ["tower=busy, load 35 on 12 processors", "laptop=awake"]);
+  assert.equal(two(calm, busy, false).host, "tower", "(a) the calm host is chosen whichever place it has");
+  const bothBusy = (x: string, y: string) => two(withLoad(x, "35", "12"), withLoad(y, "20", "4"), false);
+  assert.deepEqual(bothBusy(realStatus(1, 20000), realStatus(1, 30000)).room, ["laptop", "tower"], "(b) both busy: most free memory first, as before");
+  const only = choose([{ name: "tower", state: "awake", status: busy }, { name: "laptop", state: "awake", status: FULL }], { vm: true });
+  assert.equal(only.host, "tower", "(c) the busy host is chosen when it is the only one with room");
+  const small = withLoad(realStatus(1, 20000), "35", "12"), big = withLoad(realStatus(1, 30000), "1", "12");
+  assert.deepEqual(two(small, big, true).room, ["laptop", "tower"], "(d) a machine: the busy smallest cap comes after the calm bigger one");
+  assert.equal(two(withLoad(realStatus(1, 20000), "1", "12"), big, true).host, "tower", "(d) both calm: the smallest cap as before");
+  const room = (load1?: string, cpus?: string) => two(withLoad(realStatus(1, 30000), load1, cpus), calm, false).room;
+  for (const [l, c] of [[undefined, "12"], ["35", undefined], ["abc", "12"], ["35", "x"], ["", "12"], ["35", ""]] as const) assert.deepEqual(room(l, c), ["tower", "laptop"], `(e) load1=${l} cpus=${c}: not busy, the order of before`);
+  assert.deepEqual(room("12", "12"), ["tower", "laptop"], "(f) load1 equal to cpus is not busy");
+  assert.deepEqual(room("12.01", "12"), ["laptop", "tower"]);
+  assert.deepEqual(choose([{ name: "tower", state: "asleep" }, { name: "laptop", state: "awake", status: busy }], { vm: false }).room, ["tower", "laptop"], "a sleeping host is never busy");
 });
 
 test("spread through the command: a container goes to the host with more free memory, a machine to the host with the smaller cap, and the choices log names the reason", () => {

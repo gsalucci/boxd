@@ -22,7 +22,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-export const VERSION = "0.4.75";
+export const VERSION = "0.4.76";
 const BOX = /^[a-z0-9][a-z0-9_.-]{0,62}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const MAC = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i;
@@ -141,7 +141,7 @@ container or, with --vm, a small virtual machine; the same box on every call) an
                    files travel (rsync)
   --host <name>    build server to use (ssh alias boxd-<name>) and the one this worktree stays on from now on. Without
                    it: $BOXD_HOST (this call only), else the host this worktree was placed on, else (first call, two or
-                   more servers set up) the server with room that has the most free memory (ties: \`box hosts\` order; a
+                   more servers set up) the server with room that has the most free memory, a busy one (load above its processors) after the calm ones (ties: \`box hosts\` order; a
                    sleeping one counts as empty); for a machine (--vm) the awake server with room that has the smallest
                    memory cap for boxes, so the big server stays free for big machines; never waking a sleeping one just
                    to ask; no server with room: exit 75 with one reason per server. A worktree whose server has no room
@@ -463,7 +463,9 @@ export const parseStatus = (line) => Object.fromEntries(line.trim().split("\t").
 // has room unless the server says `box_room=no` (a call that starts work in a box needs the reserve of memory it prints;
 // a server that prints no such word never refuses one), a virtual machine needs the engine and the server's own `vm_room=yes`, and a
 // local image must be on the host; one whose memory is unknown comes after those that report it. An awake host that
-// printed no status (a server older than `pod status`) is the last resort. Spreading by free memory, not filling the
+// printed no status (a server older than `pod status`) is the last resort. An awake host whose `load1` is above its `cpus` is busy (a
+// suite took 1015 s on such a host and 443 s on a calm one with room): it comes after every host with room that is not busy, the order
+// inside each group is the one above, and it is still chosen when it is the only one with room; a word that is missing or not a number is not busy. Spreading by free memory, not filling the
 // first host: on 2026-11-15 the first host took every new worktree until its kernel killed a machine, the second stayed idle.
 // `room` lists every host that can take the call, best first (the retry after a lost race walks it); `notes` is one
 // "<host>=<state or reason>" per host.
@@ -476,6 +478,7 @@ export function choose(hosts, req) {
     for (const h of hosts) {
         const s = h.status === undefined ? undefined : parseStatus(h.status);
         let no;
+        const busy = h.state === "awake" && s && /^\d+(\.\d+)?$/.test(s.load1 ?? "") && /^\d+$/.test(s.cpus ?? "") && Number(s.load1) > Number(s.cpus) ? `busy, load ${s.load1} on ${s.cpus} processors` : undefined;
         if (h.state === "unreachable")
             no = "unreachable";
         else if (h.state === "asleep")
@@ -497,11 +500,11 @@ export function choose(hosts, req) {
             waitable = true;
         }
         else
-            room.push({ name: h.name, free: /^\d+$/.test(s.mem_free_mb ?? "") ? Number(s.mem_free_mb) : -1, ...(req.vm && /^\d+$/.test(s.group_mem_max_mb ?? "") ? { cap: Number(s.group_mem_max_mb) } : {}) });
-        why.push(no ?? (h.state === "awake" && !s ? "awake, no status" : h.state));
+            room.push({ name: h.name, ...(busy ? { busy: true } : {}), free: /^\d+$/.test(s.mem_free_mb ?? "") ? Number(s.mem_free_mb) : -1, ...(req.vm && /^\d+$/.test(s.group_mem_max_mb ?? "") ? { cap: Number(s.group_mem_max_mb) } : {}) });
+        why.push(no ?? busy ?? (h.state === "awake" && !s ? "awake, no status" : h.state));
     }
     const notes = hosts.map((h, i) => `${h.name}=${why[i]}`);
-    room.sort((a, b) => (a.cap !== undefined || b.cap !== undefined ? (a.cap ?? Infinity) - (b.cap ?? Infinity) : a.free === b.free ? 0 : b.free > a.free ? 1 : -1)); // stable: ties keep the order
+    room.sort((a, b) => (a.busy ? 1 : 0) - (b.busy ? 1 : 0) || (a.cap !== undefined || b.cap !== undefined ? (a.cap ?? Infinity) - (b.cap ?? Infinity) : a.free === b.free ? 0 : b.free > a.free ? 1 : -1)); // stable: ties keep the order
     const order = [...room.map((r) => r.name), ...late];
     const host = order[0];
     if (host === undefined)
