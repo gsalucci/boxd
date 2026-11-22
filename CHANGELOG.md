@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.75
+
+- `box ps` without `--pod`, when the build server has no such box, now adds one line: the name it asked is this worktree's own
+  box, and a box started with `--pod <name>` is asked with `box ps --pod <name>`. A caller whose boxes all have names read the
+  bare "no box" as "my box is gone".
+- Skill text: a tool kept in `/cache` may still need its system libraries in each new box.
+
 ## 0.4.74
 
 Two faults found within the hour of 0.4.72 and 0.4.73, on real hosts.

@@ -507,6 +507,13 @@ test("box ps --pod names the box; the host's exit code passes through; nothing i
   assert.equal(runBox(["ps", "--bogus"]).code, 2);
 });
 
+test("box ps without --pod, refused by the host, says which box it asked and how to ask a named one", () => {
+  const r = runBox(["ps"], { env: { FAKE_SSH_EXIT: "125" } });
+  assert.equal(r.code, 125);
+  assert.match(r.err, /^box: \S+ is this worktree's own box; a box started with --pod <name> is asked with box ps --pod <name>$/m);
+  assert.doesNotMatch(runBox(["ps", "--pod", "other-box"], { env: { FAKE_SSH_EXIT: "125" } }).err, /own box/);
+});
+
 test("a silent foreground call gets the box ps table on stderr, every line prefixed; stdout and exit code untouched", () => {
   const count = path.join(root, "ps-count");
   const fifo = path.join(root, "ps-fifo");

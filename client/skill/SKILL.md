@@ -137,6 +137,7 @@ queue around `box`; a refusal waiting cannot fix, like a missing image, still ex
   repository on your own network; pass the same `MAVEN_ARGS` into nested containers. "No route to host" for that address means the
   repository's server is off, not that the build is broken. Build outputs in your worktree folder (ignored files) survive syncs.
 - The box points the language tools at those shared caches through the environment (`CARGO_HOME`, `GOPATH`, `GOMODCACHE`, `GOCACHE`, `npm_config_cache`, `PIP_CACHE_DIR`, `MAVEN_OPTS`). A test that brings its own cache (its own Go module cache, for example) is overruled by them and can fail in a way that looks unrelated: unset the variable for that test run (`env -u GOMODCACHE -u GOPATH <command>`).
+- `/cache` keeps what a tool downloaded, not what it installed into the box with the system package manager: a tool found there (a Playwright browser under `/cache/xdg/ms-playwright`) may still need its system libraries in each new box (`playwright install-deps chromium`). "Present in `/cache`" is not "runs in this box".
 - The box can write only under `/job` and `/cache`. Never ssh to the server for builds; never build as the build account.
 
 ## Disk full: reset

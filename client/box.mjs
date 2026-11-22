@@ -22,7 +22,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-export const VERSION = "0.4.74";
+export const VERSION = "0.4.75";
 const BOX = /^[a-z0-9][a-z0-9_.-]{0,62}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const MAC = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i;
@@ -841,6 +841,9 @@ function ps(args, env) {
     const r = spawnSync("ssh", [t.HOST, `pod ps ${t.box}`], { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
     if (r.status === 0)
         process.stdout.write(psTable(r.stdout));
+    // Without --pod the box asked is the worktree's own; a caller whose boxes all have names reads "no box" as "my box is gone".
+    else if (r.status === 125 && !pod)
+        process.stderr.write(`box: ${t.box} is this worktree's own box; a box started with --pod <name> is asked with box ps --pod <name>\n`);
     return r.status ?? 1;
 }
 // The one clock of the phase times (BOXD_PHASES), so a test can look at the line without caring for the durations.
