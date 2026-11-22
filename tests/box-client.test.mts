@@ -23,7 +23,10 @@ const home = path.join(root, "home"); // a user with no saved host and no ssh co
 mkdirSync(home);
 mkdirSync(bin);
 // With FAKE_REMOTE set, the fake rsync then runs the real one, the folder FAKE_REMOTE standing in for the server's work area.
-const rsyncRemote = `[ -z "\${FAKE_RSYNC_ERR:-}" ] || { echo "$FAKE_RSYNC_ERR" >&2; exit 12; }\n[ -n "$FAKE_REMOTE" ] || exit 0\nfor a; do shift; case $a in boxd-test:*) a="$FAKE_REMOTE/\${a#boxd-test:}";; esac; set -- "$@" "$a"; done\nexec ${REAL_RSYNC} "$@"`;
+const rsyncRemote = `if [ -n "\${FAKE_HOSTS:-}" ]; then for a; do case $a in boxd-*:*) h=\${a%%:*};; esac; done
+  if [ -n "\${h:-}" ] && [ -f "$FAKE_HOSTS/$h.sync.exit" ]; then [ "$(cat "$FAKE_HOSTS/$h.sync.exit")" != 255 ] || echo "ssh: connect to host $h port 2222: No route to host" >&2; exit "$(cat "$FAKE_HOSTS/$h.sync.exit")"; fi
+fi
+[ -z "\${FAKE_RSYNC_ERR:-}" ] || { echo "$FAKE_RSYNC_ERR" >&2; exit 12; }\n[ -n "$FAKE_REMOTE" ] || exit 0\nfor a; do shift; case $a in boxd-test:*) a="$FAKE_REMOTE/\${a#boxd-test:}";; esac; set -- "$@" "$a"; done\nexec ${REAL_RSYNC} "$@"`;
 // With FAKE_PS_COUNT set, the fake ssh plays a silent run: `pod ps` answers one process and counts its calls; the
 // run itself blocks on the fifo FAKE_PS_FIFO, which the second `pod ps` call writes (the second call proves the
 // first report was written, since the client asks again only after writing); then it prints "done" and exits 3.
@@ -788,6 +791,69 @@ test("scenario 8 host down: refused naming it when the other is full, no delay o
   const ok = go(rp, s, ["--vm", "true"]);
   assert.equal(ok.code, 0);
   assert.deepEqual(rest(ok.calls), [sync(rp, "tower"), runLine(rp, "tower", "--vm")]);
+});
+
+// A sync that ends with exit 255 means ssh failed; the fake rsync does that for a host with <alias>.sync.exit holding 255 (a host that sleeps is woken by the sync, so no status file cannot mean down).
+const DOWN = (n: string) => `box: ${n} is unreachable (ssh got no answer); nothing was started\n`;
+// A host that is off: no status for the probe, and a sync that fails like ssh does.
+const off = (s: Servers, n: string) => { s.set({ name: n }); writeFileSync(path.join(s.fake, `boxd-${n}.sync.exit`), "255\n"); };
+test("--host on an unreachable host says so, exits 255 and leaves no placement", () => {
+  const s = servers([{ name: "tower", status: FREE }, { name: "laptop" }]), rp = newRepo(); off(s, "laptop");
+  const r = go(rp, s, ["--host", "laptop", "true"]);
+  assert.equal(r.code, 255);
+  assert.ok(r.err.endsWith(DOWN("laptop")), r.err);
+  assert.equal(rp.placed(), undefined);
+  assert.equal(r.calls.filter((c) => c.includes(" pod run ")).length, 0);
+});
+
+test("--host on an unreachable host leaves a worktree placed on another host placed there", () => {
+  const s = servers([{ name: "tower", status: FREE }, { name: "laptop" }]), rp = newRepo(); off(s, "laptop");
+  assert.equal(go(rp, s, ["--host", "tower", "true"]).code, 0);
+  const r = go(rp, s, ["--host", "laptop", "true"]);
+  assert.equal(r.code, 255);
+  assert.ok(r.err.endsWith(DOWN("laptop")), r.err);
+  assert.equal(rp.placed(), "tower\n");
+});
+
+test("a worktree placed on an unreachable host stays there and is told which host has room and the command to use", () => {
+  const s = servers([{ name: "tower", status: FREE }, { name: "laptop", status: FREE }]), rp = newRepo();
+  assert.equal(go(rp, s, ["--host", "laptop", "--vm", "true"]).code, 0);
+  off(s, "laptop");
+  const r = go(rp, s, ["--vm", "true"]);
+  assert.equal(r.code, 255);
+  assert.ok(r.err.endsWith(`${DOWN("laptop")}box: this worktree is placed on laptop; hosts that have room: tower. Run it there with: box --host tower --vm true\n`), r.err);
+  assert.equal(rp.placed(), "laptop\n");
+  assert.equal(r.calls.filter((c) => c.includes("boxd-tower pod run")).length, 0);
+  const w = go(rp, s, ["--wait", "--vm", "true"]);
+  assert.equal(w.code, 255, "--wait does not wait on an unreachable host");
+  assert.match(w.err, /Run it there with: box --host tower --wait --vm true\n$/);
+});
+
+test("a placed worktree on an unreachable host with no other host having room gets the reasons, not a command", () => {
+  const s = servers([{ name: "tower", status: FREE }, { name: "laptop", status: FREE }]), rp = newRepo();
+  assert.equal(go(rp, s, ["--host", "laptop", "--vm", "true"]).code, 0);
+  off(s, "laptop"); s.set({ name: "tower", status: FULL });
+  const r = go(rp, s, ["--vm", "true"]);
+  assert.equal(r.code, 255);
+  assert.ok(r.err.endsWith(`${DOWN("laptop")}box: no other build server has room\n  tower: 3 of 3 running\n  or wait for room: add --wait\n`), r.err);
+  assert.equal(rp.placed(), "laptop\n");
+});
+
+test("BOXD_HOST naming an unreachable host gets the unreachable line only", () => {
+  const s = servers([{ name: "tower", status: FREE }, { name: "laptop" }]), rp = newRepo(); off(s, "laptop");
+  const r = go(rp, s, ["true"], { BOXD_HOST: "laptop" });
+  assert.equal(r.code, 255);
+  assert.ok(r.err.endsWith(DOWN("laptop")) && !r.err.includes("placed on"), r.err);
+});
+
+test("a sync that fails with 255 on a host that then answers keeps the sync failure text", () => {
+  const s = servers([{ name: "tower", status: FREE }, { name: "laptop", status: FREE }]), rp = newRepo();
+  writeFileSync(path.join(s.fake, "boxd-laptop.sync.exit"), "255\n");
+  const r = go(rp, s, ["--host", "laptop", "true"]);
+  assert.equal(r.code, 255);
+  assert.match(r.err, /box: sync failed \(rsync exit 255\); nothing was started\n$/);
+  assert.ok(!r.err.includes("unreachable"), r.err);
+  assert.equal(rp.placed(), "laptop\n");
 });
 
 // Since 2026-11-17 a placed worktree whose host is full moves by itself when its old host can be asked and holds nothing of it (see "moves by

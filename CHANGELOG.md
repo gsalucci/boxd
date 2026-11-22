@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.71
+
+A build server that cannot be reached is named, and does not hold a worktree it never ran.
+
+- A call whose sync fails because ssh got no answer now asks that server once and says `box: <name> is unreachable (ssh got no answer); nothing was started` (exit 255, as before). Until now only rsync's own lines and `box: sync failed (rsync exit 255)` were printed.
+- `box --host <name>` towards a server that is unreachable no longer leaves the worktree placed there: the placement is put back as it was before the call. Until now the next call without `--host` went to the same unreachable server although another one was free.
+- A worktree placed on a server that is unreachable stays placed (its box and caches may be there) and is told the way out: `box: this worktree is placed on <name>; hosts that have room: <list>. Run it there with: box --host <first> …`.
+
 ## 0.4.70
 
 A new box says that its cache is shared.

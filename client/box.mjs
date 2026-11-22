@@ -22,7 +22,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-export const VERSION = "0.4.70";
+export const VERSION = "0.4.71";
 const BOX = /^[a-z0-9][a-z0-9_.-]{0,62}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const MAC = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i;
@@ -142,7 +142,9 @@ container or, with --vm, a small virtual machine; the same box on every call) an
                    memory cap for boxes, so the big server stays free for big machines; never waking a sleeping one just
                    to ask; no server with room: exit 75 with one reason per server. A worktree whose server has no room
                    moves to one that has by itself (one line says so), unless its box still holds a machine, a container
-                   or a run there, or the call named a server (--host, $BOXD_HOST); then exit 75 and the command that moves it
+                   or a run there, or the call named a server (--host, $BOXD_HOST); then exit 75 and the command that moves it.
+                   A server that cannot be reached (ssh got no answer) ends the call with exit 255 and starts nothing; the
+                   placement --host just made is undone, and a placed worktree is told which servers have room
   --pod <name>     use this box instead of the one derived from the worktree. For box gc the box belongs to the
                    worktree that made it, until that one is gone
   --no-sync        skip the sync
@@ -1901,6 +1903,16 @@ export function main(args, env = process.env, inner) {
             fresh = true;
             return true;
         };
+        // What the placement was before this call, for putting it back when the host named by --host turns out to be unreachable.
+        const before = readOr(placedFile);
+        // The other hosts' answer for this worktree: the command that moves it there, or why none can.
+        const elsewhere = async (from) => {
+            const others = await Promise.all(order.filter((n) => n !== from).map((n) => probe(n, env)));
+            const c = others.length ? choose(others, req) : undefined;
+            const move = ["box", "--host", ...(c && "host" in c ? [c.host] : []), ...args.filter((a, j) => a !== "--host" && args[j - 1] !== "--host")].map(quote).join(" ");
+            const none = c && !("host" in c) ? `box: no other build server has room\n${[...c.refusal, ...(c.wait ? roomHint(others, req, wait) : [])].map((l) => `  ${l}\n`).join("")}` : "";
+            return { c, move, none };
+        };
         if (src.how === "flag" && order.length > 1 && readOr(placedFile) !== name) {
             place(gitDir, name, false);
             logChoice(env, box, req, name, "moved", []);
@@ -1953,6 +1965,24 @@ export function main(args, env = process.env, inner) {
                 logChoice(env, box, req, name, "retry", []);
                 r = await attempt(name);
             }
+            // Exit 255 from the sync means ssh itself failed: only then is the host asked once (a normal call pays no extra round trip).
+            if (r.stop && r.code === 255 && (await probe(name, env)).state === "unreachable") {
+                process.stderr.write(`box: ${name} is unreachable (ssh got no answer); nothing was started\n`);
+                if (src.how === "flag" || fresh) {
+                    if (before === undefined || src.how === "choose")
+                        rmSync(placedFile, { force: true });
+                    else
+                        place(gitDir, before, false);
+                } // a failed call leaves the placement as it was
+                else if (src.how === "placed") { // the worktree stays: its box and caches may be there
+                    const { c, move, none } = await elsewhere(name);
+                    if (c && "host" in c)
+                        process.stderr.write(`box: this worktree is placed on ${name}; hosts that have room: ${c.room.join(", ")}. Run it there with: ${move}\n`);
+                    else
+                        process.stderr.write(none);
+                }
+                return 255;
+            }
             if (r.stop)
                 return r.code;
             if (refused(r)) {
@@ -1970,13 +2000,11 @@ export function main(args, env = process.env, inner) {
                         return final || 129;
                     continue;
                 }
-                const others = await Promise.all(order.filter((n) => n !== name).map((n) => probe(n, env)));
-                const c = others.length ? choose(others, req) : undefined;
-                const move = ["box", "--host", ...(c && "host" in c ? [c.host] : []), ...args.filter((a, j) => a !== "--host" && args[j - 1] !== "--host")].map(quote).join(" ");
+                const { c, move, none } = await elsewhere(name);
                 if (c && "host" in c)
                     process.stderr.write(`box: ${name} has no room; hosts that do: ${c.room.join(", ")}. Move this worktree with: ${move}\n`);
-                else if (c)
-                    process.stderr.write(`box: no other build server has room\n${[...c.refusal, ...(c.wait ? roomHint(others, req, wait) : [])].map((l) => `  ${l}\n`).join("")}`);
+                else
+                    process.stderr.write(none);
                 return last(r.code, name);
             }
             if (inner && r.code === 0) {
