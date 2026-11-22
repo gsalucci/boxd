@@ -49,6 +49,7 @@ v bwrap bwrap --version
 v hyperfine hyperfine --version
 v docker docker --version
 v buildx docker buildx version
+v compose docker compose version
 v containerd containerd --version
 v runc runc --version
 v podman podman --version

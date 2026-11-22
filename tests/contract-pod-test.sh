@@ -1476,6 +1476,7 @@ echo "EXIT 0" > "$W/jobs/x/runs/done.log"; pod "pod log x done 0"
 eq "pod log: an ended run (no record left) is read without a word on standard error" "state=ended	exit=0|" "$(head -1 "$T/e/out" | cut -f5-6)|$(cat "$T/e/err")"
 pod "pod report"; eq "pod report: no word on standard error for ended runs either" "" "$(cat "$T/e/err")"
 touch -d @1000000 "$W/jobs/x/runs/live.log"; pod "pod log x live 0"; eq "pod log: a run whose group lives is running" "state=running	exit=-" "$(head -1 "$T/e/out" | cut -f5-6)"
+eq "pod log: a running run without an --alive record says nothing on standard error" "" "$(cat "$T/e/err")"
 # A running run's header ends with age (now minus the creation time, left out without one) and quiet (now minus the last write, set here with touch, so at least the time since 1000000).
 hq=$(head -1 "$T/e/out" | tr '\t' '\n' | sed -n 's/^quiet=//p'); ha=$(head -1 "$T/e/out" | tr '\t' '\n' | sed -n 's/^age=//p')
 eq "pod log: a running run's quiet is digits, at least the time since its set last write" yes "$([[ $hq =~ ^[0-9]+$ ]] && [ "$hq" -ge $(($(date +%s) - 1000001)) ] && echo yes || echo no)"

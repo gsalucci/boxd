@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.74
+
+Two faults found within the hour of 0.4.72 and 0.4.73, on real hosts.
+
+- `pod log` for a running run started without `--alive` printed the shell's own complaint on standard error at every call (`boxd-pod: line 949: …/runs/<run>.alive: No such file or directory`), so `box log <run> --state` and the new `--quiet-limit` showed it each time they asked. The answer itself was right. It is silent now.
+- The host watcher's new zram finding compared its two numbers as text, so a peak of 24 MB counted as more than a 3934 MB swap limit and a false finding was written. They are compared as numbers.
+
+## 0.4.73
+
+Following a run can give up when the run goes silent, a call can say where its time went, and the toolbox image carries the compose plug-in.
+
+- `box log <run> --follow --quiet-limit <seconds>`: follows as before and, when the run is still running and has written nothing for that long (`quiet` as `--state` shows it, so `--alive` counts), stops following, says `box: run <run> on <host> has written nothing for <n> s (limit <l> s); it is still running, nothing was stopped` and exits 4. The run is not touched. It replaces a caller's own loop over `box log <run> --state`. The state is asked every 30 seconds (`BOXD_RUNS_POLL_MS`).
+- `BOXD_PHASES=1`: a call that runs a command prints one more line on standard error before `box: exit`: `box: phases room=<s> sync=<s> run=<s> on <host>`, whole seconds for waiting for room, the file sync and the command on the server. Without the variable nothing changes. Not with `--shards`.
+- The toolbox image (`localhost/toolbox`) now installs `docker-compose`, so `docker compose` works in a machine box without a preparation step. A host has it after its image is built again (`boxd-setup --images`).
+
 ## 0.4.72
 
 The memory that compressed swap really takes is in the host report, and the host watcher says when it passed what the cap leaves for it.

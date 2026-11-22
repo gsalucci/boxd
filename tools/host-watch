@@ -53,7 +53,7 @@ check() { # <host> <report file> <now>
       if (smax ~ /^[0-9]+$/ && smax > 0 && h["group_swap_used_mb"] * 100 >= smax * 90 && h["group_mem_used_mb"] * 100 >= max * 85) out(2, "WARN", "swap", "the boxes have " h["group_swap_used_mb"] " of their " smax " MB of swap in use: no cushion left at the memory cap")
       # Swap on zram is kept in RAM and the memory cap leaves half the swap limit for it (boxd-sshd): a peak above that half means build memory compresses worse than 2 to 1. A report without the word (older server) gives no finding.
       zp = h["zram_peak_mb"]
-      if (zp ~ /^[0-9]+$/ && smax ~ /^[0-9]+$/ && smax > 0 && zp * 2 > smax) out(2, "WARN", "zram", "zram held " zp " MB of memory at its peak since boot, more than the " int(smax / 2) " MB the memory cap leaves for it (half of the " smax " MB swap limit): build memory compresses worse than 2 to 1 here")
+      if (zp ~ /^[0-9]+$/ && smax ~ /^[0-9]+$/ && smax > 0 && zp * 2 > smax + 0) out(2, "WARN", "zram", "zram held " zp " MB of memory at its peak since boot, more than the " int(smax / 2) " MB the memory cap leaves for it (half of the " smax " MB swap limit): build memory compresses worse than 2 to 1 here")
       if (h["vm_max"] ~ /^[0-9]+$/ && h["vm_used"] + 0 > h["vm_max"] + 0) out(1, "ALERT", "ceiling", h["vm_used"] " machines run, the ceiling is " h["vm_max"])
       if (h["pressure_full60"] + 0 >= 10) out(2, "WARN", "pressure", "memory pressure of the boxes is " h["pressure_full60"] " percent (full, 60 seconds)")
       # Eviction starts at 70 percent and takes one folder a minute; 75 for 15 minutes means it does not keep up.

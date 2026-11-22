@@ -26,7 +26,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Podman uses the kernel overlay, so no fuse-overlayfs. The recommended packages podman needs (network stack, runtime,
 # init) are named because --no-install-recommends drops them; iptables and nftables are what dockerd programs.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        docker.io docker-cli docker-buildx containerd runc \
+        docker.io docker-cli docker-buildx docker-compose containerd runc \
         podman netavark aardvark-dns crun catatonit passt \
         iptables nftables iproute2 \
     && rm -rf /var/lib/apt/lists/*

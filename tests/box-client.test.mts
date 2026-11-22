@@ -68,7 +68,7 @@ const shardsFake = `if [ -n "\${FAKE_SHARDS:-}" ]; then
 fi
 `;
 const hostFake = `if [ -n "\${FAKE_LOGDIR:-}" ]; then
-  case "$*" in *" pod log "*|*" pod events "*|*" pod end "*) echo x >> "$FAKE_LOGDIR/count"; cat "$FAKE_LOGDIR/$(wc -l < "$FAKE_LOGDIR/count" | tr -d ' ')"; [ ! -f "$FAKE_LOGDIR/err" ] || cat "$FAKE_LOGDIR/err" >&2; exit "$(cat "$FAKE_LOGDIR/exit" 2>/dev/null || echo 0)";; esac
+  case "$*" in *" pod log "*|*" pod events "*|*" pod end "*) echo x >> "$FAKE_LOGDIR/count"; n=$(wc -l < "$FAKE_LOGDIR/count" | tr -d ' '); cat "$FAKE_LOGDIR/$n"; [ ! -f "$FAKE_LOGDIR/err" ] || cat "$FAKE_LOGDIR/err" >&2; exit "$(cat "$FAKE_LOGDIR/exit.$n" 2>/dev/null || cat "$FAKE_LOGDIR/exit" 2>/dev/null || echo 0)";; esac
 fi
 ${shardsFake}if [ -n "\${FAKE_BLOCK_DIR:-}" ]; then
   case "$*" in *" pod run "*)
@@ -718,6 +718,22 @@ test("a foreground call ends with the line box: exit <code> on <host> on standar
   assert.equal(bad.err.split("\n").at(-2), "box: exit 3 on test");
 });
 
+test("BOXD_PHASES=1: one phases line before the exit line, whole seconds, same code; without it nothing changes; also for --detach", () => {
+  const shape = /^box: phases room=\d+ sync=\d+ run=\d+ on test\n$/;
+  const r = runBox(["true"], { env: { BOXD_PHASES: "1", FAKE_SSH_EXIT: "3" } }), lines = r.err.split("\n");
+  assert.equal(r.code, 3);
+  assert.equal(lines.at(-2), "box: exit 3 on test");
+  assert.match(`${lines.at(-3)}\n`, shape);
+  assert.equal(lines.filter((l) => l.startsWith("box: phases")).length, 1);
+  const plain = runBox(["true"], { env: { FAKE_SSH_EXIT: "3" } });
+  assert.equal(plain.code, 3);
+  assert.equal(plain.err.includes("phases"), false);
+  assert.equal(runBox(["true"], { env: { BOXD_PHASES: "0" } }).err.includes("phases"), false);
+  const d = runBox(["--no-sync", "--detach", "sleep", "9"], { env: { BOXD_PHASES: "1" } });
+  assert.equal(d.code, 0);
+  assert.match(d.err, shape);
+});
+
 test("no box: exit line for --detach, nor for a call refused before a host was chosen", () => {
   const d = runBox(["--no-sync", "--detach", "sleep", "9"]);
   assert.equal(d.err.includes("box: exit"), false);
@@ -1087,6 +1103,35 @@ test("box log --follow asks again from the returned offset until the run ended a
   assert.equal(logRun(["log", "run-1"], [`${head(6, 0, 6, "ended", "3")}hello\n`]).err, ""); // not without --follow
   assert.match(logRun(["log", "run-1", "--follow"], [`${head(2, 0, 2, "ended")}a\n`]).err, /ended without an exit code.*\nbox: run run-1 exit 129 on test\n$/);
   assert.deepEqual(r.calls, [0, 2, 2].map((o) => `ssh boxd-test pod log ${box} run-1 ${o}`));
+});
+
+// --quiet-limit: BOXD_RUNS_POLL_MS=0 makes every pass ask the state, so the fake's numbered answers alone decide: 1 log, 2 state, 3 log, 4 state ...
+const quiet = (n: number) => head(0, 0, 0, "running").replace("\n", `\tage=99\tquiet=${n}\n`);
+const watch = (answers: string[], limit = "10", more: Record<string, string> = {}) => logRun(["log", "run-1", "--follow", "--quiet-limit", limit], answers, { BOXD_RUNS_POLL_MS: "0", ...more });
+test("box log --follow --quiet-limit: a running run quiet for the limit ends the wait with exit 4 and one line; nothing is stopped", () => {
+  const r = watch([head(0, 0, 0, "running"), quiet(5), head(0, 0, 0, "running"), quiet(10)]);
+  assert.equal(r.code, 4);
+  assert.equal(r.err, "box: run run-1 on test has written nothing for 10 s (limit 10 s); it is still running, nothing was stopped\n");
+  assert.equal(r.calls.length, 4);
+  assert.ok(r.calls.every((c) => / pod log /.test(c)), "only the log call is used: no pod end, no stop");
+});
+test("box log --follow --quiet-limit: a run that ends first exits with its code and the usual last line; a failing or odd state answer is skipped", () => {
+  const ended = logRun(["log", "run-1", "--follow", "--quiet-limit", "10"], [head(0, 0, 0, "running"), quiet(3), `${head(1, 0, 1, "ended", "7")}x\n`], { BOXD_RUNS_POLL_MS: "0" });
+  assert.equal(ended.code, 7);
+  assert.equal(ended.err, "box: run run-1 exit 7 on test\n");
+  const dir = mkdtempSync(path.join(root, "logdir-"));
+  [head(0, 0, 0, "running"), "", head(0, 0, 0, "running"), "garbage\n", head(0, 0, 0, "running"), quiet(99), `${head(1, 0, 1, "ended", "0")}x\n`].forEach((a, i) => writeFileSync(path.join(dir, String(i + 1)), a));
+  writeFileSync(path.join(dir, "exit.2"), "255"); // the first state call fails, the second answers nonsense: both are skipped
+  const r = runBox(["log", "run-1", "--follow", "--quiet-limit", "100"], { env: { FAKE_LOGDIR: dir, BOXD_LOG_POLL_MS: "1", BOXD_RUNS_POLL_MS: "0" } });
+  assert.equal(r.code, 0, r.err);
+  assert.equal(r.err, "box: run run-1 exit 0 on test\n");
+});
+test("box log --quiet-limit: only with --follow, a whole number from 1 to 999999999", () => {
+  for (const a of [["--quiet-limit", "5"], ["--follow", "--quiet-limit", "0"], ["--follow", "--quiet-limit", "x"], ["--follow", "--quiet-limit", "1000000000"], ["--follow", "--quiet-limit"]]) {
+    const r = runBox(["log", "run-1", ...a]);
+    assert.equal(r.code, 2, a.join(" "));
+    assert.match(r.err, /^box log: --quiet-limit /);
+  }
 });
 
 test("box log --state: one line with the state and the code, no log text, one call", () => {

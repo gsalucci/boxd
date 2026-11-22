@@ -6,7 +6,7 @@
 //   box hosts
 //   box runs [--follow [--tail <n>]] [--pod <pattern>]... [--host <name>]
 //   box --version
-//   box log <run> [--pod <name>] [--host <name>] [--follow] [--tail <n>] [--state]
+//   box log <run> [--pod <name>] [--host <name>] [--follow [--quiet-limit <seconds>]] [--tail <n>] [--state]
 //   box log <run> --events [--pod <name>] [--host <name>]
 //   box forward [--host <name>] [--pod <name>] <local-port> <box-port>
 //   box vnc [--host <name>] [--pod <name>] [--port <box-port>]
@@ -23,7 +23,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-export const VERSION = "0.4.72";
+export const VERSION = "0.4.74";
 const BOX = /^[a-z0-9][a-z0-9_.-]{0,62}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const MAC = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i;
@@ -51,13 +51,15 @@ export const HELP = `usage: box [options] [--] <command...>
                                        --tail <n> (0 to 100000) also prints the last <n> lines of each run's log when it ends, under a line naming the run
        box ps [--pod <name>] [--host <name>]   processes running in this worktree's box, oldest first, with their
                                        age, processor time and working folder: spots a hung command; changes nothing
-       box log <run> [--pod <name>] [--host <name>] [--follow] [--tail <n>] [--state]
+       box log <run> [--pod <name>] [--host <name>] [--follow [--quiet-limit <seconds>]] [--tail <n>] [--state]
                                        the log of a --detach run, read from the server without starting the box (a stopped box
                                        stays stopped); --follow keeps reading until the run ended and exits with its code (last line on standard error then: "box: run <run> exit <code> on <host>"); --tail <n> (0 to 100000) prints only the
                                        last <n> lines of what the log holds at first (then, with --follow, all that comes after); --state prints no log, only one line
                                        <run> state=running|ended exit=<code> (exit=- while running or when the run ended without a code), tab separated; an ended run adds
                                        ended=<time in UTC, like 2026-11-16T17:48:47Z> and, when the server knows when the run began, seconds=<wall seconds>; for a running run also age (seconds since it started) and quiet (seconds since the run last printed to standard output or standard error; files it writes do not count):
-                                       "box log <run> --follow --tail 20" shows how an ended run ended, and exits with its code
+                                       "box log <run> --follow --tail 20" shows how an ended run ended, and exits with its code;
+                                       --quiet-limit <seconds> (1 to 999999999, only with --follow) asks the state every 30 s ($BOXD_RUNS_POLL_MS in ms) and, when the
+                                       run is running with quiet at or above the limit, stops following, says so on standard error and exits 4 (the run is left running)
        box log <run> --events [--pod <name>] [--host <name>]
                                        after a --detach run ended: the server's own record of what could have disturbed it (memory stalls, kills
                                        for memory, in a machine box guest_kills and machine_size and machine_mb (the size the run began with), a full /job: disk_full, network card stalls, other boxes busy, other runs of the same box: siblings), one key=value per line; exit 0 when the record covers the
@@ -135,6 +137,8 @@ container or, with --vm, a small virtual machine; the same box on every call) an
                    line: waiting callers are served in the order they first asked as far as memory allows, and the waiting line
                    tells its place and what holds the room. When room appears it prints "box: room on <host> after waiting <time>; starting". A refusal that waiting cannot fix (no server with the image or with virtual machines, none
                    reachable) still ends at once
+  $BOXD_PHASES=1  a call that runs a command (also --detach, up to the start of the run) ends its standard error with one more line before "box: exit":
+                   "box: phases room=<s> sync=<s> run=<s> on <host>", whole seconds: waiting for room (0 when none), file sync, command on the server; not with --shards
   --pull <path>    after a foreground run, copy <path> (relative to the worktree) back; repeatable. Only changed
                    files travel (rsync)
   --host <name>    build server to use (ssh alias boxd-<name>) and the one this worktree stays on from now on. Without
@@ -721,6 +725,8 @@ function ps(args: string[], env: Env): number {
   return r.status ?? 1;
 }
 
+// The one clock of the phase times (BOXD_PHASES), so a test can look at the line without caring for the durations.
+const clock = (): number => Date.now();
 // box log <run>: `pod log <box> <run> [<offset>]` answers one header line (log, size, from, next, state=running|ended, exit=<code>|-)
 // and then whole lines of the log, read from the job folder without starting the box. Printed from offset 0 until the log is
 // caught up; with --follow it asks again from the returned offset (every BOXD_LOG_POLL_MS, default 2000) until the run ended,
@@ -748,11 +754,12 @@ function eventsCall(HOST: string, box: string, run: string): number {
   return 3;
 }
 export async function logCall(args: string[], env: Env): Promise<number> {
-  let run: string | undefined, hostFlag: string | undefined, pod: string | undefined, follow = false, state = false, events = false, tail: number | undefined;
+  let run: string | undefined, hostFlag: string | undefined, pod: string | undefined, follow = false, state = false, events = false, tail: number | undefined, limit: number | undefined;
   for (let i = 0; i < args.length; i++) {
     const a = args[i] as string, v = args[i + 1];
     if (a === "--help" || a === "-h") { process.stdout.write(`${HELP}\n`); return 0; }
     if (a === "--follow") follow = true;
+    else if (a === "--quiet-limit") { if (!/^[1-9]\d{0,8}$/.test(v ?? "")) return usage("box log: --quiet-limit needs a whole number of seconds from 1 to 999999999"); limit = Number(v); i++; }
     else if (a === "--state") state = true;
     else if (a === "--events") events = true;
     else if (a === "--tail") { if (!/^\d{1,6}$/.test(v ?? "") || Number(v) > 100000) return usage("box log: --tail needs a whole number from 0 to 100000"); tail = Number(v); i++; }
@@ -761,11 +768,13 @@ export async function logCall(args: string[], env: Env): Promise<number> {
     else return usage(`box log: unknown option ${a}`);
   }
   if (run === undefined || !/^[A-Za-z0-9_.-]{1,64}$/.test(run)) return usage("box log: give the run id (the one box --detach printed)");
+  if (limit !== undefined && !follow) return usage("box log: --quiet-limit goes with --follow");
   if (events && (follow || state || tail !== undefined)) return usage("box log: --events goes with no other option but --pod and --host");
   const t = readTarget(hostFlag, pod, env);
   if (typeof t === "string") return usage(t);
   if (events) return eventsCall(t.HOST, t.box, run);
-  const poll = Number(env.BOXD_LOG_POLL_MS ?? 2000);
+  const poll = Number(env.BOXD_LOG_POLL_MS ?? 2000), statePoll = Number(env.BOXD_RUNS_POLL_MS ?? 30_000);
+  let asked = Date.now();
   let held: Buffer | undefined = tail === undefined ? undefined : Buffer.alloc(0); // --tail: only the last lines are kept until the log is caught up
   for (let off = 0;;) {
     const r = spawnSync("ssh", [t.HOST, `pod log ${t.box} ${run} ${off}`], { stdio: ["ignore", "pipe", "inherit"], maxBuffer: 1 << 24 });
@@ -794,6 +803,16 @@ export async function logCall(args: string[], env: Env): Promise<number> {
       // 129 as for a call ended from outside: the command did not end by itself.
       process.stderr.write(`box log: run ${run} ended without an exit code: its box or the build server went down under it\n`);
       return last(129);
+    }
+    // --quiet-limit: every statePoll the state is asked as --state does (a call that fails or is not a log answer is skipped); a running run quiet for the limit ends the wait.
+    if (limit !== undefined && Date.now() - asked >= statePoll) {
+      asked = Date.now();
+      const s = spawnSync("ssh", [t.HOST, `pod log ${t.box} ${run} ${off}`], { stdio: ["ignore", "pipe", "inherit"], maxBuffer: 1 << 24 });
+      const w = s.status === 0 ? s.stdout.subarray(0, Math.max(s.stdout.indexOf(10), 0)).toString().split("\t") : [], q = Object.fromEntries(w.slice(1).map((x) => x.split("=", 2) as [string, string]));
+      if (w[0] === "log" && q.state === "running" && /^\d{1,9}$/.test(q.quiet ?? "") && Number(q.quiet) >= limit) {
+        process.stderr.write(`box: run ${run} on ${t.HOST.replace(/^boxd-/, "")} has written nothing for ${q.quiet} s (limit ${limit} s); it is still running, nothing was stopped\n`);
+        return 4;
+      }
     }
     await new Promise((res) => setTimeout(res, poll));
   }
@@ -1372,6 +1391,7 @@ export function main(args: string[], env: Env = process.env, inner?: { run: stri
 
   // One try on one host: sync, then the call. err is the end of its stderr (not kept on a terminal).
   // shortcut: with a terminal ssh -t merges stderr into stdout, so a refusal for room is not recognised there: no retry, no hint.
+  let roomMs = 0, syncMs = 0, runAt = 0; // BOXD_PHASES: waiting for room, file sync, start of the command
   async function attempt(name: string): Promise<{ code: number; err: string; stop?: true }> {
     const HOST = `boxd-${name}`;
     // Remote paths are relative: the server's dispatcher runs the sync inside its work area (see docs/pod-contract.md).
@@ -1386,6 +1406,7 @@ export function main(args: string[], env: Env = process.env, inner?: { run: stri
       exp = e.dir;
       for (const s of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.once(s, onSignal);
     }
+    const syncAt = clock();
     try {
     if (sync) {
       const rules = exp ? [] : gitExactRules(toplevel, includes);
@@ -1406,8 +1427,10 @@ export function main(args: string[], env: Env = process.env, inner?: { run: stri
       if (bad) { process.stderr.write(`box: --git: ${bad}; nothing was started\n`); return { code: 1, err: "", stop: true }; }
     }
     } finally { drop(); for (const s of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.removeListener(s, onSignal); }
+    syncMs += clock() - syncAt;
     register(env, name, box, toplevel);
     const sent = wait && atLeast(hostVersion.get(name), PLACE_FROM) ? remote.replace(" -- ", " --queued -- ") : remote; // --queued goes before the "--" that ends the options, and only to a server that knows it
+    runAt = clock();
     if (tty) return { code: spawnSync("ssh", ["-t", ...sendEnv, HOST, sent], { ...stdio, env: sshEnv }).status ?? 1, err: "" };
     // A foreground call ends with its starter (BOXD_ORPHAN_CHECK_MS is how often the client looks; a test hook).
     const orphanMs = run || env.BOXD_KEEP_ORPHAN === "1" ? 0 : Number(env.BOXD_ORPHAN_CHECK_MS ?? 1000);
@@ -1428,7 +1451,7 @@ export function main(args: string[], env: Env = process.env, inner?: { run: stri
       if (!waiting) process.stderr.write(`box: waiting for room, asking every ${waitMs / 1000} seconds:\n${lines.map((l) => `  ${l}\n`).join("")}`);
       else if (text !== shown) process.stderr.write(`box: the reasons changed: ${text}\n`);
       waiting = true; shown = text; told = false;
-      if (!since) since = Date.now();
+      if (!since) since = clock();
       await new Promise((res) => setTimeout(res, waitMs));
       if (run || env.BOXD_KEEP_ORPHAN === "1" || process.ppid === starter) return false;
       process.stderr.write("box: the process that started this call is gone; no longer waiting\n");
@@ -1502,7 +1525,7 @@ export function main(args: string[], env: Env = process.env, inner?: { run: stri
       name = place(gitDir, c.host, true);
       if (name === c.host) { fresh = true; spare = c.room.slice(1); logChoice(env, box, req, name, c.reason, c.notes); }
     }
-    if (waiting && !told) { told = true; process.stderr.write(`box: room on ${name} after waiting ${duration(Math.round((Date.now() - since) / 1000))}; starting\n`); }
+    if (waiting && !told) { told = true; roomMs = clock() - since; process.stderr.write(`box: room on ${name} after waiting ${duration(Math.round(roomMs / 1000))}; starting\n`); }
     let r = await attempt(name);
     // Lost race: the host had room when asked and none when the call arrived. Nothing ran, so the next host with room is tried.
     while (refused(r) && spare.length) {
@@ -1538,8 +1561,10 @@ export function main(args: string[], env: Env = process.env, inner?: { run: stri
       return last(r.code, name);
     }
     if (inner && r.code === 0) { inner.host = name; return 0; }
-    const code = finish(r.code, name);
+    const ranMs = clock() - runAt, code = finish(r.code, name);
     if (r.code !== 255) await collectInPassing(env, Number(env.BOXD_NOW) || Date.now()); // 255: ssh itself failed, the host was not reached
+    // BOXD_PHASES=1: where the time went, before the exit line (which stays the last line); not for --shards (its own calls are inner).
+    if (env.BOXD_PHASES === "1" && !inner && r.code !== 255) process.stderr.write(`box: phases room=${Math.round(roomMs / 1000)} sync=${Math.round(syncMs / 1000)} run=${Math.round(ranMs / 1000)} on ${name}\n`);
     return last(code, name);
     }
   })();

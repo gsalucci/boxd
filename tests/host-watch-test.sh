@@ -46,6 +46,8 @@ sed '1s/$/\tgroup_swap_used_mb=0\tgroup_swap_max_mb=-\tzram_used_mb=-\tzram_peak
 out=$($W check tower "$T/zram" $NOW); [ -z "$out" ] && ok "dashes for zram and the swap limit are no finding" || bad "dashes for zram and the swap limit are no finding: $out"
 sed '1s/$/\tgroup_swap_used_mb=0\tgroup_swap_max_mb=-\tzram_used_mb=9000\tzram_peak_mb=9000/' "$T/good" > "$T/zram"
 out=$($W check tower "$T/zram" $NOW); [ -z "$out" ] && ok "zram peak with swap limit a dash is no finding" || bad "zram peak with swap limit a dash is no finding: $out"
+sed '1s/$/\tgroup_swap_used_mb=0\tgroup_swap_max_mb=3934\tzram_used_mb=9\tzram_peak_mb=24/' "$T/good" > "$T/zram"
+out=$($W check tower "$T/zram" $NOW); [ -z "$out" ] && ok "a small zram peak is no finding (numbers compared as numbers, not as text)" || bad "a small zram peak is no finding: $out"
 
 # Every rule broken at once.
 { host 24000 4 3 80 12 held; box a vm running $((NOW - 60)) 8192 no 0; box b vm running $((NOW - 60)) 8192 no 0
