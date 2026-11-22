@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.77
+
+- `box hosts --pick` (and `box hosts --pick --vm`) prints the one build server a first call for a new box would pick now, as one
+  tab separated line: host, reason, each host's state. Exit 75 with the reasons on standard error when no server has room. It
+  places nothing, records nothing and never wakes a host. A script that has to choose a host itself (to force `--host` for a
+  worktree that is already placed) no longer compares the status numbers by hand: one such script took "room, lower load" and
+  landed on a server at five times its processors.
+- `box hosts` with an unknown argument now exits 2 with a usage line; it was ignored before.
+
 ## 0.4.76
 
 - The first call of a worktree now passes over a busy build server: among the servers with room, one whose load is above its

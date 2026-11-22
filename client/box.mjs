@@ -3,7 +3,7 @@
 //   box --shards <n> [--tail <n>] [the usual run options] -- <command with {shard} and {shards}...>
 //   box image push [--host <name>] [--vm|--container] <ref>
 //   box setup <host> [--hostname <name>] [--port <n>] [--user <name>] [--identity <file>] [--wake <mac>,<mac> --broadcast <addr>] [--default]
-//   box hosts
+//   box hosts [--pick [--vm]]   (--pick: the one server a first call would pick now: name, reason, each host's state; exit 75 when none has room; places nothing)
 //   box runs [--follow [--tail <n>]] [--pod <pattern>]... [--host <name>]
 //   box --version
 //   box log <run> [--pod <name>] [--host <name>] [--follow [--quiet-limit <seconds>]] [--tail <n>] [--state]
@@ -22,7 +22,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-export const VERSION = "0.4.76";
+export const VERSION = "0.4.77";
 const BOX = /^[a-z0-9][a-z0-9_.-]{0,62}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const MAC = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i;
@@ -30,6 +30,7 @@ export const HELP = `usage: box [options] [--] <command...>
        box --shards <n> [--tail <n>] [options] -- <command...>   (the command in <n> boxes side by side; see --shards below)
        box setup <host> [options]      (once per build server; box setup --help)
        box hosts                       the registered build servers in order: asleep, awake (with its \`pod status\` line) or unreachable
+       box hosts --pick [--vm]         the one server a first call would pick now (name, reason, each host's state); exit 75 when none has room; places nothing
        box image push [--host <name>] [--vm|--container] <ref>
                                        send an image from your machine to the build server's store for that engine (default
                                        container): for images of private registries, whose login stays on your machine. Pulls
@@ -662,11 +663,26 @@ function logChoice(env, box, req, host, reason, notes) {
     }
     catch { /* evidence only: never a reason to fail a call */ }
 }
-async function hosts(env) {
+// box hosts [--pick [--vm]]: --pick prints the host a first call for a NEW box would get now (where the worktree is already
+// placed is not looked at), tab separated: host, reason, notes; exit 75 and a line on standard error when none has room. Read only.
+async function hosts(args, env) {
+    const bad = args.find((a) => a !== "--pick" && a !== "--vm") ?? (args.includes("--vm") && !args.includes("--pick") ? "--vm" : undefined);
+    if (bad)
+        return usage(`box hosts: unknown argument ${bad}; box hosts [--pick [--vm]]`);
     const order = hostOrder(env);
     if (!order.length)
         return usage("box hosts: no build server is set up; run box setup <host>");
-    for (const h of await Promise.all(order.map((n) => probe(n, env)))) {
+    const seen = await Promise.all(order.map((n) => probe(n, env)));
+    if (args.includes("--pick")) {
+        const c = choose(seen, { vm: args.includes("--vm") });
+        if ("refusal" in c) {
+            process.stderr.write(`box hosts --pick: no build server has room: ${c.refusal.join("; ")}\n`);
+            return 75;
+        }
+        process.stdout.write(`${[c.host, c.reason, c.notes.join(",")].join("\t")}\n`);
+        return 0;
+    }
+    for (const h of seen) {
         process.stdout.write(`${[h.name, wakeTarget(env, h.name) ? "sleeps" : "always on", h.state, h.status ?? "-"].join("\t")}\n`);
     }
     return 0;
@@ -1608,7 +1624,7 @@ export function main(args, env = process.env, inner) {
     if (args[0] === "ps")
         return ps(args.slice(1), env);
     if (args[0] === "hosts")
-        return hosts(env);
+        return hosts(args.slice(1), env);
     if (args[0] === "log")
         return logCall(args.slice(1), env);
     if (args[0] === "forward" || args[0] === "vnc")

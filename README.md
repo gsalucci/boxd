@@ -158,6 +158,7 @@ box --shards 5 -- npx vitest --shard={shard}/{shards}   # five boxes side by sid
 box forward 5901 5900                                # reach a port inside the box from your machine
 box ps                                               # what runs in this box
 box hosts                                            # every build server: asleep, awake with its load, unreachable
+box hosts --pick                                     # the one server a first call would pick now; exit 75 when none has room
 box stop                                             # stop this worktree's box to free memory; its files stay
 box drop                                             # remove this worktree's box and its files now
 box --help

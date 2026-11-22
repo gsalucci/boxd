@@ -725,6 +725,27 @@ test("a busy host (load1 above cpus) comes after the calm ones with room; it is 
   assert.deepEqual(choose([{ name: "tower", state: "asleep" }, { name: "laptop", state: "awake", status: busy }], { vm: false }).room, ["tower", "laptop"], "a sleeping host is never busy");
 });
 
+// box hosts --pick: the host a first call would choose now, for a script; read only, never wakes a host, writes no choices log.
+test("box hosts --pick prints the one host a new box would get; exit 75 and a standard error line when none has room; a typo is loud", () => {
+  const withLoad = (s: string, load1: string, cpus: string) => s.split("\t").filter((w) => !/^(load1|cpus)=/.test(w)).concat([`load1=${load1}`, `cpus=${cpus}`]).join("\t");
+  const s = servers([{ name: "tower", status: withLoad(realStatus(1, 30000), "35", "12") }, { name: "laptop", status: withLoad(realStatus(1, 20000), "1.5", "12") }]);
+  const plain = go(newRepo(), s, ["hosts"]).out;
+  assert.equal(plain.trimEnd().split("\n").length, 2, "(d) plain box hosts: one line per host");
+  const a = go(newRepo(), s, ["hosts", "--pick"]);
+  assert.deepEqual([a.code, a.out, a.err], [0, "laptop\tspread\ttower=busy, load 35 on 12 processors,laptop=awake\n", ""], "(a) the calm host, with reason and notes");
+  assert.equal(go(newRepo(), s, ["hosts", "--vm", "--pick"]).out.split("\t")[0], "laptop", "(a) either order of the flags");
+  assert.deepEqual(choices(s), [], "(a) nothing is written to the choices log");
+  assert.equal(go(newRepo(), s, ["hosts"]).out, plain, "(d) plain box hosts is unchanged");
+  const no = `${realStatus(1)}\tbox_room=no\tbox_fit_mb=100\tbox_reserve_mb=500`;
+  const n = go(newRepo(), servers([{ name: "tower", status: no }, { name: "laptop", status: no }]), ["hosts", "--pick"]);
+  const why = "no memory for another busy box (100 MB fit, 500 MB wanted)";
+  assert.deepEqual([n.code, n.out, n.err], [75, "", `box hosts --pick: no build server has room: tower: ${why}; laptop: ${why}\n`], "(b)");
+  const t = go(newRepo(), s, ["hosts", "--pik"]);
+  assert.equal(t.code, 2);
+  assert.ok(t.err.startsWith("box hosts: unknown argument --pik; box hosts [--pick [--vm]]\n"), t.err);
+  assert.equal(go(newRepo(), s, ["hosts", "--vm"]).code, 2, "(c) --vm alone is refused");
+});
+
 test("spread through the command: a container goes to the host with more free memory, a machine to the host with the smaller cap, and the choices log names the reason", () => {
   const s = servers([{ name: "tower", status: realStatus(1, 30000) }, { name: "laptop", status: realStatus(1, 20000) }]), rp = newRepo(), rc = newRepo();
   const r = go(rp, s, ["--vm", "true"]);

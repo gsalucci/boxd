@@ -942,6 +942,7 @@ hosts given wake addresses, the wake hook and `~/.config/boxd/wake.json`; it als
 
 `box hosts` (read only) prints one line per registered host in order, tab separated: name, `sleeps` (it has a wake entry) or
 `always on`, state (`asleep`, `awake`, `unreachable`) and the host's `pod status` line (`-` when it has none). It never wakes a host.
+`box hosts --pick [--vm]` (read only too) prints the one host a first call for a new box would pick now, as one line on standard output, tab separated: host, reason (`order`, `spread`, `overflow` or `fit`) and each host's state or refusal joined with a comma (the three things the choices log records); the placement of the current worktree is not looked at. When no host has room it prints nothing on standard output, `box hosts --pick: no build server has room: <host>: <reason>; ...` on standard error, and exits 75. It probes as `box hosts` does, so it never wakes a host, and it records nothing and places nothing. Any other argument is exit 2 (`box hosts: unknown argument <arg>`).
 
 **A closed output pipe** (`box hosts | head -1`) ends any subcommand quietly: the client exits 0 and prints nothing (`EPIPE` on standard
 output or standard error is not an error of the program).
