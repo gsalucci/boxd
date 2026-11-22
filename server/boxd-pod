@@ -18,10 +18,11 @@ VM_MAX=${BOXD_VM_MAX:-}
 CGROOT=${BOXD_CGROOT:-/sys/fs/cgroup}
 CGROUP=${BOXD_CGROUP:-$CGROOT/boxd}
 PROC=${BOXD_PROC:-/proc}   # test hook, like BOXD_MEMINFO: where `pod report` finds a box's process and its cgroup
+ZRAM_SYS=${BOXD_ZRAM_SYS:-/sys/block}   # test hook: where `pod report` finds the zram devices (zram*/mm_stat)
 KVM=${BOXD_KVM:-/dev/kvm}   # test hook: the device a --kvm box gets
 ROUTE=${BOXD_ROUTE:-/proc/net/route}   # test hooks: the routing table and the network interface folder `pod report` reads
 NETDIR=${BOXD_NET:-/sys/class/net}
-VERSION=0.4.71
+VERSION=0.4.72
 # Keys that may only read, one "<type> <key> [comment]" per line (view_only below); and the largest answer of pod calls and pod log.
 VIEW_KEYS=${BOXD_VIEW_KEYS:-/etc/boxd/view_keys}
 READ_MAX=${BOXD_READ_MAX:-1048576}
@@ -1225,7 +1226,9 @@ pod_report() {
     local swu="-" swm="-" v   # the group's swap: used, and its limit (a dash for `max` or unreadable)
     { v=$(<"$CGROUP/memory.swap.current"); } 2>/dev/null && [[ $v =~ ^[0-9]+$ ]] && swu=$((v / 1048576))
     { v=$(<"$CGROUP/memory.swap.max"); } 2>/dev/null && [[ $v =~ ^[0-9]+$ ]] && swm=$((v / 1048576))
-    printf '\tgroup_swap_used_mb=%s\tgroup_swap_max_mb=%s\n' "$swu" "$swm"
+    local zu zp   # the zram devices' real memory (field 3 of mm_stat: held now; field 5: peak since boot), whole host, megabytes
+    read -r zu zp < <(find -L "$ZRAM_SYS" -maxdepth 2 -path "$ZRAM_SYS/zram*/mm_stat" -exec cat {} + 2>/dev/null | awk '{ u += $3; p += $5; n++ } END { if (n) printf "%d %d\n", u / 1048576, p / 1048576; else print "- -" }')
+    printf '\tgroup_swap_used_mb=%s\tgroup_swap_max_mb=%s\tzram_used_mb=%s\tzram_peak_mb=%s\n' "$swu" "$swm" "${zu:--}" "${zp:--}"
     have_msb && vmrows=1
     rows=$(box_rows $vmrows) || exit 125   # a failed engine listing is no list (see pod_list)
     while IFS=$'\t' read -r box image state engine; do

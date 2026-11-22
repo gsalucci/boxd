@@ -51,6 +51,9 @@ check() { # <host> <report file> <now>
       # Only with the memory itself near the cap (85 percent): swap stays full long after its owner shrank, and a burst then has memory to take first.
       smax = h["group_swap_max_mb"]
       if (smax ~ /^[0-9]+$/ && smax > 0 && h["group_swap_used_mb"] * 100 >= smax * 90 && h["group_mem_used_mb"] * 100 >= max * 85) out(2, "WARN", "swap", "the boxes have " h["group_swap_used_mb"] " of their " smax " MB of swap in use: no cushion left at the memory cap")
+      # Swap on zram is kept in RAM and the memory cap leaves half the swap limit for it (boxd-sshd): a peak above that half means build memory compresses worse than 2 to 1. A report without the word (older server) gives no finding.
+      zp = h["zram_peak_mb"]
+      if (zp ~ /^[0-9]+$/ && smax ~ /^[0-9]+$/ && smax > 0 && zp * 2 > smax) out(2, "WARN", "zram", "zram held " zp " MB of memory at its peak since boot, more than the " int(smax / 2) " MB the memory cap leaves for it (half of the " smax " MB swap limit): build memory compresses worse than 2 to 1 here")
       if (h["vm_max"] ~ /^[0-9]+$/ && h["vm_used"] + 0 > h["vm_max"] + 0) out(1, "ALERT", "ceiling", h["vm_used"] " machines run, the ceiling is " h["vm_max"])
       if (h["pressure_full60"] + 0 >= 10) out(2, "WARN", "pressure", "memory pressure of the boxes is " h["pressure_full60"] " percent (full, 60 seconds)")
       # Eviction starts at 70 percent and takes one folder a minute; 75 for 15 minutes means it does not keep up.
@@ -147,7 +150,7 @@ sample() {
         [ "$tx" -gt "$pt" ] 2>/dev/null && printf '1\tWARN\t%s:event:txtimeout:%s\t%s: the network card stalled while sending (transmit timeouts %s, were %s)\n' "$host" "$tx" "$host" "$tx" "$pt"
       fi
       echo "$boot ${pf:--} ${tx:--} ${lc:--}" > "$D/state/$host.stall"
-      printf '%s\t%s\n' "$host" "$(tr '\t' '\n' <<<"$line" | grep -E '^(vm_used|vm_max|group_mem_used_mb|group_mem_max_mb|group_swap_used_mb|mem_avail_mb|swap_used_mb|disk_pct|oom_kills|keepawake)=' | tr '\n' ' ')stall_ms=$stall tx_timeouts=${tx:--} link_changes=${lc:--} $(grep -c '^box' "$f") boxes, $(grep -c $'^run\t.*state=running' "$f") runs" >> "$D/state/summary.new"
+      printf '%s\t%s\n' "$host" "$(tr '\t' '\n' <<<"$line" | grep -E '^(vm_used|vm_max|group_mem_used_mb|group_mem_max_mb|group_swap_used_mb|zram_used_mb|zram_peak_mb|mem_avail_mb|swap_used_mb|disk_pct|oom_kills|keepawake)=' | tr '\n' ' ')stall_ms=$stall tx_timeouts=${tx:--} link_changes=${lc:--} $(grep -c '^box' "$f") boxes, $(grep -c $'^run\t.*state=running' "$f") runs" >> "$D/state/summary.new"
     done < <(box hosts 2>/dev/null)
     # shellcheck disable=SC2086
     [ "$(printf '%s\n' $versions | sort -u | wc -l)" -gt 1 ] && printf '1\tWARN\tversions\tthe hosts run different versions:%s\n' "$versions"

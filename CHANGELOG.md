@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.72
+
+The memory that compressed swap really takes is in the host report, and the host watcher says when it passed what the cap leaves for it.
+
+- `pod report`: two more words end the host line, `zram_used_mb` and `zram_peak_mb`: the memory the zram devices hold now and at their peak since boot (`mem_used_total` and `mem_used_max` of `/sys/block/zram*/mm_stat`, summed, megabytes rounded down), a dash for each without a zram device. They count the whole host, not only the build group. `group_swap_used_mb` stays the logical size of what the group swapped out; the new words are what that costs in memory.
+- The memory cap leaves half of the group's swap limit for zram, a fixed 2 to 1 guess. The host watcher (`tools/host-watch`) now writes both words in its summary line and raises one finding when the peak is above that half: `zram held <n> MB of memory at its peak since boot, more than the <half> MB the memory cap leaves for it …`. The guess itself is unchanged.
+
 ## 0.4.71
 
 A build server that cannot be reached is named, and does not hold a worktree it never ran.

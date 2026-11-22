@@ -35,6 +35,18 @@ out=$($W check tower "$T/swap" $NOW); [ -z "$out" ] && ok "swap below 90 percent
 sed '1s/group_mem_used_mb=9000/group_mem_used_mb=21000/; 1s/$/\tgroup_swap_used_mb=8139\tgroup_swap_max_mb=-/' "$T/good" > "$T/swap"
 out=$($W check tower "$T/swap" $NOW); [ -z "$out" ] && ok "swap with no limit is no finding" || bad "swap with no limit is no finding: $out"
 
+# zram: the peak of the zram devices above the half of the swap limit that the cap leaves for it is a finding; below it, with the words missing, or with no limit, it is not.
+sed '1s/$/\tgroup_swap_used_mb=0\tgroup_swap_max_mb=8192\tzram_used_mb=100\tzram_peak_mb=4097/' "$T/good" > "$T/zram"
+has "zram peak above half the swap limit" "zram held 4097 MB of memory at its peak since boot, more than the 4096 MB the memory cap leaves for it" "$($W check tower "$T/zram" $NOW)"
+sed '1s/$/\tgroup_swap_used_mb=0\tgroup_swap_max_mb=8192\tzram_used_mb=100\tzram_peak_mb=4096/' "$T/good" > "$T/zram"
+out=$($W check tower "$T/zram" $NOW); [ -z "$out" ] && ok "zram peak at half the swap limit is no finding" || bad "zram peak at half the swap limit is no finding: $out"
+sed '1s/$/\tgroup_swap_used_mb=0\tgroup_swap_max_mb=8192/' "$T/good" > "$T/zram"
+out=$($W check tower "$T/zram" $NOW); [ -z "$out" ] && ok "a report without the zram words is no finding" || bad "a report without the zram words is no finding: $out"
+sed '1s/$/\tgroup_swap_used_mb=0\tgroup_swap_max_mb=-\tzram_used_mb=-\tzram_peak_mb=-/' "$T/good" > "$T/zram"
+out=$($W check tower "$T/zram" $NOW); [ -z "$out" ] && ok "dashes for zram and the swap limit are no finding" || bad "dashes for zram and the swap limit are no finding: $out"
+sed '1s/$/\tgroup_swap_used_mb=0\tgroup_swap_max_mb=-\tzram_used_mb=9000\tzram_peak_mb=9000/' "$T/good" > "$T/zram"
+out=$($W check tower "$T/zram" $NOW); [ -z "$out" ] && ok "zram peak with swap limit a dash is no finding" || bad "zram peak with swap limit a dash is no finding: $out"
+
 # Every rule broken at once.
 { host 24000 4 3 80 12 held; box a vm running $((NOW - 60)) 8192 no 0; box b vm running $((NOW - 60)) 8192 no 0
   box c vm running $((NOW - 60)) 8192 no 0; box d vm running $((NOW - 60)) 4096 no 0

@@ -18,7 +18,7 @@ kb() { case $1 in max) ;; *[Kk]) echo "${1%?}" ;; *[Mm]) echo $((${1%?} * 1024))
 # Swap on zram is kept in RAM: what the group may swap there costs memory outside its cap (2026-11-15, the tower: a 28 GiB
 # cap plus 8 GiB swapped to zram, and the host ran out before the cap, so the kernel killed a machine box). It counts at half
 # its size (build memory compressed about 2.5 to 1 there), up to the size of the zram devices.
-# shortcut: a fixed 2 to 1 ratio, when a host compresses worse: read the ratio from /sys/block/zram*/mm_stat.
+# shortcut: a fixed 2 to 1 ratio, when a host compresses worse: read the ratio from /sys/block/zram*/mm_stat (pod report now shows the real peak as zram_peak_mb and the host watcher flags a peak above the reserved half).
 # At boot this ran before the zram service switched its swap on (2026-11-21), so the cap came out about 2 GB too high; wait for it.
 SWAPS=${BOXD_SWAPS:-/proc/swaps}
 if [ -e "${SVDIR:-/var/service}/zramen" ] && ! grep -q '^/dev/zram' "$SWAPS" 2>/dev/null; then
