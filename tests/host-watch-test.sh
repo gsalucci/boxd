@@ -35,11 +35,11 @@ out=$($W check tower "$T/swap" $NOW); [ -z "$out" ] && ok "swap below 90 percent
 sed '1s/group_mem_used_mb=9000/group_mem_used_mb=21000/; 1s/$/\tgroup_swap_used_mb=8139\tgroup_swap_max_mb=-/' "$T/good" > "$T/swap"
 out=$($W check tower "$T/swap" $NOW); [ -z "$out" ] && ok "swap with no limit is no finding" || bad "swap with no limit is no finding: $out"
 
-# zram: the peak of the zram devices above the half of the swap limit that the cap leaves for it is a finding; below it, with the words missing, or with no limit, it is not.
-sed '1s/$/\tgroup_swap_used_mb=0\tgroup_swap_max_mb=8192\tzram_used_mb=100\tzram_peak_mb=4097/' "$T/good" > "$T/zram"
-has "zram peak above half the swap limit" "zram held 4097 MB of memory at its peak since boot, more than the 4096 MB the memory cap leaves for it" "$($W check tower "$T/zram" $NOW)"
-sed '1s/$/\tgroup_swap_used_mb=0\tgroup_swap_max_mb=8192\tzram_used_mb=100\tzram_peak_mb=4096/' "$T/good" > "$T/zram"
-out=$($W check tower "$T/zram" $NOW); [ -z "$out" ] && ok "zram peak at half the swap limit is no finding" || bad "zram peak at half the swap limit is no finding: $out"
+# zram: the peak of the zram devices above the swap limit that the cap leaves for it is a finding; below it, with the words missing, or with no limit, it is not.
+sed '1s/$/\tgroup_swap_used_mb=0\tgroup_swap_max_mb=8192\tzram_used_mb=100\tzram_peak_mb=8193/' "$T/good" > "$T/zram"
+has "zram peak above the swap limit" "zram held 8193 MB of memory at its peak since boot, more than the 8192 MB swap limit of the boxes" "$($W check tower "$T/zram" $NOW)"
+sed '1s/$/\tgroup_swap_used_mb=0\tgroup_swap_max_mb=8192\tzram_used_mb=100\tzram_peak_mb=8192/' "$T/good" > "$T/zram"
+out=$($W check tower "$T/zram" $NOW); [ -z "$out" ] && ok "zram peak at the swap limit is no finding" || bad "zram peak at the swap limit is no finding: $out"
 sed '1s/$/\tgroup_swap_used_mb=0\tgroup_swap_max_mb=8192/' "$T/good" > "$T/zram"
 out=$($W check tower "$T/zram" $NOW); [ -z "$out" ] && ok "a report without the zram words is no finding" || bad "a report without the zram words is no finding: $out"
 sed '1s/$/\tgroup_swap_used_mb=0\tgroup_swap_max_mb=-\tzram_used_mb=-\tzram_peak_mb=-/' "$T/good" > "$T/zram"
@@ -105,7 +105,8 @@ has "a report without a host line" "no host line" "$($W check tower "$T/nohost" 
   printf 't6\tb6\tvm,-\tlaptop\tspread\ttower=awake,laptop=awake\n'
   printf 't7\tb7\tvm,-\tlaptop\tfit\ttower=awake,laptop=awake\n'
   printf 't8\tb8\tvm,-\tlaptop\tfit\ttower=asleep,laptop=asleep\n'
-  printf 't9\tb9\tvm,-\ttower\tfit\ttower=no memory for another machine (4 running),laptop=awake\n'; } > "$T/choices"
+  printf 't9\tb9\tvm,-\ttower\tfit\ttower=no memory for another machine (4 running),laptop=awake\n'
+  printf 't10\tb10\tvm,-\tlaptop\tfit\ttower=busy, load 25.90 on 16 processors,laptop=busy, load 21.01 on 12 processors\n'; } > "$T/choices"
 out=$($W choices "$T/choices" 1)
 has "a placement past a host with room" "placement of b3 at t3 went to laptop as \"overflow\", but tower was first" "$out"
 has "a fit placement on a host that had no room" "placement of b9 at t9 went to tower as \"fit\", but that host had no room" "$out"

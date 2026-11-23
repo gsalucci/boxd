@@ -16,9 +16,9 @@ SWAP=${BOXD_SWAP_MAX:-$((total_kb * 25 / 100))K}
 # kB of a cgroup size ("max", bytes, or a K/M/G suffix as memory.max takes them); empty for "max".
 kb() { case $1 in max) ;; *[Kk]) echo "${1%?}" ;; *[Mm]) echo $((${1%?} * 1024)) ;; *[Gg]) echo $((${1%?} * 1048576)) ;; *) echo $(($1 / 1024)) ;; esac; }
 # Swap on zram is kept in RAM: what the group may swap there costs memory outside its cap (2026-11-15, the tower: a 28 GiB
-# cap plus 8 GiB swapped to zram, and the host ran out before the cap, so the kernel killed a machine box). It counts at half
-# its size (build memory compressed about 2.5 to 1 there), up to the size of the zram devices.
-# shortcut: a fixed 2 to 1 ratio, when a host compresses worse: read the ratio from /sys/block/zram*/mm_stat (pod report now shows the real peak as zram_peak_mb and the host watcher flags a peak above the reserved half).
+# cap plus 8 GiB swapped to zram, and the host ran out before the cap, so the kernel killed a machine box). It counts at its full
+# size, up to the size of the zram devices: model weights do not compress (2026-11-22: 5335 MB swapped took 4952 MB of memory on
+# the tower, 3101 MB took 2328 MB on the laptop).
 # At boot this ran before the zram service switched its swap on (2026-11-21), so the cap came out about 2 GB too high; wait for it.
 SWAPS=${BOXD_SWAPS:-/proc/swaps}
 if [ -e "${SVDIR:-/var/service}/zramen" ] && ! grep -q '^/dev/zram' "$SWAPS" 2>/dev/null; then
@@ -28,10 +28,10 @@ if [ -e "${SVDIR:-/var/service}/zramen" ] && ! grep -q '^/dev/zram' "$SWAPS" 2>/
 fi
 zram_kb=$(awk '$1 ~ /^\/dev\/zram/ { s += $3 } END { print s + 0 }' "$SWAPS" 2>/dev/null)
 swap_kb=$(kb "$SWAP"); [ -n "$swap_kb" ] && [ "$swap_kb" -lt "${zram_kb:-0}" ] || swap_kb=${zram_kb:-0}
-zram_ram_kb=$((swap_kb / 2))
+zram_ram_kb=$swap_kb
 MEM=${BOXD_MEM_MAX:-$((total_kb * 85 / 100 - zram_ram_kb))K}
 [ "$(($(kb "$MEM") + zram_ram_kb))" -le $((total_kb * 90 / 100)) ] ||
-    echo "boxd-sshd: BOXD_MEM_MAX ($(kb "$MEM") kB) plus the zram swap the boxes may fill (about $zram_ram_kb kB of RAM) is over 90% of the host's $total_kb kB; the host can run out of memory before the cap, and the kernel then kills a box"
+    echo "boxd-sshd: BOXD_MEM_MAX ($(kb "$MEM") kB) plus the zram swap the boxes may fill ($zram_ram_kb kB of RAM) is over 90% of the host's $total_kb kB; the host can run out of memory before the cap, and the kernel then kills a box"
 if [ "${BOXD_MANAGER:-runit}" = systemd ]; then
     # The unit's cgroup must be the one boxd-pod measures; a wrong BOXD_CGROUP would admit machines against the wrong cap.
     # (the unit has DelegateSubgroup=sshd, so systemd has already put this process into the child cgroup "sshd")

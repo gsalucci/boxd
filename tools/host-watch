@@ -51,9 +51,9 @@ check() { # <host> <report file> <now>
       # Only with the memory itself near the cap (85 percent): swap stays full long after its owner shrank, and a burst then has memory to take first.
       smax = h["group_swap_max_mb"]
       if (smax ~ /^[0-9]+$/ && smax > 0 && h["group_swap_used_mb"] * 100 >= smax * 90 && h["group_mem_used_mb"] * 100 >= max * 85) out(2, "WARN", "swap", "the boxes have " h["group_swap_used_mb"] " of their " smax " MB of swap in use: no cushion left at the memory cap")
-      # Swap on zram is kept in RAM and the memory cap leaves half the swap limit for it (boxd-sshd): a peak above that half means build memory compresses worse than 2 to 1. A report without the word (older server) gives no finding.
+      # Swap on zram is kept in RAM and the memory cap leaves the whole swap limit for it (boxd-sshd): a peak above the limit means other swap users fill zram too. A report without the word (older server) gives no finding.
       zp = h["zram_peak_mb"]
-      if (zp ~ /^[0-9]+$/ && smax ~ /^[0-9]+$/ && smax > 0 && zp * 2 > smax + 0) out(2, "WARN", "zram", "zram held " zp " MB of memory at its peak since boot, more than the " int(smax / 2) " MB the memory cap leaves for it (half of the " smax " MB swap limit): build memory compresses worse than 2 to 1 here")
+      if (zp ~ /^[0-9]+$/ && smax ~ /^[0-9]+$/ && smax > 0 && zp + 0 > smax + 0) out(2, "WARN", "zram", "zram held " zp " MB of memory at its peak since boot, more than the " smax " MB swap limit of the boxes: other swap users fill zram too")
       if (h["vm_max"] ~ /^[0-9]+$/ && h["vm_used"] + 0 > h["vm_max"] + 0) out(1, "ALERT", "ceiling", h["vm_used"] " machines run, the ceiling is " h["vm_max"])
       if (h["pressure_full60"] + 0 >= 10) out(2, "WARN", "pressure", "memory pressure of the boxes is " h["pressure_full60"] " percent (full, 60 seconds)")
       # Eviction starts at 70 percent and takes one folder a minute; 75 for 15 minutes means it does not keep up.
@@ -77,13 +77,14 @@ choices() { # <choices.log> <from line>
   awk -F'\t' -v from="$2" '
     NR >= from && ($5 == "order" || $5 == "overflow") && $6 != "" {
       split($6, p, ","); e = index(p[1], "="); first = substr(p[1], 1, e - 1); s = substr(p[1], e + 1)
-      if (($5 == "order" && first != $4) || ($5 == "overflow" && (s == "awake" || s == "asleep")))
+      if (($5 == "order" && first != $4) || ($5 == "overflow" && (s == "awake" || s == "asleep" || s == "busy")))
         printf "1\tALERT\tevent:choice:%s\tplacement of %s at %s went to %s as \"%s\", but %s was first in order with room (%s)\n", NR, $2, $1, $4, $5, first, $6
     }
     NR >= from && $5 == "fit" && $6 != "" {
       s = ""; n = split($6, p, ",")
       for (i = 1; i <= n; i++) { e = index(p[i], "="); if (substr(p[i], 1, e - 1) == $4) s = substr(p[i], e + 1) }
-      if (s != "awake" && s != "asleep")
+      # A busy host ("busy, load 25.90 on 16 processors": the comma split leaves "busy") has room; it is only later in the order.
+      if (s != "awake" && s != "asleep" && s != "busy")
         printf "1\tALERT\tevent:choice:%s\tplacement of %s at %s went to %s as \"fit\", but that host had no room (%s)\n", NR, $2, $1, $4, $6
     }' "$1"
 }

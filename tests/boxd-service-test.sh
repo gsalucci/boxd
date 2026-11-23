@@ -137,21 +137,23 @@ sh "$SV/boxd-sshd/run" >/dev/null 2>&1
 eq "settings win over the computed caps" "3G 1G" "$(cat "$T/cg/boxd/memory.max") $(cat "$T/cg/boxd/memory.swap.max")"
 eq "settings reach the sshd as options" "sshd -D -e -f /etc/boxd/sshd_config -o Port=2200 -o AllowUsers=builder -o MaxStartups=100:30:200 -o PerSourcePenaltyExemptList=10.1.0.0/16" "$(calls | tr '|' '\n' | grep '^sshd')"
 # Swap on zram lives in RAM (the tower, 2026-11-15: 28 GiB cap plus 8 GiB swapped to zram, and the host ran out before
-# the cap). What the group may swap there counts at half its size against the memory cap.
+# the cap). What the group may swap there counts at its full size against the memory cap.
 printf 'Filename\tType\tSize\tUsed\tPriority\n/dev/zram0                              partition\t400000\t0\t32767\n' > "$T/swaps"
 : > "$T/none.conf"; out=$(sh "$SV/boxd-sshd/run" 2>&1)
-eq "zram swap: the default memory cap leaves room for the swap it holds" "725000K 250000K" "$(cat "$T/cg/boxd/memory.max") $(cat "$T/cg/boxd/memory.swap.max")"
+eq "zram swap: the default memory cap leaves room for the swap it holds" "600000K 250000K" "$(cat "$T/cg/boxd/memory.max") $(cat "$T/cg/boxd/memory.swap.max")"
 eq "zram swap: no warning for the computed caps" 0 "$(grep -c 'boxd-sshd: BOXD_MEM_MAX' <<<"$out")"
 printf 'BOXD_SWAP_MAX=1G\n' > "$T/none.conf"; sh "$SV/boxd-sshd/run" >/dev/null 2>&1
-eq "zram swap: a swap cap larger than the zram device counts the device only" 650000K "$(cat "$T/cg/boxd/memory.max")"
+eq "zram swap: a swap cap larger than the zram device counts the device only" 450000K "$(cat "$T/cg/boxd/memory.max")"
 printf 'BOXD_MEM_MAX=850000K\n' > "$T/none.conf"; out=$(sh "$SV/boxd-sshd/run" 2>&1)
 eq "zram swap: a set memory cap is kept" 850000K "$(cat "$T/cg/boxd/memory.max")"
 eq "zram swap: a set memory cap that leaves the host short is warned about" \
-    "boxd-sshd: BOXD_MEM_MAX (850000 kB) plus the zram swap the boxes may fill (about 125000 kB of RAM) is over 90% of the host's 1000000 kB; the host can run out of memory before the cap, and the kernel then kills a box" \
+    "boxd-sshd: BOXD_MEM_MAX (850000 kB) plus the zram swap the boxes may fill (250000 kB of RAM) is over 90% of the host's 1000000 kB; the host can run out of memory before the cap, and the kernel then kills a box" \
     "$(grep 'boxd-sshd: BOXD_MEM_MAX' <<<"$out")"
-printf 'BOXD_MEM_MAX=24G\nBOXD_SWAP_MAX=8G\n' > "$T/none.conf"; printf 'MemTotal:       32797696 kB\n' > "$T/meminfo"
+printf 'BOXD_MEM_MAX=24G\nBOXD_SWAP_MAX=4G\n' > "$T/none.conf"; printf 'MemTotal:       32797696 kB\n' > "$T/meminfo"
 printf 'Filename\tType\tSize\tUsed\tPriority\n/dev/zram0 partition\t16398332\t0\t32767\n' > "$T/swaps"
-out=$(sh "$SV/boxd-sshd/run" 2>&1); eq "zram swap: the tower's 24G and 8G pass without a warning" 0 "$(grep -c 'boxd-sshd: BOXD_MEM_MAX' <<<"$out")"
+out=$(sh "$SV/boxd-sshd/run" 2>&1); eq "zram swap: the tower's 24G and 4G pass without a warning" 0 "$(grep -c 'boxd-sshd: BOXD_MEM_MAX' <<<"$out")"
+printf 'BOXD_MEM_MAX=24G\nBOXD_SWAP_MAX=8G\n' > "$T/none.conf"
+out=$(sh "$SV/boxd-sshd/run" 2>&1); eq "zram swap: 24G and 8G count the swap in full and are warned about" 1 "$(grep -c 'boxd-sshd: BOXD_MEM_MAX' <<<"$out")"
 printf 'BOXD_MEM_MAX=28G\nBOXD_SWAP_MAX=8G\n' > "$T/none.conf"
 out=$(sh "$SV/boxd-sshd/run" 2>&1); eq "zram swap: the tower's old 28G is warned about" 1 "$(grep -c 'boxd-sshd: BOXD_MEM_MAX' <<<"$out")"
 printf 'MemTotal:       1000000 kB\n' > "$T/meminfo"; : > "$T/none.conf"; printf 'Filename\tType\tSize\tUsed\tPriority\n/swap/swapfile file\t400000\t0\t100\n' > "$T/swaps"
@@ -164,13 +166,13 @@ eq "zramen enabled, no zram swap ever: 30 waits, one line, the cap computed with
    "$(sleeps) $(grep -c 'the zram swap did not come up in 30 seconds; the cap is computed without it' <<<"$out") $(cat "$T/cg/boxd/memory.max")"
 printf "Filename\tType\tSize\tUsed\tPriority\n$ZLINE" > "$T/swaps"
 : > "$T/calls"; out=$(sh "$SV/boxd-sshd/run" 2>&1)
-eq "zramen enabled, zram swap already on: no wait, the zram part is taken off the cap" "0 0 725000K" "$(sleeps) $(grep -c 'did not come up' <<<"$out") $(cat "$T/cg/boxd/memory.max")"
+eq "zramen enabled, zram swap already on: no wait, the zram part is taken off the cap" "0 0 600000K" "$(sleeps) $(grep -c 'did not come up' <<<"$out") $(cat "$T/cg/boxd/memory.max")"
 rm "$T/svdir/zramen"; printf 'Filename\tType\tSize\tUsed\tPriority\n' > "$T/swaps"
 : > "$T/calls"; out=$(sh "$SV/boxd-sshd/run" 2>&1)
 eq "zramen not enabled: no wait, no line" "0 0 850000K" "$(sleeps) $(grep -c 'did not come up' <<<"$out") $(cat "$T/cg/boxd/memory.max")"
 touch "$T/svdir/zramen"; : > "$T/calls"
 out=$(FAKE_ZRAM_AFTER=3 FAKE_ZRAM_LINE="/dev/zram0 partition	400000	0	32767" sh "$SV/boxd-sshd/run" 2>&1)
-eq "zram swap appears during the wait: it ends at once and the zram part is taken off the cap" "3 0 725000K" "$(sleeps) $(grep -c 'did not come up' <<<"$out") $(cat "$T/cg/boxd/memory.max")"
+eq "zram swap appears during the wait: it ends at once and the zram part is taken off the cap" "3 0 600000K" "$(sleeps) $(grep -c 'did not come up' <<<"$out") $(cat "$T/cg/boxd/memory.max")"
 rm "$T/svdir/zramen"; printf 'Filename\tType\tSize\tUsed\tPriority\n/swap/swapfile file\t400000\t0\t100\n' > "$T/swaps"
 unset BOXD_CGROOT BOXD_MEMINFO
 

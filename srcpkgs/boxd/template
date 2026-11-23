@@ -2,7 +2,7 @@
 # One source archive, one version, four packages: boxd (documents only),
 # boxd-server, boxd-power, boxd-client. The paths follow docs/designs/layout.md.
 pkgname=boxd
-version=0.4.77
+version=0.4.78
 revision=1
 archs="x86_64"
 short_desc="Build boxes for agents: shared documents (see boxd-server, boxd-client)"

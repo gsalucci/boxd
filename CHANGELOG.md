@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.78
+
+- Swap on zram now counts at its full size against the memory cap of the boxes. The default cap is 85 percent of the host's
+  memory less the whole swap the boxes may put on zram (it was less half of it, a fixed 2 to 1 guess). Measured on two hosts:
+  model weights in swap do not compress (5335 MB swapped took 4952 MB of memory), and the peak passed the reserved half on
+  both. A host with zram swap gets a lower default cap at the next start of `boxd-sshd`; a set `BOXD_MEM_MAX` is kept, and the
+  start warns when it plus the swap limit is over 90 percent of the host. To keep a higher cap, lower `BOXD_SWAP_MAX`.
+- The host watcher's zram finding follows: it fires when the peak is above the swap limit of the boxes. It no longer reads a
+  machine placed on a busy host as a placement without room.
+
 ## 0.4.77
 
 - `box hosts --pick` (and `box hosts --pick --vm`) prints the one build server a first call for a new box would pick now, as one
