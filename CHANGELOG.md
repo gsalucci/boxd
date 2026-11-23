@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.80
+
+- `box serve <local-port> <box-port> -- <box arguments>`: a server in a box that runs only while it is used. It listens on
+  127.0.0.1, starts the server on the first connection (any command, any image, with the usual box arguments), holds that
+  connection until the port answers (`--start-wait`, 180 seconds unless given) and relays like `box forward`. The build server
+  ends the run when no connection has been open for `--idle` seconds (300 unless given), so a model server gives its memory
+  back and a host that sleeps can sleep; the next connection starts it again. A start that fails closes the connection
+  without a byte and says why on standard error.
+- `--detach --idle-exit <seconds>` (container boxes, 10 to 86400): the same rule for a run started by hand. The host ends the
+  run when no `pod forward` channel into the box has been open for that long, counted from the start until the first
+  channel, and writes the reason into the run's log.
+
 ## 0.4.79
 
 - `--gpu`: a container box can use the build server's NVIDIA graphics card, for compute (CUDA) and for accelerated rendering

@@ -48,7 +48,7 @@ queue around `box`; a refusal waiting cannot fix, like a missing image, still ex
 - QEMU on KVM inside a box: `--kvm` (container boxes only, not with `--vm`) gives the box the server's `/dev/kvm`. Only when the
   work runs virtual machines itself (an operating system image, a test harness). A box keeps it once made with it; adding it needs `--recreate`.
 - The server's NVIDIA graphics card: `--gpu` (container boxes only, not with `--vm`) for CUDA, model inference on the card, headless rendering
-  with EGL or Vulkan, or a browser or game that needs a graphics card. The first call goes to a server that has a card (`box hosts` shows `gpus=<n>` per server); none has one: exit 75, `no graphics card`. The driver libraries and `nvidia-smi` come from the host; the CUDA toolkit, Vulkan loader or Mesa utilities must be in the image or installed in the box. The card and its memory are shared by every `--gpu` box. A box keeps it once made with it; adding it needs `--recreate`.
+  with EGL or Vulkan, or a browser or game that needs a graphics card. The first call goes to a server that has a card (`box hosts` shows `gpus=<n>` per server); none has one: exit 75, `no graphics card`. The driver libraries and `nvidia-smi` come from the host; the CUDA toolkit, Vulkan loader or Mesa utilities must be in the image or installed in the box. Rendering is headless: use Vulkan or the EGL surfaceless (or device) platform; there is no display server, and the GBM, Wayland and X11 platforms fail (`eglinfo` prints their errors first, then the working one). The card and its memory are shared by every `--gpu` box. A box keeps it once made with it; adding it needs `--recreate`.
 - Long runs: `--detach`. It prints a run id and returns at once; read the log with `box log <id>` (`--follow` keeps
   reading until the run ended and exits with its code; the log ends with `EXIT <code>`; the printed command already repeats
   `--host` and `--pod`). `box log` reads from the server and never starts a stopped box, unlike `box cat /job/runs/<id>.log`,
@@ -94,6 +94,12 @@ queue around `box`; a refusal waiting cannot fix, like a missing image, still ex
   `box forward <local-port> <box-port>` (local port 0 picks a free one; it prints it) listens on `127.0.0.1` here and runs until Ctrl+C or until the process that started it is gone; each
   connection is one ssh channel that holds the box busy while it is open. `box vnc` does it for port 5900 and opens `vnc://`. Container
   boxes only, the box must be running (a forward never starts one); needs a build server 0.4.0 or newer.
+- A server in a box that should not hold the build server awake (a model server on the graphics card, a dev server): start it with
+  `box serve <local-port> <box-port> --idle <seconds> -- <box arguments>`, where `<box arguments>` is what you would write after `box` to run it in the
+  foreground (for example `--gpu --no-sync llama-server --port 8080`). It listens on `127.0.0.1` here, starts the server on the first connection, and the host stops it once
+  no connection has been open for the idle time (default 300 seconds); the first connection after a stop waits for the start (up to `--start-wait`, default 180 seconds).
+  Keep the data the server needs under /job outside /job/src (the model files, caches), so a start does not fetch them again; run one `box serve` process per server and keep it
+  running on your machine (it ends when the process that started it is gone, like `box forward`, unless `BOXD_KEEP_ORPHAN=1`).
 - A command seems stuck (no output for a long while, tests that never finish): `box ps` lists the processes running in
   your box, oldest first, with age, processor time, working folder and command. It changes nothing; stop what is
   hung yourself (`box sh -c 'kill <pid>'`). A process with no processor time that is hours old is waiting on something.

@@ -157,6 +157,7 @@ box --git cargo test                                 # /job/src is a git reposit
 box --commit HEAD cargo test                         # run on what a fresh clone at that commit holds, not on your working folder
 box --shards 5 -- npx vitest --shard={shard}/{shards}   # five boxes side by side, one line as each ends, tails of the failures
 box forward 5901 5900                                # reach a port inside the box from your machine
+box serve 8080 8080 --idle 600 -- --gpu --no-sync llama-server --port 8080   # a server that starts on the first connection and is stopped when unused
 box ps                                               # what runs in this box
 box hosts                                            # every build server: asleep, awake with its load, unreachable
 box hosts --pick                                     # the one server a first call would pick now; exit 75 when none has room

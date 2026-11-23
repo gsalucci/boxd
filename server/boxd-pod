@@ -39,7 +39,7 @@ gpu_count() {
 }
 ROUTE=${BOXD_ROUTE:-/proc/net/route}   # test hooks: the routing table and the network interface folder `pod report` reads
 NETDIR=${BOXD_NET:-/sys/class/net}
-VERSION=0.4.79
+VERSION=0.4.80
 # Keys that may only read, one "<type> <key> [comment]" per line (view_only below); and the largest answer of pod calls and pod log.
 VIEW_KEYS=${BOXD_VIEW_KEYS:-/etc/boxd/view_keys}
 READ_MAX=${BOXD_READ_MAX:-1048576}
@@ -994,6 +994,8 @@ pod_log() {
         # A run that wrote its progress to files of its own names them (--alive): their newest change counts as output.
         if [[ $end =~ ^[0-9]+$ ]]; then al=$(alive_mtime "$box" "${f%.log}.alive") && [ "$al" -gt "$end" ] && end=$al; fi
         [[ $end =~ ^[0-9]+$ ]] && extra+=$'\tquiet='$((now > end ? now - end : 0))
+        # A run started with --idle-exit says its seconds, last, so a reader that takes the words by key sees no change.
+        { read -r al < "${f%.log}.idle"; } 2>/dev/null && [[ $al =~ ^[0-9]+$ ]] && extra+=$'\tidle_exit='$al
     fi
     window "$f" "$off"
     printf 'log\tsize=%s\tfrom=%s\tnext=%s\tstate=%s\texit=%s%s\n' "$size" "$from" "$next" "$st" "$ex" "$extra"
@@ -1071,6 +1073,35 @@ pod_events() {
         "${D[group_full_ms]}" "${D[group_some_ms]}" "${D[group_kills]}" "${D[group_cap_kills]}" "${D[box_full_ms]}" "${D[box_some_ms]}" "${D[box_kills]}" "${D[box_limit_kills]}" "${D[net_tx_timeouts]}" "${D[net_link_changes]}" "$oth" "$sib" "${D[guest_kills]}" "$jp" "$jf" "$msz" "$mmb"
 }
 
+# idle_due <box> <seconds> <start> <now>: a run started with --idle-exit is idle. No channel of pod forward holds the box's .forwarding
+# (tested without waiting, as box_busy tests .running) and the later of the run's start and the stamp of .forwarded is at least <seconds> ago.
+idle_due() {
+    local f=$WORK/jobs/$1/.forwarding t=$3 w
+    [ -e "$f" ] && ! flock -n -x "$f" true 2>/dev/null && return 1
+    w=$(stat -c %Y "$WORK/jobs/$1/.forwarded" 2>/dev/null) && [[ $w =~ ^[0-9]+$ ]] && [ "$w" -gt "$t" ] && t=$w
+    [ $(($4 - t)) -ge "$2" ]
+}
+# idle_watch <box> <run> <seconds> <start> <group>: the host's look every BOXD_IDLE_POLL seconds (5) at a run started with --idle-exit; it ends
+# when the run's process group <group> is gone. An idle run gets one line in its log and is then ended by pod_end, the code of pod end.
+# Test hook: BOXD_IDLE_CLOCK is a file with the epoch seconds to use as now, and a line is added to BOXD_IDLE_CLOCK.ticks after each look.
+idle_watch() {
+    local box=$1 id=$2 secs=$3 start=$4 wp=$5 f=$WORK/jobs/$1/runs/$2.log now due
+    while sleep "${BOXD_IDLE_POLL:-5}"; do
+        kill -0 -- "-$wp" 2>/dev/null || return 0
+        if [ -n "${BOXD_IDLE_CLOCK:-}" ]; then read -r now < "$BOXD_IDLE_CLOCK"; else now=$EPOCHSECONDS; fi
+        due=
+        # The channel locks, then stamps: a second look after the time was read sees a channel that opened in between.
+        idle_due "$box" "$secs" "$start" "$now" && idle_due "$box" "$secs" "$start" "$now" && due=1
+        [ -z "${BOXD_IDLE_CLOCK:-}" ] || echo >> "$BOXD_IDLE_CLOCK.ticks"
+        [ -n "$due" ] || continue
+        run_alive "${f%.log}.pid" || return 0
+        [ -z "$(tail -c 1 "$f")" ] || echo >> "$f"
+        echo "boxd-pod: run $id ended after $secs idle seconds (no connection through pod forward)" >> "$f"
+        pod_end "$box" "$id" >/dev/null
+        return 0
+    done
+}
+
 # pod end <box> <run>: ends one detached run and nothing else (docs/pod-contract.md, "Ending a detached run"). Its processes carry
 # BOXD_CALL=run-<id> (set where the run starts), so the box's other runs and calls are not touched; then its process group on the host.
 # The wrapper dies before it writes its own ending, so the log gets the note, `EXIT 143` and the end snapshot here, unless the wrapper wrote them.
@@ -1101,7 +1132,7 @@ pod_end() {
         echo "EXIT 143" >>"$f"
     fi
     [ ! -e "$ev.start" ] || [ -e "$ev.end" ] || events_write "$ev.end" "$box" "$eg"
-    rm -f "$pf" "${pf%.pid}.alive"
+    rm -f "$pf" "${pf%.pid}.alive" "${pf%.pid}.idle"
     touch "$WORK/jobs/$box/.last-used" 2>/dev/null
     echo "ended run $id in box $box"
     logcall 0 "ended run $id"
@@ -1313,7 +1344,7 @@ term_runs() {
         if [[ $pg =~ ^[0-9]+$ ]] && kill -TERM -- "-$pg" 2>/dev/null; then
             for i in $(seq 100); do kill -0 -- "-$pg" 2>/dev/null || break; sleep 0.1; done
         fi
-        rm -f "$f" "${f%.pid}.alive"
+        rm -f "$f" "${f%.pid}.alive" "${f%.pid}.idle"
     done < <(find "$WORK/jobs" -mindepth 3 -maxdepth 3 -path '*/runs/*.pid' -type f 2>/dev/null)
 }
 
@@ -1352,7 +1383,7 @@ image_stale_now() {
 }
 
 pod_run() {
-    local box=${1:-} image="" imgfile="" vm="" container="" queued="" user="" cuser="" kvm="" ckvm="" gpu="" cgpu="" ulabels="" recreate="" snapshot="" run="" alive="" b64="" tty="" name J out rc
+    local box=${1:-} image="" imgfile="" vm="" container="" queued="" user="" cuser="" kvm="" ckvm="" gpu="" cgpu="" ulabels="" recreate="" snapshot="" run="" alive="" idle="" b64="" tty="" name J out rc
     local -a envs=()
     local size="" have="" lim="" asked="" pk pick chosen="" used_mb=0 cap_mb=0 max="" box_fit_mb box_why
     local kengine="" kuser="" kkvm="" kgpu="" kimage="" gmine="" gother="" k v2 newid="" changed="" rebuilt="" full engine=container cid="" sc="" pc="" vc="" cimg="" cst="" vimg="" vst="" other mine cur st create="" start="" again="" n
@@ -1378,6 +1409,7 @@ pod_run() {
             --snapshot) snapshot=1; shift ;;
             --detach) [[ ${2:-} =~ $RUN_RE ]] || die "bad run id"; run=$2; shift 2 ;;
             --alive) [ $# -ge 2 ] || die "--alive needs a value"; alive=$2; shift 2 ;;
+            --idle-exit) [ $# -ge 2 ] || die "bad --idle-exit (10 to 86400 seconds)"; idle=$2; shift 2 ;;
             --) shift; [ $# -eq 1 ] || die "expected exactly one command word after --"; b64=$1; break ;;
             *) die "bad option $1" ;;
         esac
@@ -1387,6 +1419,13 @@ pod_run() {
     if [ -n "$alive" ]; then
         [ -n "$run" ] || die "--alive goes with --detach"
         [[ $alive =~ ^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$ && ${#alive} -le 200 && /$alive/ != */./* && /$alive/ != */../* ]] || die "bad alive path"
+    fi
+    # --idle-exit: whole seconds, for a detached run in a container box (a box that was a machine before is refused again below).
+    if [ -n "$idle" ]; then
+        [[ $idle =~ ^[0-9]{1,6}$ ]] && [ "$((10#$idle))" -ge 10 ] && [ "$((10#$idle))" -le 86400 ] || die "bad --idle-exit (10 to 86400 seconds)"
+        idle=$((10#$idle))
+        [ -n "$run" ] || die "--idle-exit needs --detach"
+        [ -z "$vm" ] || die "--idle-exit is only for container boxes"
     fi
     local n v
     for n in "${envs[@]}"; do
@@ -1501,6 +1540,7 @@ pod_run() {
     [ -n "$vm" ] || [ -z "$ckvm" ] || kvm=1
     # --gpu is sticky the same way, for container boxes only.
     [ -z "$vm" ] || [ -z "$gpu" ] || die "--gpu is only for container boxes"
+    [ -z "$vm" ] || [ -z "$idle" ] || die "--idle-exit is only for container boxes"
     [ -n "$vm" ] || [ -z "$cgpu" ] || gpu=1
     # The size of a virtual machine box is recorded at creation (large when there is no record: today's machine).
     [ -n "$vm" ] || [ -z "$size" ] || die "--size is only for virtual machine boxes"
@@ -1768,6 +1808,7 @@ pod_run() {
         [ ${#live[@]} = 0 ] || echo "boxd-pod: run ${live[0]} is still going in this box${live[1]:+ (and $((${#live[@]} - 1)) more)}; both use the same /job/src" >&2
         : > "$J/runs/$run.log"
         if [ -n "$alive" ]; then echo "$alive" > "$J/runs/$run.alive"; else rm -f "$J/runs/$run.alive"; fi
+        if [ -n "$idle" ]; then echo "$idle" > "$J/runs/$run.idle"; else rm -f "$J/runs/$run.idle"; fi
         # The shared lock is taken here and the wrapper inherits it (it also takes its own below): the box is busy from now on, so the
         # next admission, which gets the room lock back at once, counts it.
         exec 8>>"$J/.running"; flock -s 8; exec 7>&-
@@ -1786,9 +1827,11 @@ pod_run() {
             events_write "$ev.end" "$bx" "$eg"
             if [ -n "$sb" ]; then vm_end_note "$sb" "$bx" "$k0"; else ctr_end_note "$bx" "$k0" "$rc"; fi >>"$log"
             touch "$j/.last-used"
-            rm -f "${log%.log}.pid" "${log%.log}.alive"
+            rm -f "${log%.log}.pid" "${log%.log}.alive" "${log%.log}.idle"
             echo "EXIT $rc" >>"$log"' _ "$J" "$J/runs/$run.log" "$CGROUP" "${vm:+$name}" "$box" "$WORK/cache/events/$box/$run" "${eng[@]}" "${argv[@]}" \
             </dev/null >/dev/null 2>&1 &
+        # The watcher is a process of its own that holds no lock (fds 6 to 9) and no stream; $! is the wrapper, a group leader (setsid), so its group.
+        wp=$!; if [ -n "$idle" ]; then ( trap '' HUP; exec 9>&- 8>&- 7>&- 6>&-; idle_watch "$box" "$run" "$idle" "$EPOCHSECONDS" "$wp" ) </dev/null >/dev/null 2>&1 & fi
         echo "$run"
         CALL_RUN=$run
         logcall detached
@@ -1884,7 +1927,9 @@ pod_forward() {
     [[ $pid =~ ^[1-9][0-9]*$ ]] || die "cannot read the process of box $box"
     exec 8>>"$J/.running"
     flock -s 8
-    touch "$J/.last-used"
+    exec 5>>"$J/.forwarding"   # the trace a run started with --idle-exit looks for: held for the life of the channel
+    flock -s 5
+    touch "$J/.last-used" "$J/.forwarded"
     trap 'gone=1' HUP TERM PIPE INT
     boxd-keepawake podman unshare nsenter "--net=/proc/$pid/ns/net" socat - "TCP:127.0.0.1:$port" <&0 &
     ep=$!
@@ -1895,7 +1940,7 @@ pod_forward() {
         kill -TERM "$ep" 2>/dev/null; wait "$ep" 2>/dev/null
         rc=129
     fi
-    touch "$J/.last-used"
+    touch "$J/.last-used" "$J/.forwarded"
     logcall "$rc"
     exit "$rc"
 }

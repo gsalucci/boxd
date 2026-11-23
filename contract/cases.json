@@ -201,6 +201,43 @@
       "remote": "pod run boxd-2889387319 --detach 20261113-030000-ab12 --alive out/run -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ=="
     },
     {
+      "name": "--idle-exit goes after --detach and after --alive, as the last option",
+      "toplevel": "/home/dev/src/boxd",
+      "flags": [
+        "--detach",
+        "20261113-030000-ab12",
+        "--idle-exit",
+        "300",
+        "--alive",
+        "out/run"
+      ],
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "my crate"
+      ],
+      "tty": false,
+      "box": "boxd-2889387319",
+      "remote": "pod run boxd-2889387319 --detach 20261113-030000-ab12 --alive out/run --idle-exit 300 -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ=="
+    },
+    {
+      "name": "--idle-exit outside 10 to 86400 or not a whole number is refused locally, nothing sent",
+      "toplevel": "/home/dev/src/boxd",
+      "argv": [
+        "true"
+      ],
+      "tty": false,
+      "flags": [
+        "--detach",
+        "20261113-030000-ab12",
+        "--idle-exit",
+        "9"
+      ],
+      "exit": 2,
+      "remote": null
+    },
+    {
       "name": "--vm with --pod: shared box name, same validation",
       "toplevel": "/home/dev/src/boxd",
       "flags": [
@@ -808,6 +845,57 @@
       "containers": {},
       "exit": 125,
       "stderr": "boxd-pod: bad alive path"
+    },
+    {
+      "name": "detach with --idle-exit 9 is refused before anything starts",
+      "command": "pod run boxd-2889387319 --detach 20261113-030000-ab12 --idle-exit 9 -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "containers": {},
+      "exit": 125,
+      "stderr": "boxd-pod: bad --idle-exit (10 to 86400 seconds)"
+    },
+    {
+      "name": "detach with --idle-exit 86401 is refused before anything starts",
+      "command": "pod run boxd-2889387319 --detach 20261113-030000-ab12 --idle-exit 86401 -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "containers": {},
+      "exit": 125,
+      "stderr": "boxd-pod: bad --idle-exit (10 to 86400 seconds)"
+    },
+    {
+      "name": "detach with --idle-exit that is not a number is refused before anything starts",
+      "command": "pod run boxd-2889387319 --detach 20261113-030000-ab12 --idle-exit soon -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "containers": {},
+      "exit": 125,
+      "stderr": "boxd-pod: bad --idle-exit (10 to 86400 seconds)"
+    },
+    {
+      "name": "--idle-exit without --detach is refused before anything starts",
+      "command": "pod run boxd-2889387319 --idle-exit 60 -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "containers": {},
+      "exit": 125,
+      "stderr": "boxd-pod: --idle-exit needs --detach"
+    },
+    {
+      "name": "--idle-exit in a machine box is refused before anything starts",
+      "command": "pod run boxd-2889387319 --vm --detach 20261113-030000-ab12 --idle-exit 60 -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "containers": {},
+      "exit": 125,
+      "stderr": "boxd-pod: --idle-exit is only for container boxes"
+    },
+    {
+      "name": "detach with --idle-exit prints the run id and exits at once",
+      "command": "pod run boxd-2889387319 --detach 20261113-030000-ab12 --idle-exit 60 -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "env": {
+        "BOXD_IDLE_POLL": "0.1"
+      },
+      "containers": {
+        "pod-boxd-2889387319": {
+          "image": "docker.io/library/debian:stable-slim",
+          "state": "running"
+        }
+      },
+      "exec_exit": 0,
+      "exit": 0,
+      "stdout": "20261113-030000-ab12"
     },
     {
       "name": "stop removes the container, keeps files",
@@ -3498,7 +3586,7 @@
       "command": "pod status",
       "msb": false,
       "exit": 0,
-      "stdout_re": "^version=0\\.4\\.79\tengines=container\tcpus=8\tload1=[0-9]+\\.[0-9]+\tvm_used=0\tvm_max=3\tvm_room=no\tboxes=0\tdisk_pct=37\tmem_free_mb=unknown\timages=\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=-\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096\twaiting=0\tgpus=0$"
+      "stdout_re": "^version=0\\.4\\.80\tengines=container\tcpus=8\tload1=[0-9]+\\.[0-9]+\tvm_used=0\tvm_max=3\tvm_room=no\tboxes=0\tdisk_pct=37\tmem_free_mb=unknown\timages=\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=-\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096\twaiting=0\tgpus=0$"
     },
     {
       "name": "pod status: one of three machines running, room for another; boxes counts both engines",
@@ -3520,7 +3608,7 @@
           "state": "stopped"
         }
       },
-      "stdout_re": "^version=0\\.4\\.79\tengines=container,vm\tcpus=8\tload1=[0-9]+\\.[0-9]+\tvm_used=1\tvm_max=3\tvm_room=yes\tboxes=3\tdisk_pct=37\tmem_free_mb=unknown\timages=\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=-\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096\twaiting=0\tgpus=0$"
+      "stdout_re": "^version=0\\.4\\.80\tengines=container,vm\tcpus=8\tload1=[0-9]+\\.[0-9]+\tvm_used=1\tvm_max=3\tvm_room=yes\tboxes=3\tdisk_pct=37\tmem_free_mb=unknown\timages=\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=-\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096\twaiting=0\tgpus=0$"
     },
     {
       "name": "pod status: all machines used, no room (vm_room is the server's own answer)",
@@ -4090,7 +4178,7 @@
         "jobs/a/.mem-peak": "700",
         "jobs/b/.vm-user": ""
       },
-      "stdout_re": "^host\tversion=0\\.4\\.79\tengines=container,vm\tcpus=8\tload1=[0-9]+\\.[0-9]+\tload5=[0-9]+\\.[0-9]+\tload15=[0-9]+\\.[0-9]+\tboot=[0-9]+\tmem_total_mb=32000\tmem_avail_mb=9000\tswap_total_mb=8000\tswap_used_mb=1200\tgroup_mem_max_mb=32768\tgroup_mem_used_mb=1024\tpressure_some10=2\\.31\tpressure_some60=1\\.12\tpressure_full10=0\\.40\tpressure_full60=0\\.18\toom_kills=1\tpressure_some_ms=1234\tpressure_full_ms=7654\tnet_tx_timeouts=8\tnet_link_changes=4\tvm_used=0\tvm_max=none\tvm_room=yes\tvm_mem_mb=8192\tbox_mem_mb=12288\tdisk_pct=37\tdisk_total_mb=976562\tdisk_used_mb=361328\tttl=1800\twork_own=no\twork_shared=yes\tevict_at=70\tevict_to=60\tkeep_days=14\tpower=on\tidle_checks=20\tidle_count=7\tidle_last=idle\treset_at=85\tkeepawake=free\twaiting=0\tgroup_swap_used_mb=-\tgroup_swap_max_mb=-\tzram_used_mb=-\tzram_peak_mb=-\tgpus=0\nbox\tbox=a\tengine=container\timage=docker\\.io/library/rust:1\tstate=running\tlast_used=0\tuser=no\tsize=-\tmem_limit_mb=12288\tmem_mb=(-|[0-9]+)\tbusy=no\truns=1\tmem_peak_mb=-\nbox\tbox=b\tengine=vm\timage=localhost/toolbox:latest\tstate=stopped\tlast_used=0\tuser=yes\tsize=small\tmem_limit_mb=2048\tmem_mb=-\tbusy=no\truns=0\tmem_peak_mb=2900\nrun\tbox=a\tid=r1\tstate=ended\texit=3\tbytes=11\tchanged=[0-9]+\nrun\tbox=a\tid=r2\tstate=running\texit=-\tbytes=4\tchanged=[0-9]+\nimage\tname=toolbox\tbytes=0\tbuilt=[0-9]+\tvm_loaded=-$",
+      "stdout_re": "^host\tversion=0\\.4\\.80\tengines=container,vm\tcpus=8\tload1=[0-9]+\\.[0-9]+\tload5=[0-9]+\\.[0-9]+\tload15=[0-9]+\\.[0-9]+\tboot=[0-9]+\tmem_total_mb=32000\tmem_avail_mb=9000\tswap_total_mb=8000\tswap_used_mb=1200\tgroup_mem_max_mb=32768\tgroup_mem_used_mb=1024\tpressure_some10=2\\.31\tpressure_some60=1\\.12\tpressure_full10=0\\.40\tpressure_full60=0\\.18\toom_kills=1\tpressure_some_ms=1234\tpressure_full_ms=7654\tnet_tx_timeouts=8\tnet_link_changes=4\tvm_used=0\tvm_max=none\tvm_room=yes\tvm_mem_mb=8192\tbox_mem_mb=12288\tdisk_pct=37\tdisk_total_mb=976562\tdisk_used_mb=361328\tttl=1800\twork_own=no\twork_shared=yes\tevict_at=70\tevict_to=60\tkeep_days=14\tpower=on\tidle_checks=20\tidle_count=7\tidle_last=idle\treset_at=85\tkeepawake=free\twaiting=0\tgroup_swap_used_mb=-\tgroup_swap_max_mb=-\tzram_used_mb=-\tzram_peak_mb=-\tgpus=0\nbox\tbox=a\tengine=container\timage=docker\\.io/library/rust:1\tstate=running\tlast_used=0\tuser=no\tsize=-\tmem_limit_mb=12288\tmem_mb=(-|[0-9]+)\tbusy=no\truns=1\tmem_peak_mb=-\nbox\tbox=b\tengine=vm\timage=localhost/toolbox:latest\tstate=stopped\tlast_used=0\tuser=yes\tsize=small\tmem_limit_mb=2048\tmem_mb=-\tbusy=no\truns=0\tmem_peak_mb=2900\nrun\tbox=a\tid=r1\tstate=ended\texit=3\tbytes=11\tchanged=[0-9]+\nrun\tbox=a\tid=r2\tstate=running\texit=-\tbytes=4\tchanged=[0-9]+\nimage\tname=toolbox\tbytes=0\tbuilt=[0-9]+\tvm_loaded=-$",
       "podman_calls_absent": [
         "^run",
         "^start",
@@ -4126,7 +4214,7 @@
         "BOXD_IDLE_STATE": "/work/no-idle",
         "FAKE_STAT_FAIL": "1"
       },
-      "stdout_re": "^host\tversion=0\\.4\\.79\tengines=container\tcpus=8\t.*\tgroup_mem_max_mb=-\tgroup_mem_used_mb=-\tpressure_some10=-\tpressure_some60=-\tpressure_full10=-\tpressure_full60=-\toom_kills=-\tpressure_some_ms=-\tpressure_full_ms=-\tnet_tx_timeouts=-\tnet_link_changes=-\tvm_used=0\tvm_max=3\tvm_room=no\tvm_mem_mb=8192\tbox_mem_mb=12288\tdisk_pct=37\tdisk_total_mb=976562\tdisk_used_mb=361328\tttl=1800\twork_own=-\twork_shared=-\tevict_at=70\tevict_to=60\tkeep_days=14\tpower=off\tidle_checks=-\tidle_count=-\tidle_last=-\treset_at=-\tkeepawake=none\twaiting=0\tgroup_swap_used_mb=-\tgroup_swap_max_mb=-\tzram_used_mb=-\tzram_peak_mb=-\tgpus=0$"
+      "stdout_re": "^host\tversion=0\\.4\\.80\tengines=container\tcpus=8\t.*\tgroup_mem_max_mb=-\tgroup_mem_used_mb=-\tpressure_some10=-\tpressure_some60=-\tpressure_full10=-\tpressure_full60=-\toom_kills=-\tpressure_some_ms=-\tpressure_full_ms=-\tnet_tx_timeouts=-\tnet_link_changes=-\tvm_used=0\tvm_max=3\tvm_room=no\tvm_mem_mb=8192\tbox_mem_mb=12288\tdisk_pct=37\tdisk_total_mb=976562\tdisk_used_mb=361328\tttl=1800\twork_own=-\twork_shared=-\tevict_at=70\tevict_to=60\tkeep_days=14\tpower=off\tidle_checks=-\tidle_count=-\tidle_last=-\treset_at=-\tkeepawake=none\twaiting=0\tgroup_swap_used_mb=-\tgroup_swap_max_mb=-\tzram_used_mb=-\tzram_peak_mb=-\tgpus=0$"
     },
     {
       "name": "pod report: a work area that is a file system of its own, on another disk than the system, shows the levels in force",
@@ -5179,6 +5267,34 @@
       "files_match": {
         "/work/jobs/boxd-2889387319/.running.probe": "^busy$",
         "/work/cache/calls.log": "^[0-9]+\tboxd-2889387319\tcontainer\t[0-9]+\t0\t[0-9]+\t\t\tforward 5900$"
+      }
+    },
+    {
+      "name": "forward: the channel holds a shared lock on .forwarding and stamps .forwarded",
+      "command": "pod forward boxd-2889387319 5900",
+      "env": {
+        "FAKE_CPID": "4242",
+        "FAKE_FWD_PROBE": "/work/jobs/boxd-2889387319/.forwarding"
+      },
+      "containers": {
+        "pod-boxd-2889387319": {
+          "image": "docker.io/library/debian:stable-slim",
+          "state": "running"
+        }
+      },
+      "job_files": {
+        ".keep": ""
+      },
+      "work_files": {
+        "cache/.keep": ""
+      },
+      "exit": 0,
+      "files": [
+        "/work/jobs/boxd-2889387319/.forwarding",
+        "/work/jobs/boxd-2889387319/.forwarded"
+      ],
+      "files_match": {
+        "/work/jobs/boxd-2889387319/.forwarding.probe": "^busy$"
       }
     },
     {

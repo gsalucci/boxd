@@ -79,6 +79,7 @@ case $1 in
         # nsenter ... socat under it: that call is the relay. FAKE_FWD_PROBE=<.running file>: write whether an exclusive lock on it would be refused (a shared one is held)
         [ "$2" = nsenter ] || { [ "$2" = du ] && [ -n "${FAKE_DU_EXIT:-}" ] && exit "$FAKE_DU_EXIT"; shift; exec "$@"; }   # FAKE_DU_EXIT=<n>: the size measurement fails
         [ -z "${FAKE_FWD_PROBE:-}" ] || { flock -n -x "$FAKE_FWD_PROBE" true && echo free || echo busy; } > "$FAKE_FWD_PROBE.probe"
+        [ -z "${FAKE_FWD_HOLD:-}" ] || { : > "$FAKE_FWD_HOLD.in"; read -r _ <"$FAKE_FWD_HOLD"; }   # FAKE_FWD_HOLD=<fifo>: the relay stays open until a line is written to it
         [ -z "${FAKE_FWD_OUT:-}" ] || printf %s "$FAKE_FWD_OUT"
         exit "${FAKE_FWD_EXIT:-0}" ;;
     rmi) [ "${FAKE_RMI_REFUSE:-}" != "$2" ] || exit 1 ;;   # an image a box uses is refused, as the real engine does
@@ -1802,5 +1803,59 @@ load_is 9.00; pod "pod run y -- $B64"; eq "busy host: a load above the processor
 load_is 0.00; pod "pod run y -- $B64"; eq "busy host: an idle host prints no line" 0 "$(busy_line)"
 CASE_ENV=(BOXD_PROC="$T/e/none"); pod "pod run y -- $B64"; eq "busy host: an unreadable load prints no line" 0 "$(busy_line)"
 CASE_ENV=()
+
+# --idle-exit: the watcher of a detached run ends it when no channel of pod forward is open and none was for the asked seconds.
+# BOXD_IDLE_CLOCK is the watcher's clock (a file with epoch seconds, read at every look) and BOXD_IDLE_CLOCK.ticks gets a line when a look is
+# done: the tests move the clock and wait for two more looks, so no step waits on time and none depends on how fast the machine is.
+idleclock() { echo "$1" > "$T/clock.new"; mv "$T/clock.new" "$T/clock"; }
+ticks() { wc -l < "$T/clock.ticks" 2>/dev/null || echo 0; }
+looks() { local n=$(( $(ticks) + 2 )) i; for i in $(seq 400); do [ "$(ticks)" -ge "$n" ] && return 0; read -r -t 0.05 <>"$T/poll"; done; echo "FAIL idle: the watcher did not look twice"; return 1; }   # bounded: a dead watcher is a failure, not a hang
+# the run is over when its log says EXIT and its records are gone (pod end removes them after it wrote EXIT)
+ended() { local i; for i in $(seq 400); do grep -q "^EXIT" "$R/$1.log" 2>/dev/null && [ ! -e "$R/$1.pid" ] && [ ! -e "$R/$1.idle" ] && return 0; read -r -t 0.05 <>"$T/poll"; done; echo "FAIL idle: run $1 did not end"; return 1; }
+logwait() { local i; for i in $(seq 400); do grep -q "$2" "$1" 2>/dev/null && return 0; read -r -t 0.05 <>"$T/poll"; done; echo "FAIL idle: no line matching $2 in $1"; return 1; }
+tagged() { local d p kv; for d in /proc/[0-9]*; do p=${d#/proc/}; [ "$p" = "$$" ] && continue
+  while IFS= read -r -d '' kv; do [ "$kv" = "BOXD_IDLE_TAG=$1" ] && return 0; done 2>/dev/null <"$d/environ"; done; return 1; }
+idle_setup() { setup; : > "$T/clock.ticks"; idleclock 1; export FAKE_BLOCK_EXEC=1; R=$W/jobs/$box/runs
+    CASE_ENV=(BOXD_IDLE_POLL=0.05 BOXD_IDLE_CLOCK="$T/clock" BOXD_IDLE_TAG="$1" FAKE_CPID=4242); }
+idle_line() { echo "boxd-pod: run $1 ended after $2 idle seconds (no connection through pod forward)"; }
+runstate() { pod "pod log $box $1 0"; head -n 1 "$T/e/out" | cut -f5 | cut -d= -f2; }
+
+# nobody connects: ended, with its line, then the stop the client's `box stop --run` makes, then EXIT
+idle_setup t1; IA=20261121-100000-0001; IB=20261121-100000-0002; t0=$(date +%s)
+pod "pod run $box --detach $IA --idle-exit 10 -- $B64"; read -r _ <&3
+pod "pod run $box --detach $IB -- $B64"; read -r _ <&3
+eq "idle-exit: the seconds are recorded beside the run, none for a run without the flag" "10 no" "$(cat "$R/$IA.idle") $([ -e "$R/$IB.idle" ] && echo yes || echo no)"
+pod "pod log $box $IA 0"; eq "idle-exit: a running run's header ends with idle_exit=10" "idle_exit=10" "$(head -n 1 "$T/e/out" | tr '\t' '\n' | tail -n 1)"
+pod "pod log $box $IB 0"; eq "idle-exit: a run without the flag has no such word" 0 "$(head -n 1 "$T/e/out" | grep -c idle_exit)"
+idleclock $((t0 + 5)); looks
+eq "idle-exit: before the seconds are over nothing is ended" running "$(runstate "$IA")"
+idleclock $((t0 + 100)); ended "$IA"
+eq "idle-exit: the log holds the line, the note of pod end and one EXIT 143" "$(idle_line "$IA" 10)|boxd: ended by box stop --run|EXIT 143" "$(paste -sd'|' "$R/$IA.log")"
+pod "pod log $box $IA 0"; eq "idle-exit: pod log says ended, exit 143, and has no idle_exit word" "state=ended exit=143 0" "$(head -n 1 "$T/e/out" | cut -f5-6 | tr '\t' ' ') $(head -n 1 "$T/e/out" | grep -c idle_exit)"
+eq "idle-exit: the record of the seconds went with the run" no "$([ -e "$R/$IA.idle" ] && echo yes || echo no)"
+eq "idle-exit: a run without the flag is not ended by it" running "$(runstate "$IB")"
+eq "idle-exit: the box is still there, only the run ended" 0 "$(grep -c '^rm \|^stop ' "$FAKE_LOG")"
+echo go > "$FAKE_REL"; logwait "$R/$IB.log" '^EXIT'
+eq "idle-exit: the watcher is gone once the runs ended" gone "$(for i in $(seq 400); do tagged t1 || { echo gone; break; }; read -r -t 0.05 <>"$T/poll"; done)"
+
+# an open channel counts as use however quiet it is; the deadline is the later of the run's start and the channel's last stamp
+idle_setup t2; IC=20261121-100000-0003; t0=$(date +%s); mkfifo "$T/hold"; rm -f "$T/hold.in"
+pod "pod run $box --detach $IC --idle-exit 10 -- $B64"; read -r _ <&3
+env "${CASE_ENV[@]}" FAKE_FWD_HOLD="$T/hold" FAKE_FWD_PROBE="$W/jobs/$box/.forwarding" SSH_ORIGINAL_COMMAND="pod forward $box 8080" bash "$POD" </dev/null >/dev/null 2>&1 & fp=$!
+for i in $(seq 400); do [ -e "$T/hold.in" ] && break; read -r -t 0.05 <>"$T/poll"; done
+eq "forward: the channel holds .forwarding while it is open" busy "$(cat "$W/jobs/$box/.forwarding.probe")"
+eq "forward: the channel stamped .forwarded when it opened" yes "$([ "$(stat -c %Y "$W/jobs/$box/.forwarded")" -ge "$t0" ] && echo yes || echo no)"
+touch -d @100 "$W/jobs/$box/.forwarded"
+idleclock $((t0 + 5000)); looks
+eq "idle-exit: an open channel keeps the run, however long it is quiet" running "$(runstate "$IC")"
+idleclock $t0; echo go > "$T/hold"; wait "$fp"
+f2=$(stat -c %Y "$W/jobs/$box/.forwarded")
+eq "forward: the channel stamped .forwarded again when it ended" yes "$([ "$f2" -ge "$t0" ] && echo yes || echo no)"
+eq "forward: .forwarding is free once the channel ended" free "$(flock -n -x "$W/jobs/$box/.forwarding" true && echo free || echo busy)"
+idleclock $((f2 + 9)); looks
+eq "idle-exit: a channel that closed moves the deadline: nine seconds after it, still running" running "$(runstate "$IC")"
+idleclock $((f2 + 10)); ended "$IC"
+eq "idle-exit: ten seconds after the channel closed the run is ended" "$(idle_line "$IC" 10)|boxd: ended by box stop --run|EXIT 143" "$(paste -sd'|' "$R/$IC.log")"
+unset FAKE_BLOCK_EXEC; CASE_ENV=()
 
 [ "$fails" -eq 0 ] && echo "ALL OK" || { echo "$fails FAILED"; exit 1; }
