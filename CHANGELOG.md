@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.81
+
+- `box list`: every box this machine recorded and the worktree that owns it, from the local record only (no server is
+  contacted), tab separated: host, box, worktree, then `here` for the worktree you are in or `gone` for one that no longer
+  exists. The "no box" hint of `box ps` names it.
+- `BOXD_REFUSAL_JSON=1`: a call that ends with exit 75 because no build server has room adds one last line on standard error,
+  `box-refusal: ` and one JSON object (`exit`, `waitable`, per host the state or reason and the figures it reported, and the
+  sentence already printed). Without the variable nothing changes.
+- The shared package caches are no longer cleaned while a build is live on the server: under disk pressure the caches wait
+  until no box is busy, unless the disk is at or above a hard level halfway between the eviction level and full (85 percent
+  for the default 70). A build can no longer lose cache files it is reading. `evictions.log` says when the caches were kept
+  and when they were cleaned although a build was live.
+
 ## 0.4.80
 
 - `box serve <local-port> <box-port> -- <box arguments>`: a server in a box that runs only while it is used. It listens on

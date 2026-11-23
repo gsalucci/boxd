@@ -1,4 +1,4 @@
-// Every `client`, `choose`, `source` and `drop_words` case of contract/cases.json against client/box.mjs: plan() for the box calls,
+// Every `client`, `choose`, `source`, `drop_words` and `refusal_json` case of contract/cases.json against client/box.mjs: plan() for the box calls,
 // imagePlan() for `box image push`.
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 
 const REPO = path.resolve(import.meta.dirname, "..");
-const { plan, imagePlan, choose, source, removedWords } = await import(path.join(REPO, "client/box.mjs"));
+const { plan, imagePlan, choose, source, removedWords, refusalLine } = await import(path.join(REPO, "client/box.mjs"));
 const all = JSON.parse(readFileSync(path.join(REPO, "contract/cases.json"), "utf8"));
 
 for (const c of all.client) {
@@ -52,3 +52,12 @@ for (const c of all.source) {
 
 // What the client says of a removed box's real need, a pure function of the server's `pod drop` answer.
 for (const c of all.drop_words) test(`drop words: ${c.name}`, () => assert.equal(removedWords(c.answer), c.words));
+
+// The machine readable refusal (BOXD_REFUSAL_JSON=1): a pure function of the hosts the client holds facts about, from the choice a request got (choose) or as given.
+for (const c of all.refusal_json) {
+  test(`refusal json: ${c.name}`, () => {
+    const r = c.given ? c.given : choose(c.hosts, c.request);
+    assert.equal(r.refusal === undefined && !c.given, false, "the case must be a refusal");
+    assert.equal(refusalLine(r.hosts, c.text, r.waitable ?? r.wait), c.line);
+  });
+}

@@ -4,6 +4,7 @@
 //   box image push [--host <name>] [--vm|--container] <ref>
 //   box setup <host> [--hostname <name>] [--port <n>] [--user <name>] [--identity <file>] [--wake <mac>,<mac> --broadcast <addr>] [--default]
 //   box hosts [--pick [--vm] [--gpu]]   (--pick: the one server a first call would pick now: name, reason, each host's state; exit 75 when none has room; places nothing)
+//   box list   (every box this machine recorded and the worktree that owns it; reads only the local record)
 //   box runs [--follow [--tail <n>]] [--pod <pattern>]... [--host <name>]
 //   box --version
 //   box log <run> [--pod <name>] [--host <name>] [--follow [--quiet-limit <seconds>]] [--tail <n>] [--state]
@@ -23,7 +24,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-export const VERSION = "0.4.80";
+export const VERSION = "0.4.81";
 const BOX = /^[a-z0-9][a-z0-9_.-]{0,62}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const MAC = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i;
@@ -32,6 +33,8 @@ export const HELP = `usage: box [options] [--] <command...>
        box setup <host> [options]      (once per build server; box setup --help)
        box hosts                       the registered build servers in order: asleep, awake (with its \`pod status\` line) or unreachable
        box hosts --pick [--vm] [--gpu]   the one server a first call would pick now (name, reason, each host's state); exit 75 when none has room; places nothing
+       box list                        every box this machine recorded, from the local record only (no server is contacted), one line each, tab separated: host, box, worktree, and
+                                       \`here\` for the worktree you are in, \`gone\` for a worktree that no longer exists; sorted by host, then box
        box image push [--host <name>] [--vm|--container] <ref>
                                        send an image from your machine to the build server's store for that engine (default
                                        container): for images of private registries, whose login stays on your machine. Pulls
@@ -98,7 +101,7 @@ export const HELP = `usage: box [options] [--] <command...>
                                        owns ("unknown owner", nothing is touched) and reports commands running over 6 hours;
                                        --dry-run only says what it would do. Runs by itself after an ordinary call, at most every
                                        15 minutes ($BOXD_GC=0 turns that off); records in ~/.local/state/boxd
-The words setup, runs, hosts, image, ps, log, forward, vnc, serve, pull, drop, stop and gc must come first (box drop --host <name>): after an option, as in box --host <name> drop,
+The words setup, runs, hosts, list, image, ps, log, forward, vnc, serve, pull, drop, stop and gc must come first (box drop --host <name>): after an option, as in box --host <name> drop,
 they are refused (exit 2); to run a program of that name in the box, write -- before it.
 Syncs the git worktree you are in to the build server, runs <command> in this worktree's own box (a podman
 container or, with --vm, a small virtual machine; the same box on every call) and passes its exit code through; once the command was handed to a server, the last line on standard error is "box: exit <code> on <host>" (not with --detach or --shards). Use sh -c '...' for shell syntax.
@@ -153,6 +156,9 @@ container or, with --vm, a small virtual machine; the same box on every call) an
                    reachable) still ends at once
   $BOXD_PHASES=1  a call that runs a command (also --detach, up to the start of the run) ends its standard error with one more line before "box: exit":
                    "box: phases room=<s> sync=<s> run=<s> on <host>", whole seconds: waiting for room (0 when none), file sync, command on the server; not with --shards
+  $BOXD_REFUSAL_JSON=1  a call that ends with exit 75 for room (also box hosts --pick) adds one last line to standard error: "box-refusal: " and one JSON object
+                   {"exit":75,"waitable":<true when --wait can help>,"hosts":[{"host","state","reason","free_mb","fit_mb","need_mb","cap_mb"}],"text":"<the sentence printed>"};
+                   the figures are left out when the server did not report them; not with --shards or box serve
   --pull <path>    after a foreground run, copy <path> (relative to the worktree) back; repeatable. Only changed
                    files travel (rsync)
   --host <name>    build server to use (ssh alias boxd-<name>) and the one this worktree stays on from now on. Without
@@ -479,6 +485,12 @@ export function source(flag, envHost, placed, reg) {
 }
 // "key=value" words of a `pod status` line.
 export const parseStatus = (line) => Object.fromEntries(line.trim().split("\t").filter((w) => w.includes("=")).map((w) => [w.slice(0, w.indexOf("=")), w.slice(w.indexOf("=") + 1)]));
+// The last line of a call that ends with exit 75: `box-refusal: ` and one JSON object. `waitable` is left out when it is not known.
+export const refusalLine = (hosts, text, waitable) => `box-refusal: ${JSON.stringify({ exit: NO_ROOM, ...(waitable === undefined ? {} : { waitable }), hosts, text })}`;
+const emitRefusal = (env, hosts, text, waitable) => {
+    if (env.BOXD_REFUSAL_JSON === "1")
+        process.stderr.write(`${refusalLine(hosts, text.trimEnd(), waitable)}\n`);
+};
 // The host with room for this request that has the most free memory (`mem_free_mb`), ties in the given order. A machine
 // (`--vm`) goes to the awake host with room that has the smallest cap for boxes (`group_mem_max_mb`) instead, so the big host
 // stays free for big machines (reason `fit`); a host that reports no cap, and a sleeping one, come after those. Asleep
@@ -495,7 +507,8 @@ export const parseStatus = (line) => Object.fromEntries(line.trim().split("\t").
 const SIZE_MB = { small: 2048, medium: 4096, xlarge: 12288 };
 export function choose(hosts, req) {
     const want = req.image?.startsWith("localhost/") ? req.image.slice("localhost/".length).split(":")[0] : undefined;
-    const room = [], late = [], why = [];
+    const room = [], late = [], why = [], figures = [];
+    const num = (w) => /^\d+$/.test(w ?? "") ? Number(w) : undefined;
     const need = req.size ? SIZE_MB[req.size] : undefined;
     let waitable = false; // a host said no for room, which time can change (a missing image or engine, a host that is down: not)
     for (const h of hosts) {
@@ -527,13 +540,15 @@ export function choose(hosts, req) {
         else
             room.push({ name: h.name, ...(busy ? { busy: true } : {}), free: /^\d+$/.test(s.mem_free_mb ?? "") ? Number(s.mem_free_mb) : -1, ...(req.vm && /^\d+$/.test(s.group_mem_max_mb ?? "") ? { cap: Number(s.group_mem_max_mb) } : {}) });
         why.push(no ?? busy ?? (h.state === "awake" && !s ? "awake, no status" : h.state));
+        const fig = s && h.state === "awake" ? { free_mb: num(s.mem_free_mb), fit_mb: num(req.vm ? s.vm_fit_mb : s.box_fit_mb), need_mb: req.vm ? need ?? 8192 : num(s.box_reserve_mb), cap_mb: num(s.group_mem_max_mb) } : {};
+        figures.push(Object.fromEntries(Object.entries(fig).filter(([, v]) => v !== undefined)));
     }
     const notes = hosts.map((h, i) => `${h.name}=${why[i]}`);
     room.sort((a, b) => (a.asleep ? 1 : 0) - (b.asleep ? 1 : 0) || (a.busy ? 1 : 0) - (b.busy ? 1 : 0) || (a.cap !== undefined || b.cap !== undefined ? (a.cap ?? Infinity) - (b.cap ?? Infinity) : a.free === b.free ? 0 : b.free > a.free ? 1 : -1)); // stable: ties keep the order
     const order = [...room.map((r) => r.name), ...late];
     const host = order[0];
     if (host === undefined)
-        return { refusal: hosts.map((h, i) => `${h.name}: ${why[i]}`), notes, wait: waitable };
+        return { refusal: hosts.map((h, i) => `${h.name}: ${why[i]}`), notes, wait: waitable, hosts: hosts.map((h, i) => ({ host: h.name, state: h.state, reason: why[i], ...figures[i] })) };
     const first = hosts[0]?.name;
     return { host, reason: room[0]?.cap !== undefined ? "fit" : host === first ? "order" : room.some((r) => r.name === first) ? "spread" : "overflow", room: order, notes };
 }
@@ -700,7 +715,9 @@ async function hosts(args, env) {
     if (args.includes("--pick")) {
         const c = choose(seen, { vm: args.includes("--vm"), ...(args.includes("--gpu") ? { gpu: true } : {}) });
         if ("refusal" in c) {
-            process.stderr.write(`box hosts --pick: no build server has room: ${c.refusal.join("; ")}\n`);
+            const text = `box hosts --pick: no build server has room: ${c.refusal.join("; ")}`;
+            process.stderr.write(`${text}\n`);
+            emitRefusal(env, c.hosts, text, c.wait);
             return 75;
         }
         process.stdout.write(`${[c.host, c.reason, c.notes.join(",")].join("\t")}\n`);
@@ -888,7 +905,7 @@ function ps(args, env) {
         process.stdout.write(psTable(r.stdout));
     // Without --pod the box asked is the worktree's own; a caller whose boxes all have names reads "no box" as "my box is gone".
     else if (r.status === 125 && !pod)
-        process.stderr.write(`box: ${t.box} is this worktree's own box; a box started with --pod <name> is asked with box ps --pod <name>\n`);
+        process.stderr.write(`box: ${t.box} is this worktree's own box; a box started with --pod <name> is asked with box ps --pod <name>; box list shows every box of this machine\n`);
     return r.status ?? 1;
 }
 // The one clock of the phase times (BOXD_PHASES), so a test can look at the line without caring for the durations.
@@ -1387,6 +1404,16 @@ function entries(env) {
     }
     return out;
 }
+// box list: the record the collector reads, printed. Never asks a host, so it works on a sleeping or unreachable server too.
+function listCall(args, env) {
+    if (args[0] !== undefined)
+        return usage(`box list: unknown argument ${args[0]}; box list takes no argument`);
+    const here = spawnSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).stdout.trim();
+    for (const e of entries(env).sort((a, b) => (a.host < b.host ? -1 : a.host > b.host ? 1 : a.box < b.box ? -1 : a.box > b.box ? 1 : 0))) {
+        process.stdout.write(`${[e.host, e.box, e.worktree, e.worktree === here ? "here" : existsSync(e.worktree) ? "" : "gone"].join("\t")}\n`);
+    }
+    return 0;
+}
 // The worktree is still a worktree top folder here. A git that cannot be started counts as present: never remove on doubt.
 function worktreeHere(dir) {
     if (!existsSync(dir))
@@ -1835,7 +1862,7 @@ async function shardsCall(keep, words, base, n, tail, env) {
     return started.every((s) => codes.get(key(s)) === "0") ? 0 : 1;
 }
 // The words box handles itself, dispatched on args[0] in main: they must come first. Keep this list in step with that dispatch.
-const BOX_WORDS = ["setup", "runs", "ps", "hosts", "log", "forward", "vnc", "serve", "drop", "stop", "gc", "image", "pull"];
+const BOX_WORDS = ["setup", "runs", "ps", "hosts", "list", "log", "forward", "vnc", "serve", "drop", "stop", "gc", "image", "pull"];
 // `inner`: set by box --shards for each of its own calls: the call is detached with this run id, is never on a terminal, prints no run lines
 // and says the host it ran on.
 export function main(args, env = process.env, inner) {
@@ -1847,6 +1874,8 @@ export function main(args, env = process.env, inner) {
         return ps(args.slice(1), env);
     if (args[0] === "hosts")
         return hosts(args.slice(1), env);
+    if (args[0] === "list")
+        return listCall(args.slice(1), env);
     if (args[0] === "log")
         return logCall(args.slice(1), env);
     if (args[0] === "forward" || args[0] === "vnc")
@@ -2199,7 +2228,10 @@ export function main(args, env = process.env, inner) {
                 const seen = await probe(name, env), c = choose([seen], req);
                 if ("refusal" in c) {
                     if (!c.wait) {
-                        process.stderr.write(`box: no build server has room for this call\n${c.refusal.map((l) => `  ${l}\n`).join("")}`);
+                        const text = `box: no build server has room for this call\n${c.refusal.map((l) => `  ${l}\n`).join("")}`;
+                        process.stderr.write(text);
+                        if (!inner)
+                            emitRefusal(env, c.hosts, text, false);
                         return NO_ROOM;
                     }
                     if (await autoMove(name))
@@ -2220,7 +2252,10 @@ export function main(args, env = process.env, inner) {
                             return final || 129;
                         continue;
                     }
-                    process.stderr.write(`box: no build server has room for this call\n${[...c.refusal, ...(c.wait ? roomHint(seen, req, wait) : [])].map((l) => `  ${l}\n`).join("")}`);
+                    const text = `box: no build server has room for this call\n${[...c.refusal, ...(c.wait ? roomHint(seen, req, wait) : [])].map((l) => `  ${l}\n`).join("")}`;
+                    process.stderr.write(text);
+                    if (!inner)
+                        emitRefusal(env, c.hosts, text, c.wait);
                     return NO_ROOM;
                 }
                 name = place(gitDir, c.host, true);
@@ -2281,11 +2316,13 @@ export function main(args, env = process.env, inner) {
                     continue;
                 }
                 const { c, move, none } = await elsewhere(name);
-                if (c && "host" in c)
-                    process.stderr.write(`box: ${name} has no room; hosts that do: ${c.room.join(", ")}. Move this worktree with: ${move}\n`);
-                else
-                    process.stderr.write(none);
-                return last(r.code, name);
+                const text = c && "host" in c ? `box: ${name} has no room; hosts that do: ${c.room.join(", ")}. Move this worktree with: ${move}\n` : none;
+                process.stderr.write(text);
+                const code = last(r.code, name);
+                // Only the server's own sentence exists for the host that refused (its last line, as the server wrote it); the hosts asked about afterwards carry their figures.
+                if (!inner)
+                    emitRefusal(env, [{ host: name, state: "awake", reason: (r.err.trimEnd().split("\n").pop() ?? "") }, ...(c && "refusal" in c ? c.hosts : [])], text, true);
+                return code;
             }
             if (inner && r.code === 0) {
                 inner.host = name;

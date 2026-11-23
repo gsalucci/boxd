@@ -161,6 +161,7 @@ box serve 8080 8080 --idle 600 -- --gpu --no-sync llama-server --port 8080   # a
 box ps                                               # what runs in this box
 box hosts                                            # every build server: asleep, awake with its load, unreachable
 box hosts --pick                                     # the one server a first call would pick now; exit 75 when none has room
+box list                                             # every box this machine recorded and the worktree that owns it; asks no server
 box stop                                             # stop this worktree's box to free memory; its files stay
 box drop                                             # remove this worktree's box and its files now
 box --help

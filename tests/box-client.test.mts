@@ -548,7 +548,7 @@ test("box ps --pod names the box; the host's exit code passes through; nothing i
 test("box ps without --pod, refused by the host, says which box it asked and how to ask a named one", () => {
   const r = runBox(["ps"], { env: { FAKE_SSH_EXIT: "125" } });
   assert.equal(r.code, 125);
-  assert.match(r.err, /^box: \S+ is this worktree's own box; a box started with --pod <name> is asked with box ps --pod <name>$/m);
+  assert.match(r.err, /^box: \S+ is this worktree's own box; a box started with --pod <name> is asked with box ps --pod <name>; box list shows every box of this machine$/m);
   assert.doesNotMatch(runBox(["ps", "--pod", "other-box"], { env: { FAKE_SSH_EXIT: "125" } }).err, /own box/);
 });
 
@@ -1430,6 +1430,23 @@ test("every call that reaches a host records its box, host and worktree, in one 
   assert.equal(go(rp, s, ["--no-sync", "true"], { BOXD_HOST: "test" }).code, 0);
   assert.deepEqual(getEntry(s, "test", rp.box), { box: rp.box, host: "test", worktree: rp.top });
   assert.deepEqual(readdirSync(path.join(s.home, ".local/state/boxd/boxes")), [`test.${rp.box}`]);
+});
+
+test("box list prints every recorded box of this machine, sorted, with here and gone marks, and never contacts a host", () => {
+  const s = servers([{ name: "test", status: FREE }]), rp = newRepo(), other = newRepo();
+  const none = go(rp, s, ["list"]);
+  assert.deepEqual([none.code, none.out, none.err, none.calls], [0, "", "", []], "no record: nothing printed, exit 0");
+  const gone = path.join(root, "worktree-deleted");
+  putEntry(s, "tower", "boxd-b", other.top);
+  putEntry(s, "laptop", "boxd-z", gone);
+  putEntry(s, "tower", "boxd-a", rp.top);
+  const r = go(rp, s, ["list"]);
+  assert.deepEqual([r.code, r.err, r.calls], [0, "", []], "read only: no ssh, no rsync");
+  assert.equal(r.out, `laptop\tboxd-z\t${gone}\tgone\ntower\tboxd-a\t${rp.top}\there\ntower\tboxd-b\t${other.top}\t\n`);
+  const bad = go(rp, s, ["list", "--all"]);
+  assert.equal(bad.code, 2);
+  assert.ok(bad.err.startsWith("box list: unknown argument --all; box list takes no argument\n"), bad.err);
+  assert.match(runBox(["--help"]).out, /box list /);
 });
 
 test("gc: a worktree seen missing once is not removed; seen again too soon, not removed; 15 minutes later, stopped and logged", () => {
@@ -3518,4 +3535,59 @@ test("--wait: a refusal at the server with a place in it shows the place, and a 
   assert.ok(r.err.includes("box: waiting for room, asking every 0.001 seconds:\n  tower: no room (the server refused the call); 1 call waits ahead of this one (since 09:00); busy now: none\n"), r.err);
   assert.equal(r.calls.filter((c) => c === runLine(rp, "tower", "--vm")).length, 1, "the first ask of a placed worktree comes before any probe, so before the version is known: no word");
   assert.equal(r.calls.filter((c) => c === queued(rp, "tower", "--vm")).length, 2);
+});
+
+// BOXD_REFUSAL_JSON=1: a call that ends with exit 75 adds one last standard error line, `box-refusal: ` and a JSON object made from what the client
+// already holds. Without the variable the standard error is the same byte for byte.
+const JSON_ON = { BOXD_REFUSAL_JSON: "1" };
+const refusalOf = (err: string) => { const lines = err.trimEnd().split("\n"), last = lines.pop() ?? ""; assert.ok(last.startsWith("box-refusal: "), last); return { rest: `${lines.join("\n")}\n`, json: JSON.parse(last.slice("box-refusal: ".length)) }; };
+const NO_BOX_ROOM = `${realStatus(1)}\tbox_room=no\tbox_fit_mb=100\tbox_reserve_mb=500`;
+
+test("BOXD_REFUSAL_JSON=1: box hosts --pick with no room ends with the object; the sentence is the same without the variable", () => {
+  const s = servers([{ name: "tower", status: NO_BOX_ROOM }, { name: "laptop" }]);
+  const plain = go(newRepo(), s, ["hosts", "--pick"]), on = go(newRepo(), s, ["hosts", "--pick"], JSON_ON);
+  assert.equal(plain.code, NO_ROOM);
+  const { rest, json } = refusalOf(on.err);
+  assert.equal(rest, plain.err, "the sentence is unchanged");
+  assert.deepEqual(json, { exit: 75, waitable: true, text: plain.err.trimEnd(), hosts: [
+    { host: "tower", state: "awake", reason: "no memory for another busy box (100 MB fit, 500 MB wanted)", fit_mb: 100, need_mb: 500 },
+    { host: "laptop", state: "unreachable", reason: "unreachable" }] });
+  assert.equal(on.out, "");
+});
+
+test("BOXD_REFUSAL_JSON=1: a call with no host that has room ends with the object, waitable as the client judged it; other values of the variable change nothing", () => {
+  const full = servers([{ name: "tower", status: FULL }, { name: "laptop", status: FULL }]);
+  const plain = go(newRepo(), full, ["--vm", "true"]);
+  assert.equal(go(newRepo(), full, ["--vm", "true"], { BOXD_REFUSAL_JSON: "0" }).err, plain.err);
+  const { rest, json } = refusalOf(go(newRepo(), full, ["--vm", "true"], JSON_ON).err);
+  assert.equal(rest, plain.err);
+  assert.equal(json.exit, 75);
+  assert.equal(json.waitable, true);
+  assert.equal(json.text, plain.err.trimEnd());
+  assert.deepEqual(json.hosts.map((h: { host: string; state: string; reason: string; need_mb: number }) => [h.host, h.state, h.reason, h.need_mb]), [["tower", "awake", "3 of 3 running", 8192], ["laptop", "awake", "3 of 3 running", 8192]]);
+  // a missing image is not for a wait to fix
+  const free = servers([{ name: "tower", status: FREE }, { name: "laptop", status: FREE }]);
+  assert.equal(refusalOf(go(newRepo(), free, ["--image", "localhost/nothere", "true"], JSON_ON).err).json.waitable, false);
+});
+
+test("BOXD_REFUSAL_JSON=1: --wait that gives up at once (nothing to wait for) ends with the object, waitable false", () => {
+  const s = servers([{ name: "tower", status: FREE }, { name: "laptop", status: FREE }]);
+  const r = go(newRepo(), s, ["--wait", "--image", "localhost/nothere", "true"], { BOXD_WAIT_MS: "1", ...JSON_ON });
+  assert.equal(r.code, NO_ROOM);
+  const { rest, json } = refusalOf(r.err);
+  assert.equal(rest, "box: no build server has room for this call\n  tower: image nothere missing\n  laptop: image nothere missing\n");
+  assert.equal(json.waitable, false);
+  assert.deepEqual(json.hosts.map((h: { host: string; reason: string }) => [h.host, h.reason]), [["tower", "image nothere missing"], ["laptop", "image nothere missing"]]);
+});
+
+test("BOXD_REFUSAL_JSON=1: a placed worktree whose host refuses at the call gets the server's own sentence as the reason, after the exit line", () => {
+  const s = servers([{ name: "tower", status: FULL, runExit: NO_ROOM, runErr: REFUSAL }, { name: "laptop", status: FREE }]), rp = newRepo();
+  go(rp, s, ["--host", "tower", "--no-sync", "true"]);
+  const r = go(rp, s, ["--no-sync", "--vm", "true"], JSON_ON);
+  assert.equal(r.code, NO_ROOM);
+  const { rest, json } = refusalOf(r.err);
+  assert.ok(rest.endsWith("box: exit 75 on tower\n"), rest);
+  assert.deepEqual(json.hosts, [{ host: "tower", state: "awake", reason: REFUSAL }]);
+  assert.equal(json.waitable, true);
+  assert.ok(json.text.includes("hosts that do: laptop"), json.text);
 });

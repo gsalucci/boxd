@@ -1300,6 +1300,37 @@ reapnow $(($(date +%s) + 5 * day)); eq "pressure: a file written on the host les
 rm -f "$W/cache/.evicting"; reapnow $(($(date +%s) + 30 * day)); eq "pressure: a file whose change time is older than the retention time goes, marker and content together" "" "$(cd "$W/cache/pod" && find . -type f | paste -sd' ')"
 unset FAKE_DF
 
+# The shared package caches wait while any box of the host is busy (a run, a call, a sync holds its .running); from halfway between
+# BOXD_EVICT_AT and 100 percent (85 by default) they go anyway. The reaper holds no box lock itself.
+cachefiles() { (cd "$W/cache/pod" && find . -type f | sed 's|^\./||' | sort | paste -sd' '); }
+cachesetup() {
+    setup; export FAKE_DF=$T/e/df; : > "$BOXD_POD_CLEAN"
+    mkdir -p "$W/cache/pod/m2" "$W/jobs"/{a,b}/src; touch -d "@$far" "$W/jobs/a/.last-used" "$W/jobs/b/.last-used"; touch "$W/cache/pod/m2/x.jar"
+}
+far=$(($(date +%s) + 30 * day)); kept="images	disk 70 percent full|caches	kept, a build is live (disk 70 percent full, cleaned from 85)"
+cachesetup; : > "$W/jobs/b/.running"
+flock -s "$W/jobs/b/.running" sh -c "echo held >&3; read x < '$T/e/rel'" &
+r1=$!; read -r _ <&3
+echo 70 > "$FAKE_DF"; reapnow "$far"
+eq "caches: another box is busy, so the caches stay and one line says so" "m2/x.jar|$kept" "$(cachefiles)|$(evlog)"
+echo 80 > "$FAKE_DF"; reapnow "$far"
+eq "caches: a later pass of the same episode keeps them and writes no second line" "m2/x.jar|$kept" "$(cachefiles)|$(evlog)"
+exec 6>"$T/e/rel"; exec 6>&-; wait "$r1"
+reapnow "$far"
+eq "caches: the next pass after the build ended cleans them, by the clock of the episode's start, without a new line" "|$kept" "$(cachefiles)|$(evlog)"
+cachesetup; : > "$W/jobs/b/.running"
+flock -s "$W/jobs/b/.running" sh -c "echo held >&3; read x < '$T/e/rel'" &
+r1=$!; read -r _ <&3
+echo 84 > "$FAKE_DF"; reapnow "$far"; eq "caches: at 84 percent (hard level 85) a busy host still keeps them" "m2/x.jar" "$(cachefiles)"
+echo 85 > "$FAKE_DF"; reapnow "$far"
+eq "caches: at the hard level they are cleaned although a build is live, and the line says so" "|images	disk 84 percent full|caches	kept, a build is live (disk 84 percent full, cleaned from 85)|caches	cleaned although a build is live, disk 85 percent full is at or above 85" "$(cachefiles)|$(evlog)"
+exec 6>"$T/e/rel"; exec 6>&-; wait "$r1"
+cachesetup; echo 70 > "$FAKE_DF"; reapnow "$far"
+eq "caches: no box busy, cleaned in the first pass as before, and no caches line" "|images	disk 70 percent full" "$(cachefiles)|$(evlog)"
+cachesetup; : > "$W/jobs/b/.running"; echo 70 > "$FAKE_DF"; reapnow "$far"
+eq "caches: a .running file nobody holds is not a live build" "|images	disk 70 percent full" "$(cachefiles)|$(evlog)"
+unset FAKE_DF
+
 # Retention of the shared caches and images by age: once a day, at any fill level (evict_daily).
 setup; : > "$BOXD_POD_CLEAN"; day=86400; export FAKE_DF=$T/e/df; echo 10 > "$FAKE_DF"
 mkdir -p "$W/cache/pod/m2" "$W/cache/images" "$W/jobs/live/src" "$BOXD_IMAGES_DIR"; touch -d @$((39 * day)) "$W/jobs/live/.last-used"

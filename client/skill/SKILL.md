@@ -15,6 +15,8 @@ server has room the call exits 75 at once with one reason per server; the refusa
 again every 30 seconds and goes on when room appears, saying `box: room on <host> after waiting <time>; starting` (on a server of 0.4.41 or later `--wait` keeps your place in line: waiting calls are served in the order they first asked, as far as memory allows, and the waiting
 line tells your place and what holds the room, for example `2 calls wait ahead of this one (since 18:02, 18:10); busy now: wf_a (since 17:40)`. Do not build your own lock or
 queue around `box`; a refusal waiting cannot fix, like a missing image, still exits at once).
+A program that reads the refusal sets `BOXD_REFUSAL_JSON=1`: every exit 75 for room then ends its standard error with one line, `box-refusal: ` and a JSON object with `exit`, `waitable` (true: `--wait` can help),
+`hosts` (per server: `host`, `state`, `reason`, and `free_mb`, `fit_mb`, `need_mb`, `cap_mb` when known) and `text` (the printed sentence); no need to read numbers out of the sentence.
 
 ## Use
 
@@ -103,6 +105,7 @@ queue around `box`; a refusal waiting cannot fix, like a missing image, still ex
 - A command seems stuck (no output for a long while, tests that never finish): `box ps` lists the processes running in
   your box, oldest first, with age, processor time, working folder and command. It changes nothing; stop what is
   hung yourself (`box sh -c 'kill <pid>'`). A process with no processor time that is hours old is waiting on something.
+- "no box <name>" for a box you expect to exist: `box list` prints every box this machine recorded, with its host and the worktree that owns it, and asks no server. The box you mean may have another name (started with `--pod <name>`, or made from another worktree).
 - Results: `--pull <path>` copies a file or folder from the box back into your worktree after the run. Repeat for more.
 - Tests that need a git repository: `--snapshot`. A synced tree has no git data otherwise (`.git` is not sent): a build that embeds
   `git describe` says `unknown`; pass `--snapshot` when the build needs it (it makes a new commit named snapshot).
@@ -115,7 +118,7 @@ queue around `box`; a refusal waiting cannot fix, like a missing image, still ex
   (a count above 0 means the kernel in the box ended a process for lack of memory).
 - Options go before the command: `box --no-sync sh -c '...' --pull x` hands `--pull x` to the command (box warns once); write `--` before
   the command to say it is meant.
-- The words `setup`, `runs`, `hosts`, `image`, `ps`, `log`, `forward`, `vnc`, `drop`, `stop` and `gc` must come FIRST: right is `box drop --host tower`, wrong is `box --host tower drop`. An option before one of them is refused at once (exit 2, one line on stderr, nothing contacted), because it would otherwise be run as a command in the box. To run a program of that name in the box, write `--`: `box --host tower -- drop`.
+- The words `setup`, `runs`, `hosts`, `list`, `image`, `ps`, `log`, `forward`, `vnc`, `drop`, `stop` and `gc` must come FIRST: right is `box drop --host tower`, wrong is `box --host tower drop`. An option before one of them is refused at once (exit 2, one line on stderr, nothing contacted), because it would otherwise be run as a command in the box. To run a program of that name in the box, write `--`: `box --host tower -- drop`.
 - **The sync sends only what git counts as the worktree.** A file git ignores (a `*.log` journal, a state folder) does not reach the box
   unless named: `--include <path>` (file or folder, repeatable). The other way round, ignored files a run made in the box stay there
   between calls; `--clean` deletes them first, so the box's source folder is exactly your worktree (use it for measurements).
