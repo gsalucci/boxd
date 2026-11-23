@@ -359,6 +359,7 @@ function build(S, now) {
   function hostCard(h) {
     const u = usage(h);
     const meta = [h.addr, h.threads != null ? h.threads + ' threads' : null, h.ramGiB != null ? h.ramGiB + ' GiB' : null,
+      h.gpus ? h.gpus + (h.gpus === 1 ? ' graphics card' : ' graphics cards') : null,
       h.powerModule == null ? null : 'power module ' + (h.powerModule ? 'on' : 'off')].filter(Boolean).map(esc).join(' · ');
     return '<article class="bx-card bx-card--host' + (h.stale ? ' bx-card--dim' : '') + '" aria-label="host ' + esc(h.id) + '">' +
       '<div class="bx-card__head"><h3 class="bx-card__name">' + icon('host') + hostLink(h.id) + '</h3>' + hostPill(h) + '</div>' +

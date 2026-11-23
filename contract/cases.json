@@ -599,6 +599,27 @@
       ],
       "box": "boxd-2889387319",
       "remote": "pod run boxd-2889387319 --user --kvm --env GH_TOKEN --recreate -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ=="
+    },
+    {
+      "name": "client: --gpu goes after --kvm, before --env and --recreate",
+      "toplevel": "/home/dev/src/boxd",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "my crate"
+      ],
+      "tty": false,
+      "flags": [
+        "--recreate",
+        "--env",
+        "GH_TOKEN",
+        "--gpu",
+        "--kvm",
+        "--user"
+      ],
+      "box": "boxd-2889387319",
+      "remote": "pod run boxd-2889387319 --user --kvm --gpu --env GH_TOKEN --recreate -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ=="
     }
   ],
   "pod": [
@@ -3477,7 +3498,7 @@
       "command": "pod status",
       "msb": false,
       "exit": 0,
-      "stdout_re": "^version=0\\.4\\.78\tengines=container\tcpus=8\tload1=[0-9]+\\.[0-9]+\tvm_used=0\tvm_max=3\tvm_room=no\tboxes=0\tdisk_pct=37\tmem_free_mb=unknown\timages=\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=-\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096\twaiting=0$"
+      "stdout_re": "^version=0\\.4\\.79\tengines=container\tcpus=8\tload1=[0-9]+\\.[0-9]+\tvm_used=0\tvm_max=3\tvm_room=no\tboxes=0\tdisk_pct=37\tmem_free_mb=unknown\timages=\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=-\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096\twaiting=0\tgpus=0$"
     },
     {
       "name": "pod status: one of three machines running, room for another; boxes counts both engines",
@@ -3499,7 +3520,7 @@
           "state": "stopped"
         }
       },
-      "stdout_re": "^version=0\\.4\\.78\tengines=container,vm\tcpus=8\tload1=[0-9]+\\.[0-9]+\tvm_used=1\tvm_max=3\tvm_room=yes\tboxes=3\tdisk_pct=37\tmem_free_mb=unknown\timages=\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=-\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096\twaiting=0$"
+      "stdout_re": "^version=0\\.4\\.79\tengines=container,vm\tcpus=8\tload1=[0-9]+\\.[0-9]+\tvm_used=1\tvm_max=3\tvm_room=yes\tboxes=3\tdisk_pct=37\tmem_free_mb=unknown\timages=\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=-\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096\twaiting=0\tgpus=0$"
     },
     {
       "name": "pod status: all machines used, no room (vm_room is the server's own answer)",
@@ -3534,7 +3555,7 @@
           "state": "running"
         }
       },
-      "stdout_re": "\tvm_used=1\tvm_max=1\tvm_room=no\t.*\tvm_why=1 of 1 running\tvm_fit_mb=0\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096\twaiting=0$"
+      "stdout_re": "\tvm_used=1\tvm_max=1\tvm_room=no\t.*\tvm_why=1 of 1 running\tvm_fit_mb=0\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096\twaiting=0\tgpus=0$"
     },
     {
       "name": "pod status: images lists the archives of local images, sorted, and leaves out per-box builds",
@@ -3545,7 +3566,7 @@
         "another"
       ],
       "archives_built": true,
-      "stdout_re": "\timages=another,toolbox\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=-\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096\twaiting=0$"
+      "stdout_re": "\timages=another,toolbox\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=-\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096\twaiting=0\tgpus=0$"
     },
     {
       "name": "pod status: free memory is the cgroup's limit minus its anonymous and shared memory (the admission's figure), in megabytes; file cache, active or not, is free",
@@ -3556,7 +3577,7 @@
         "memory.current": "12884901888\n",
         "memory.stat": "anon 1073741824\nshmem 1073741824\ninactive_file 2147483648\nactive_file 5368709120\n"
       },
-      "stdout_re": "\tmem_free_mb=30720\timages=\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=2048\tgroup_mem_max_mb=32768\tvm_why=\tvm_fit_mb=30720\tbox_room=yes\tbox_fit_mb=32768\tbox_reserve_mb=4096\twaiting=0$"
+      "stdout_re": "\tmem_free_mb=30720\timages=\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=2048\tgroup_mem_max_mb=32768\tvm_why=\tvm_fit_mb=30720\tbox_room=yes\tbox_fit_mb=32768\tbox_reserve_mb=4096\twaiting=0\tgpus=0$"
     },
     {
       "name": "pod status takes no lock, writes nothing and starts or removes nothing",
@@ -4069,7 +4090,7 @@
         "jobs/a/.mem-peak": "700",
         "jobs/b/.vm-user": ""
       },
-      "stdout_re": "^host\tversion=0\\.4\\.78\tengines=container,vm\tcpus=8\tload1=[0-9]+\\.[0-9]+\tload5=[0-9]+\\.[0-9]+\tload15=[0-9]+\\.[0-9]+\tboot=[0-9]+\tmem_total_mb=32000\tmem_avail_mb=9000\tswap_total_mb=8000\tswap_used_mb=1200\tgroup_mem_max_mb=32768\tgroup_mem_used_mb=1024\tpressure_some10=2\\.31\tpressure_some60=1\\.12\tpressure_full10=0\\.40\tpressure_full60=0\\.18\toom_kills=1\tpressure_some_ms=1234\tpressure_full_ms=7654\tnet_tx_timeouts=8\tnet_link_changes=4\tvm_used=0\tvm_max=none\tvm_room=yes\tvm_mem_mb=8192\tbox_mem_mb=12288\tdisk_pct=37\tdisk_total_mb=976562\tdisk_used_mb=361328\tttl=1800\twork_own=no\twork_shared=yes\tevict_at=70\tevict_to=60\tkeep_days=14\tpower=on\tidle_checks=20\tidle_count=7\tidle_last=idle\treset_at=85\tkeepawake=free\twaiting=0\tgroup_swap_used_mb=-\tgroup_swap_max_mb=-\tzram_used_mb=-\tzram_peak_mb=-\nbox\tbox=a\tengine=container\timage=docker\\.io/library/rust:1\tstate=running\tlast_used=0\tuser=no\tsize=-\tmem_limit_mb=12288\tmem_mb=(-|[0-9]+)\tbusy=no\truns=1\tmem_peak_mb=-\nbox\tbox=b\tengine=vm\timage=localhost/toolbox:latest\tstate=stopped\tlast_used=0\tuser=yes\tsize=small\tmem_limit_mb=2048\tmem_mb=-\tbusy=no\truns=0\tmem_peak_mb=2900\nrun\tbox=a\tid=r1\tstate=ended\texit=3\tbytes=11\tchanged=[0-9]+\nrun\tbox=a\tid=r2\tstate=running\texit=-\tbytes=4\tchanged=[0-9]+\nimage\tname=toolbox\tbytes=0\tbuilt=[0-9]+\tvm_loaded=-$",
+      "stdout_re": "^host\tversion=0\\.4\\.79\tengines=container,vm\tcpus=8\tload1=[0-9]+\\.[0-9]+\tload5=[0-9]+\\.[0-9]+\tload15=[0-9]+\\.[0-9]+\tboot=[0-9]+\tmem_total_mb=32000\tmem_avail_mb=9000\tswap_total_mb=8000\tswap_used_mb=1200\tgroup_mem_max_mb=32768\tgroup_mem_used_mb=1024\tpressure_some10=2\\.31\tpressure_some60=1\\.12\tpressure_full10=0\\.40\tpressure_full60=0\\.18\toom_kills=1\tpressure_some_ms=1234\tpressure_full_ms=7654\tnet_tx_timeouts=8\tnet_link_changes=4\tvm_used=0\tvm_max=none\tvm_room=yes\tvm_mem_mb=8192\tbox_mem_mb=12288\tdisk_pct=37\tdisk_total_mb=976562\tdisk_used_mb=361328\tttl=1800\twork_own=no\twork_shared=yes\tevict_at=70\tevict_to=60\tkeep_days=14\tpower=on\tidle_checks=20\tidle_count=7\tidle_last=idle\treset_at=85\tkeepawake=free\twaiting=0\tgroup_swap_used_mb=-\tgroup_swap_max_mb=-\tzram_used_mb=-\tzram_peak_mb=-\tgpus=0\nbox\tbox=a\tengine=container\timage=docker\\.io/library/rust:1\tstate=running\tlast_used=0\tuser=no\tsize=-\tmem_limit_mb=12288\tmem_mb=(-|[0-9]+)\tbusy=no\truns=1\tmem_peak_mb=-\nbox\tbox=b\tengine=vm\timage=localhost/toolbox:latest\tstate=stopped\tlast_used=0\tuser=yes\tsize=small\tmem_limit_mb=2048\tmem_mb=-\tbusy=no\truns=0\tmem_peak_mb=2900\nrun\tbox=a\tid=r1\tstate=ended\texit=3\tbytes=11\tchanged=[0-9]+\nrun\tbox=a\tid=r2\tstate=running\texit=-\tbytes=4\tchanged=[0-9]+\nimage\tname=toolbox\tbytes=0\tbuilt=[0-9]+\tvm_loaded=-$",
       "podman_calls_absent": [
         "^run",
         "^start",
@@ -4105,7 +4126,7 @@
         "BOXD_IDLE_STATE": "/work/no-idle",
         "FAKE_STAT_FAIL": "1"
       },
-      "stdout_re": "^host\tversion=0\\.4\\.78\tengines=container\tcpus=8\t.*\tgroup_mem_max_mb=-\tgroup_mem_used_mb=-\tpressure_some10=-\tpressure_some60=-\tpressure_full10=-\tpressure_full60=-\toom_kills=-\tpressure_some_ms=-\tpressure_full_ms=-\tnet_tx_timeouts=-\tnet_link_changes=-\tvm_used=0\tvm_max=3\tvm_room=no\tvm_mem_mb=8192\tbox_mem_mb=12288\tdisk_pct=37\tdisk_total_mb=976562\tdisk_used_mb=361328\tttl=1800\twork_own=-\twork_shared=-\tevict_at=70\tevict_to=60\tkeep_days=14\tpower=off\tidle_checks=-\tidle_count=-\tidle_last=-\treset_at=-\tkeepawake=none\twaiting=0\tgroup_swap_used_mb=-\tgroup_swap_max_mb=-\tzram_used_mb=-\tzram_peak_mb=-$"
+      "stdout_re": "^host\tversion=0\\.4\\.79\tengines=container\tcpus=8\t.*\tgroup_mem_max_mb=-\tgroup_mem_used_mb=-\tpressure_some10=-\tpressure_some60=-\tpressure_full10=-\tpressure_full60=-\toom_kills=-\tpressure_some_ms=-\tpressure_full_ms=-\tnet_tx_timeouts=-\tnet_link_changes=-\tvm_used=0\tvm_max=3\tvm_room=no\tvm_mem_mb=8192\tbox_mem_mb=12288\tdisk_pct=37\tdisk_total_mb=976562\tdisk_used_mb=361328\tttl=1800\twork_own=-\twork_shared=-\tevict_at=70\tevict_to=60\tkeep_days=14\tpower=off\tidle_checks=-\tidle_count=-\tidle_last=-\treset_at=-\tkeepawake=none\twaiting=0\tgroup_swap_used_mb=-\tgroup_swap_max_mb=-\tzram_used_mb=-\tzram_peak_mb=-\tgpus=0$"
     },
     {
       "name": "pod report: a work area that is a file system of its own, on another disk than the system, shows the levels in force",
@@ -4675,6 +4696,233 @@
       },
       "exit": 125,
       "stderr": "boxd-pod: view keys are set but the login key is hidden; add ExposeAuthInfo yes to the build sshd"
+    },
+    {
+      "name": "--gpu: a new container box gets the card through the CDI device and the gpu label",
+      "command": "pod run boxd-2889387319 --gpu -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "env": {
+        "BOXD_CDI_DIRS": "/work/cdi"
+      },
+      "work_files": {
+        "cdi/nvidia.yaml": "---\ncdiVersion: 0.8.0\nkind: nvidia.com/gpu\ndevices:\n    - name: \"0\"\n      containerEdits:\n        deviceNodes:\n            - path: /dev/nvidia0\n    - name: GPU-3b6c61de-d0e3-783d-2ccf-b98fb0ff4026\n      containerEdits:\n        deviceNodes:\n            - path: /dev/nvidia0\n    - name: all\n      containerEdits:\n        deviceNodes:\n            - path: /dev/nvidia0\ncontainerEdits:\n  env:\n    - NVIDIA_CTK_LIBCUDA_DIR=/usr/lib\n"
+      },
+      "containers": {},
+      "exec_exit": 0,
+      "exit": 0,
+      "podman_calls": [
+        "^run -d --init --name pod-boxd-2889387319 --hostname boxd-2889387319 --label boxd\\.box=boxd-2889387319 --device nvidia\\.com/gpu=all --label boxd\\.gpu=1 -v /work/jobs/boxd-2889387319:/job .*docker.io/library/debian:stable-slim sleep infinity$",
+        "^exec -i -e BOXD_CALL=[0-9a-z-]+ -w /job/src pod-boxd-2889387319 cargo test -p my crate$"
+      ]
+    },
+    {
+      "name": "without --gpu a new box gets no card, also when the host has one",
+      "command": "pod run boxd-2889387319 -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "env": {
+        "BOXD_CDI_DIRS": "/work/cdi"
+      },
+      "work_files": {
+        "cdi/nvidia.yaml": "---\ncdiVersion: 0.8.0\nkind: nvidia.com/gpu\ndevices:\n    - name: \"0\"\n"
+      },
+      "containers": {},
+      "exec_exit": 0,
+      "exit": 0,
+      "podman_calls": [
+        "^run -d --init "
+      ],
+      "podman_calls_absent": [
+        "nvidia",
+        "boxd\\.gpu"
+      ]
+    },
+    {
+      "name": "--gpu is sticky: a later call without it uses the same box, no new box",
+      "command": "pod run boxd-2889387319 -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "env": {
+        "BOXD_CDI_DIRS": "/work/cdi"
+      },
+      "containers": {
+        "pod-boxd-2889387319": {
+          "image": "docker.io/library/debian:stable-slim",
+          "state": "running",
+          "gpu": true
+        }
+      },
+      "exec_exit": 0,
+      "exit": 0,
+      "podman_calls": [
+        "^exec -i -e BOXD_CALL=[0-9a-z-]+ -w /job/src pod-boxd-2889387319 cargo test -p my crate$"
+      ],
+      "podman_calls_absent": [
+        "^run",
+        "^rm"
+      ]
+    },
+    {
+      "name": "--gpu is sticky through --recreate: the new box gets the card again",
+      "command": "pod run boxd-2889387319 --recreate -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "env": {
+        "BOXD_CDI_DIRS": "/work/cdi"
+      },
+      "work_files": {
+        "cdi/nvidia.yaml": "---\ncdiVersion: 0.8.0\nkind: nvidia.com/gpu\ndevices:\n    - name: \"0\"\n"
+      },
+      "containers": {
+        "pod-boxd-2889387319": {
+          "image": "docker.io/library/debian:stable-slim",
+          "state": "running",
+          "gpu": true
+        }
+      },
+      "exec_exit": 0,
+      "exit": 0,
+      "podman_calls": [
+        "^rm ",
+        "^run -d --init .*--device nvidia\\.com/gpu=all --label boxd\\.gpu=1 "
+      ]
+    },
+    {
+      "name": "--gpu on a box made without it is refused, box untouched",
+      "command": "pod run boxd-2889387319 --gpu -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "env": {
+        "BOXD_CDI_DIRS": "/work/cdi"
+      },
+      "work_files": {
+        "cdi/nvidia.yaml": "---\ncdiVersion: 0.8.0\nkind: nvidia.com/gpu\ndevices:\n    - name: \"0\"\n"
+      },
+      "containers": {
+        "pod-boxd-2889387319": {
+          "image": "docker.io/library/debian:stable-slim",
+          "state": "running"
+        }
+      },
+      "exit": 125,
+      "stderr": "boxd-pod: box boxd-2889387319 was made without --gpu, asked for --gpu; add --recreate",
+      "podman_calls_absent": [
+        "^rm",
+        "^run",
+        "^exec"
+      ]
+    },
+    {
+      "name": "--gpu --recreate replaces a box made without it",
+      "command": "pod run boxd-2889387319 --gpu --recreate -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "env": {
+        "BOXD_CDI_DIRS": "/work/cdi"
+      },
+      "work_files": {
+        "cdi/nvidia.yaml": "---\ncdiVersion: 0.8.0\nkind: nvidia.com/gpu\ndevices:\n    - name: \"0\"\n"
+      },
+      "containers": {
+        "pod-boxd-2889387319": {
+          "image": "docker.io/library/debian:stable-slim",
+          "state": "running"
+        }
+      },
+      "exec_exit": 0,
+      "exit": 0,
+      "podman_calls": [
+        "^rm ",
+        "^run -d --init .*--device nvidia\\.com/gpu=all --label boxd\\.gpu=1 "
+      ]
+    },
+    {
+      "name": "--gpu on a host with no card for boxes is refused before anything is made or removed",
+      "command": "pod run boxd-2889387319 --gpu --recreate -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "env": {
+        "BOXD_CDI_DIRS": "/work/cdi"
+      },
+      "containers": {
+        "pod-boxd-2889387319": {
+          "image": "docker.io/library/debian:stable-slim",
+          "state": "running"
+        }
+      },
+      "exit": 125,
+      "stderr": "boxd-pod: --gpu: this host has no graphics card for boxes (no CDI device nvidia.com/gpu; install the NVIDIA driver and nvidia-container-toolkit, then run boxd-setup)",
+      "podman_calls_absent": [
+        "^rm",
+        "^run",
+        "^exec"
+      ]
+    },
+    {
+      "name": "--gpu when the only specification is of another kind is refused: that file counts no card",
+      "command": "pod run boxd-2889387319 --gpu -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "env": {
+        "BOXD_CDI_DIRS": "/work/cdi"
+      },
+      "work_files": {
+        "cdi/other.yaml": "---\ncdiVersion: 0.8.0\nkind: vendor.example/gpu\ndevices:\n    - name: \"0\"\n    - name: all\n"
+      },
+      "containers": {},
+      "exit": 125,
+      "stderr": "boxd-pod: --gpu: this host has no graphics card for boxes (no CDI device nvidia.com/gpu; install the NVIDIA driver and nvidia-container-toolkit, then run boxd-setup)",
+      "podman_calls_absent": [
+        "^run",
+        "^exec"
+      ]
+    },
+    {
+      "name": "--gpu with --vm is refused",
+      "command": "pod run boxd-2889387319 --vm --gpu -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "env": {
+        "BOXD_CDI_DIRS": "/work/cdi"
+      },
+      "work_files": {
+        "cdi/nvidia.yaml": "---\ncdiVersion: 0.8.0\nkind: nvidia.com/gpu\ndevices:\n    - name: \"0\"\n"
+      },
+      "containers": {},
+      "exit": 125,
+      "stderr": "boxd-pod: --gpu is only for container boxes",
+      "podman_calls_absent": [
+        "^run",
+        "^exec"
+      ],
+      "msb_calls_absent": [
+        "^create",
+        "^exec"
+      ]
+    },
+    {
+      "name": "a container box made with --gpu and stopped: a call with no flags gets the card and the label again",
+      "command": "pod run boxd-2889387319  -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "env": {
+        "BOXD_CDI_DIRS": "/work/cdi"
+      },
+      "work_files": {
+        "cdi/nvidia.yaml": "---\ncdiVersion: 0.8.0\nkind: nvidia.com/gpu\ndevices:\n    - name: \"0\"\n"
+      },
+      "containers": {},
+      "job_files": {
+        ".kind": "engine=container\ngpu=1\n"
+      },
+      "exec_exit": 0,
+      "exit": 0,
+      "podman_calls": [
+        "^run -d --init --name pod-boxd-2889387319 .*--device nvidia.com/gpu=all --label boxd.gpu=1 "
+      ],
+      "files_match": {
+        "/work/jobs/boxd-2889387319/.kind": "^engine=container[[:space:]]gpu=1$"
+      }
+    },
+    {
+      "name": "--gpu on a folder whose record has no --gpu is refused as if the box stood",
+      "command": "pod run boxd-2889387319 --gpu -- Y2FyZ28AdGVzdAAtcABteSBjcmF0ZQ==",
+      "env": {
+        "BOXD_CDI_DIRS": "/work/cdi"
+      },
+      "work_files": {
+        "cdi/nvidia.yaml": "---\ncdiVersion: 0.8.0\nkind: nvidia.com/gpu\ndevices:\n    - name: \"0\"\n"
+      },
+      "containers": {},
+      "job_files": {
+        ".kind": "engine=container\n"
+      },
+      "exit": 125,
+      "stderr": "boxd-pod: box boxd-2889387319 was made without --gpu, asked for --gpu; add --recreate",
+      "podman_calls_absent": [
+        "^run"
+      ]
     },
     {
       "name": "--kvm: a new container box gets the device and the kvm label",
@@ -5311,7 +5559,7 @@
         "memory.max": "10737418240\n",
         "memory.stat": "anon 0\nshmem 0\n"
       },
-      "stdout_re": "\tvm_fit_mb=2048\tbox_room=no\tbox_fit_mb=2048\tbox_reserve_mb=4096\twaiting=0$"
+      "stdout_re": "\tvm_fit_mb=2048\tbox_room=no\tbox_fit_mb=2048\tbox_reserve_mb=4096\twaiting=0\tgpus=0$"
     },
     {
       "name": "pod status: room for another busy box says how many megabytes fit",
@@ -5327,7 +5575,7 @@
         "memory.max": "15032385536\n",
         "memory.stat": "anon 0\nshmem 0\n"
       },
-      "stdout_re": "\tbox_room=yes\tbox_fit_mb=6144\tbox_reserve_mb=4096\twaiting=0$"
+      "stdout_re": "\tbox_room=yes\tbox_fit_mb=6144\tbox_reserve_mb=4096\twaiting=0\tgpus=0$"
     },
     {
       "name": "pod status: with the rule off the host says yes and no figure, and the reserve 0",
@@ -5346,7 +5594,7 @@
       "env": {
         "BOXD_BOX_RESERVE": "0"
       },
-      "stdout_re": "\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=0\twaiting=0$"
+      "stdout_re": "\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=0\twaiting=0\tgpus=0$"
     },
     {
       "name": "pod status: a host that cannot measure its memory says yes and no figure",
@@ -5358,7 +5606,7 @@
           "state": "running"
         }
       },
-      "stdout_re": "\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096\twaiting=0$"
+      "stdout_re": "\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096\twaiting=0\tgpus=0$"
     },
     {
       "name": "size from the past need: 1638 MB gives small",
@@ -6565,6 +6813,90 @@
       "refusal": [
         "tower: image other missing"
       ]
+    },
+    {
+      "name": "--gpu: only the host that reports a card is chosen, although the other has the same room",
+      "request": {
+        "vm": false,
+        "gpu": true
+      },
+      "hosts": [
+        {
+          "name": "tower",
+          "state": "awake",
+          "status": "version=0.4.79\tengines=container,vm\tcpus=16\tload1=0.42\tvm_used=1\tvm_max=3\tvm_room=yes\tboxes=4\tdisk_pct=37\tmem_free_mb=21000\timages=toolbox\tgpus=0"
+        },
+        {
+          "name": "laptop",
+          "state": "awake",
+          "status": "version=0.4.79\tengines=container,vm\tcpus=16\tload1=0.42\tvm_used=1\tvm_max=3\tvm_room=yes\tboxes=4\tdisk_pct=37\tmem_free_mb=21000\timages=toolbox\tgpus=1"
+        }
+      ],
+      "chosen": "laptop",
+      "reason": "overflow"
+    },
+    {
+      "name": "--gpu: a server that prints no gpus word counts as no card, and no host with a card is a refusal that waiting cannot end",
+      "request": {
+        "vm": false,
+        "gpu": true
+      },
+      "hosts": [
+        {
+          "name": "tower",
+          "state": "awake",
+          "status": "version=0.4.79\tengines=container,vm\tcpus=16\tload1=0.42\tvm_used=1\tvm_max=3\tvm_room=yes\tboxes=4\tdisk_pct=37\tmem_free_mb=21000\timages=toolbox"
+        },
+        {
+          "name": "laptop",
+          "state": "awake",
+          "status": "version=0.4.79\tengines=container,vm\tcpus=16\tload1=0.42\tvm_used=1\tvm_max=3\tvm_room=yes\tboxes=4\tdisk_pct=37\tmem_free_mb=21000\timages=toolbox\tgpus=0"
+        }
+      ],
+      "refusal": [
+        "tower: no graphics card",
+        "laptop: no graphics card"
+      ]
+    },
+    {
+      "name": "--gpu: a sleeping host comes after an awake host that reports a card",
+      "request": {
+        "vm": false,
+        "gpu": true
+      },
+      "hosts": [
+        {
+          "name": "tower",
+          "state": "asleep"
+        },
+        {
+          "name": "laptop",
+          "state": "awake",
+          "status": "version=0.4.79\tengines=container,vm\tcpus=16\tload1=0.42\tvm_used=1\tvm_max=3\tvm_room=yes\tboxes=4\tdisk_pct=37\tmem_free_mb=21000\timages=toolbox\tgpus=1"
+        }
+      ],
+      "chosen": "laptop",
+      "reason": "spread"
+    },
+    {
+      "name": "without --gpu the gpus word changes nothing",
+      "request": {
+        "vm": false
+      },
+      "hosts": [
+        {
+          "name": "tower",
+          "state": "awake",
+          "status": "version=0.4.79\tengines=container,vm\tcpus=16\tload1=0.42\tvm_used=1\tvm_max=3\tvm_room=yes\tboxes=4\tdisk_pct=37\tmem_free_mb=21000\timages=toolbox\tgpus=0"
+        },
+        {
+          "name": "laptop",
+          "state": "awake",
+          "status": "version=0.4.79\tengines=container,vm\tcpus=16\tload1=0.42\tvm_used=1\tvm_max=3\tvm_room=yes\tboxes=4\tdisk_pct=37\tmem_free_mb=21000\timages=toolbox\tgpus=1"
+        }
+      ],
+      "chosen": "tower",
+      "reason": "order"
     }
   ],
   "source": [

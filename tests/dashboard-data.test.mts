@@ -87,3 +87,14 @@ test("fleet(): what retention removed on a host in the last day is one alert, co
     `boxd removed 2 items on ${h.name} to keep it clean`, "images (disk 71 percent full), ws-1 (disk 71 percent full)"]]);
   assert.deepEqual(fleet(input()).alerts.filter((x: any) => x.kind === "evicted"), []);
 });
+
+test("fleet(): a host that reports graphics cards carries the count (from its report or its status); none, or a server that prints no word, leaves no field", async () => {
+  const { fleet } = await load();
+  const inp = input(), tower = inp.hosts[0] as HostInput, laptop = inp.hosts[1] as HostInput;
+  assert.ok((tower.report as string).includes("\tgpus=0"), "the recorded report ends with the word");
+  assert.ok(!("gpus" in fleet(inp).hosts[0]) && !("gpus" in fleet(inp).hosts[1]));
+  tower.report = (tower.report as string).replace("\tgpus=0", "\tgpus=2");
+  laptop.status = `${(laptop.status as string).trimEnd()}\tgpus=1\n`;
+  const hosts = fleet(inp).hosts;
+  assert.deepEqual([hosts[0].gpus, hosts[1].gpus], [2, 1]);
+});

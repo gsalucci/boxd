@@ -642,7 +642,7 @@ const choices = (s: Servers) => { try { return readFileSync(path.join(s.home, ".
 const closedPort = async () => { const s = net.createServer().listen(0, "127.0.0.1"); await once(s, "listening"); const p = (s.address() as net.AddressInfo).port; s.close(); await once(s, "close"); return p; };
 
 test("seam: the real server's status line is what the client's choice reads", () => {
-  assert.deepEqual(Object.keys(parseStatus(FULL)), ["version", "engines", "cpus", "load1", "vm_used", "vm_max", "vm_room", "boxes", "disk_pct", "mem_free_mb", "images", "mem_avail_mb", "group_mem_used_mb", "group_mem_max_mb", "vm_why", "vm_fit_mb", "box_room", "box_fit_mb", "box_reserve_mb", "waiting"]);
+  assert.deepEqual(Object.keys(parseStatus(FULL)), ["version", "engines", "cpus", "load1", "vm_used", "vm_max", "vm_room", "boxes", "disk_pct", "mem_free_mb", "images", "mem_avail_mb", "group_mem_used_mb", "group_mem_max_mb", "vm_why", "vm_fit_mb", "box_room", "box_fit_mb", "box_reserve_mb", "waiting", "gpus"]);
   assert.equal(parseStatus(FULL).vm_room, "no");
   assert.equal(parseStatus(FREE).vm_room, "yes");
   assert.equal(parseStatus(FREE).images, "toolbox");
@@ -742,8 +742,67 @@ test("box hosts --pick prints the one host a new box would get; exit 75 and a st
   assert.deepEqual([n.code, n.out, n.err], [75, "", `box hosts --pick: no build server has room: tower: ${why}; laptop: ${why}\n`], "(b)");
   const t = go(newRepo(), s, ["hosts", "--pik"]);
   assert.equal(t.code, 2);
-  assert.ok(t.err.startsWith("box hosts: unknown argument --pik; box hosts [--pick [--vm]]\n"), t.err);
+  assert.ok(t.err.startsWith("box hosts: unknown argument --pik; box hosts [--pick [--vm] [--gpu]]\n"), t.err);
   assert.equal(go(newRepo(), s, ["hosts", "--vm"]).code, 2, "(c) --vm alone is refused");
+});
+
+// --gpu (0.4.79): the host's NVIDIA graphics card for a container box. A host's `gpus` word is the number of cards it can give; a server
+// older than that prints no word, which counts as none.
+const withGpus = (s: string, n?: number) => s.split("\t").filter((w) => !/^gpus=/.test(w)).concat(n === undefined ? [] : [`gpus=${n}`]).join("\t");
+test("--gpu reaches the remote line after --kvm and is in the help", () => {
+  const r = runBox(["--no-sync", "--recreate", "--kvm", "--gpu", "--container", "true"]);
+  assert.deepEqual(r.calls, [`ssh boxd-test pod run ${box} --container --kvm --gpu --recreate -- ${b64("true")}`]);
+  const help = runBox(["--help"]).out;
+  assert.match(help, /--gpu /);
+  assert.match(help, /box hosts --pick \[--vm\] \[--gpu\]/);
+});
+
+test("--gpu choice: only a host that reports a card is chosen, the others say no graphics card and it is not a reason to wait; a call without --gpu ignores the word", () => {
+  const card = withGpus(realStatus(1, 20000), 1), none = withGpus(realStatus(1, 30000), 0), old = withGpus(realStatus(1, 30000));
+  const h = (name: string, status: string) => ({ name, state: "awake" as const, status });
+  const a = choose([h("tower", none), h("laptop", card)], { vm: false, gpu: true });
+  assert.deepEqual([a.host, a.room, a.notes], ["laptop", ["laptop"], ["tower=no graphics card", "laptop=awake"]], "(a) the host with a card, although the other has more free memory");
+  assert.deepEqual(choose([h("tower", old), h("laptop", card)], { vm: false, gpu: true }).room, ["laptop"], "(b) a status without the word counts as no card");
+  const n = choose([h("tower", none), h("laptop", old)], { vm: false, gpu: true });
+  assert.deepEqual([n.refusal, n.wait], [["tower: no graphics card", "laptop: no graphics card"], false], "(c) no host has a card: a reason per host, not waitable");
+  assert.equal(choose([h("tower", none), h("laptop", card)], { vm: false }).host, "tower", "(d) without gpu the word changes nothing: most free memory");
+  assert.equal(choose([h("tower", card), h("laptop", none)], { vm: false, gpu: true }).reason, "order", "(e) the first host has the card: reason order");
+  assert.deepEqual(choose([h("tower", card), h("laptop", withGpus(realStatus(1, 30000), 2))], { vm: false, gpu: true }).room, ["laptop", "tower"], "(f) two hosts with cards: free memory as before");
+  const asleep = { name: "tower", state: "asleep" as const };
+  const s1 = choose([asleep, h("laptop", card)], { vm: false, gpu: true });
+  assert.deepEqual([s1.host, s1.room], ["laptop", ["laptop", "tower"]], "(g) a sleeping host counts as room, after an awake host with a card");
+  assert.equal(choose([asleep, h("laptop", none)], { vm: false, gpu: true }).host, "tower", "(h) no awake host has a card: the sleeping one is chosen");
+  assert.equal(choose([asleep, h("laptop", card)], { vm: false }).host, "tower", "(i) without gpu a sleeping host still sorts first");
+  const busy = withGpus(realStatus(1, 30000), 1).replace(/load1=[^\t]+/, "load1=35").replace(/cpus=[^\t]+/, "cpus=12");
+  assert.deepEqual(choose([asleep, h("laptop", busy)], { vm: false, gpu: true }).room, ["laptop", "tower"], "(j) a busy host with a card still comes before a sleeping one");
+});
+
+test("--gpu through the command: placed on the host with the card and the flag goes to the server; no card anywhere is exit 75 with the reason, also with --wait", () => {
+  const s = servers([{ name: "tower", status: withGpus(realStatus(1, 30000), 0) }, { name: "laptop", status: withGpus(realStatus(1, 20000), 1) }]), rp = newRepo();
+  const r = go(rp, s, ["--gpu", "true"]);
+  assert.equal(r.code, 0, r.err);
+  assert.deepEqual(rest(r.calls), [sync(rp, "laptop"), runLine(rp, "laptop", "--gpu")]);
+  assert.equal(rp.placed(), "laptop\n");
+  assert.equal(choices(s)[0]?.[4], "overflow");
+  const bare = servers([{ name: "tower", status: withGpus(realStatus(1), 0) }, { name: "laptop", status: withGpus(realStatus(1)) }]);
+  for (const extra of [[], ["--wait"]]) {
+    const n = go(newRepo(), bare, [...extra, "--gpu", "true"]);
+    assert.equal(n.code, 75, n.err);
+    assert.equal(n.err, "box: no build server has room for this call\n  tower: no graphics card\n  laptop: no graphics card\n", `without a card there is nothing to wait for (${extra.join(" ")})`);
+    assert.deepEqual(rest(n.calls), []);
+  }
+});
+
+test("box hosts --pick --gpu prints the host with the card; --gpu without --pick is refused; none with a card is exit 75", () => {
+  const s = servers([{ name: "tower", status: withGpus(realStatus(1, 30000), 0) }, { name: "laptop", status: withGpus(realStatus(1, 20000), 1) }]);
+  const a = go(newRepo(), s, ["hosts", "--pick", "--gpu"]);
+  assert.deepEqual([a.code, a.out, a.err], [0, "laptop\toverflow\ttower=no graphics card,laptop=awake\n", ""]);
+  assert.equal(go(newRepo(), s, ["hosts", "--gpu", "--pick"]).out.split("\t")[0], "laptop", "either order");
+  const bad = go(newRepo(), s, ["hosts", "--gpu"]);
+  assert.equal(bad.code, 2);
+  assert.ok(bad.err.startsWith("box hosts: unknown argument --gpu; box hosts [--pick [--vm] [--gpu]]\n"), bad.err);
+  const n = go(newRepo(), servers([{ name: "tower", status: withGpus(realStatus(1), 0) }]), ["hosts", "--pick", "--gpu"]);
+  assert.deepEqual([n.code, n.out, n.err], [75, "", "box hosts --pick: no build server has room: tower: no graphics card\n"]);
 });
 
 test("spread through the command: a container goes to the host with more free memory, a machine to the host with the smaller cap, and the choices log names the reason", () => {
@@ -2933,8 +2992,8 @@ test("after a move that is refused at once (the new host lost the race) the plac
 
 // One host "test"; every shard box of the worktree is listed running (so the final stop reaches it). Files of the fake host (see shardsFake):
 // <box>.exit, <box>.log, <box>.until, <box>.seconds, refuse_at.
-function shardsFixture(n: number, base?: string) {
-  const s = servers([{ name: "test", status: FREE }]), rp = newRepo(), dir = path.join(s.fake, "shards"), b = base ?? rp.box;
+function shardsFixture(n: number, base?: string, status = FREE) {
+  const s = servers([{ name: "test", status }]), rp = newRepo(), dir = path.join(s.fake, "shards"), b = base ?? rp.box;
   mkdirSync(dir);
   hostFile(s, "test", "list", Array.from({ length: n }, (_, i) => LINE(`${b}-s${i + 1}`)).join(""));
   const set = (shard: number, ext: string, text: string) => writeFileSync(path.join(dir, `${b}-s${shard}.${ext}`), text);
@@ -3011,6 +3070,13 @@ test("box --shards: the usual options go to every shard's own call", () => {
   const ok = go(f.rp, f.s, ["--shards", "2", "--vm", "--size", "small", "--user", "--env", "SHARD_TOKEN", "--image", "rust:1.83", "--", "t", "{shard}"], { FAKE_SHARDS: f.dir, BOXD_RUNS_POLL_MS: "1", SHARD_TOKEN: "x" });
   assert.equal(ok.code, 0, ok.err);
   for (const i of [1, 2]) assert.ok(ok.calls.includes(`ssh -o SendEnv=BOXD_SECRET_SHARD_TOKEN boxd-test pod run ${f.b}-s${i} --image rust:1.83 --vm --size small --user --env SHARD_TOKEN --detach ${starts(ok.calls)[i - 1]?.id} -- ${b64("t", String(i))}`), ok.calls.join("\n"));
+});
+
+test("box --shards: --gpu goes to every shard's own call", () => {
+  const f = shardsFixture(2, undefined, withGpus(FREE, 1));
+  const ok = f.run(["--shards", "2", "--gpu", "--", "t", "{shard}"]);
+  assert.equal(ok.code, 0, ok.err);
+  for (const i of [1, 2]) assert.ok(ok.calls.includes(`ssh boxd-test pod run ${f.b}-s${i} --gpu --detach ${starts(ok.calls)[i - 1]?.id} -- ${b64("t", String(i))}`), ok.calls.join("\n"));
 });
 
 test("box --shards: a command with neither {shard} nor {shards} is refused with one line and an example, nothing is started", () => {

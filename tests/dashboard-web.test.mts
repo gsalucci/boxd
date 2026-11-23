@@ -34,7 +34,7 @@ test("every view renders from the fixture and shows a value only the fixture has
     ["box", "void-server-871234905", ["void-server-871234905", "no detached runs"]],
     ["calls", null, ["cargo clippy --workspace", "image not allowed", "30.0 s", "exit 75"]],
     ["images", null, ["toolbox.tar", "3.42 GiB", "localhost/toolbox:latest"]],
-    ["services", null, ["boxd-sshd", "0.2.0", "0.4.78"]],
+    ["services", null, ["boxd-sshd", "0.2.0", "0.4.79"]],
     ["alerts", null, ["Load on tower is above its 16 threads", "no room for another virtual machine (24100 MB", "homeserver does not answer"]],
     ["reset", null, ["boxd-reset work", "boxd-reset all", "tower"]],
   ];
@@ -78,7 +78,7 @@ test("the second poll replaces the data and keeps route, sorting, filters, view 
 test("the status bar reads version, time of the data and read only; a stale document says so", () => {
   const S = newState(doc());
   const c = chrome(S, NOW);
-  assert.match(c.status, /^boxd 0\.4\.78, data from \d\d:\d\d:\d\d, read only$/);
+  assert.match(c.status, /^boxd 0\.4\.79, data from \d\d:\d\d:\d\d, read only$/);
   S.fetchError = "the service did not answer";
   assert.match(chrome(S, NOW + 90000).status, /the service did not answer.*data from \d\d:\d\d:\d\d.*read only/);
 });
@@ -151,4 +151,14 @@ test("the page folder has no inline script, no inline event handler, no inline s
       assert.ok(!/\bon(?:click|input|change)=/.test(text), `${f}: an inline event handler`);
     }
   }
+});
+
+test("a host with graphics cards says so in its card; a host without says nothing", () => {
+  const d = doc();
+  assert.ok(!view(newState(d), "hosts").includes("graphics card"));
+  d.hosts[0].gpus = 1;
+  d.hosts[1].gpus = 2;
+  const html = view(newState(d), "hosts");
+  assert.ok(html.includes("1 graphics card ") || html.includes("1 graphics card<"), "one card, singular");
+  assert.ok(html.includes("2 graphics cards"));
 });

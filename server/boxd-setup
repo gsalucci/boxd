@@ -7,6 +7,8 @@
 #   virtual machine boxes: installs microsandbox-bin and adds the account to group kvm, when the host has /dev/kvm and
 #       processor virtualization; otherwise the host runs containers only
 #   --kvm container boxes: an access rule on /dev/kvm for the build account (setfacl, kept by a udev rule), same condition
+#   --gpu container boxes: the CDI specification of the NVIDIA card (nvidia-ctk), when the driver and nvidia-container-toolkit are there;
+#       installs neither
 #   compressed swap in memory (zramen on Void, zram-tools on Debian), when installed
 #   enables the runit services boxd, boxd-sshd and boxd-power (when installed); only boxd starts by itself, at boot and
 #       right away: the other two carry a `down` file and are started by boxd. On a systemd host (Debian) it enables the
@@ -159,6 +161,33 @@ if [ -e /dev/kvm ] && grep -qE '^flags.*\b(vmx|svm)\b' /proc/cpuinfo; then
     fi
 else
     say "virtual machine boxes: not available here (no /dev/kvm or no processor virtualization), containers only"
+fi
+
+# --gpu container boxes: the NVIDIA card reaches a box through a CDI (Container Device Interface) specification, which
+# nvidia-ctk writes. The build sshd start writes it again at every start (server/sv/boxd-sshd/run, same rule); this installs no driver:
+# the driver and nvidia-container-toolkit stay the administrator's step.
+if ! command -v nvidia-smi >/dev/null 2>&1 || ! nvidia-smi -L >/dev/null 2>&1; then
+    say "--gpu container boxes: not available here (no NVIDIA driver: nvidia-smi is missing or fails)"
+elif ! command -v nvidia-ctk >/dev/null 2>&1; then
+    say "--gpu container boxes: not available here (nvidia-container-toolkit is missing: no nvidia-ctk)"
+else
+    CDI_FILE=/var/run/cdi/nvidia.yaml
+    # An administrator's own file in /etc/cdi wins: two files with the same device names clash.
+    if grep -qs '^[[:space:]]*"\{0,1\}kind"\{0,1\}:[[:space:]]*"\{0,1\}nvidia\.com/gpu' /etc/cdi/*.yaml /etc/cdi/*.yml /etc/cdi/*.json 2>/dev/null; then
+        rm -f "$CDI_FILE"
+        ok=1
+    elif mkdir -p /var/run/cdi && nvidia-ctk cdi generate --output="$CDI_FILE" >/dev/null 2>&1; then
+        chmod 644 "$CDI_FILE"
+        ok=1
+    else
+        rm -f "$CDI_FILE"
+        ok=
+    fi
+    if [ -n "$ok" ]; then
+        say "--gpu container boxes: available ($(nvidia-smi -L | grep -c '^GPU ') graphics card(s) through CDI)"
+    else
+        say "--gpu container boxes: not available here (nvidia-ctk could not write the specification $CDI_FILE)"
+    fi
 fi
 
 if [ "$MANAGER" = systemd ]; then

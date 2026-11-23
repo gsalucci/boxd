@@ -11,6 +11,7 @@
 #   7. the same programs under systemd (BOXD_MANAGER=systemd, fake systemctl and journalctl): boxctl, the boxd run and
 #      finish files, the build sshd in the unit's own cgroup (BOXD_CGROUP), and a work area in directory mode
 #   8. the shipped unit files name the files the Debian layout installs
+#   9. the CDI specification of the card (for --gpu boxes): written at every start when the tools and a card exist, removed when not
 set -u
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 fails=0
@@ -48,7 +49,8 @@ echo "sshd \$*" >> "$T/calls"
 EOF
 chmod +x "$T/bin/"*
 export PATH="$T/bin:$PATH" BOXD_CONF="$T/none.conf" SVDIR="$T/svdir" BOXD_KEEPAWAKE_LOCK="$T/lock" BOXD_LOGDIR="$T/log" FAKE_MOUNTED="$T/mounted" \
-    BOXD_POD_CLEAN="$T/clean" BOXD_SSHD="$T/bin/fake-sshd"
+    BOXD_POD_CLEAN="$T/clean" BOXD_SSHD="$T/bin/fake-sshd" BOXD_CDI_RUN_DIR="$T/cdi-run" BOXD_CDI_ADMIN_DIR="$T/cdi-admin" \
+    BOXD_NVIDIA_CTK="$T/no-ctk" BOXD_NVIDIA_SMI="$T/no-smi"   # never the real card tools or /etc/cdi
 export BOXD_MANAGER=runit   # the host running this test may use systemd
 unset BOXD_POWER BOXD_USER BOXD_WORK BOXD_MEM_MAX BOXD_SWAP_MAX BOXD_PORT BOXD_TRUSTED_NET
 calls() { paste -sd'|' "$T/calls" 2>/dev/null; }
@@ -248,4 +250,48 @@ eq "boxd-sshd.service delegates its cgroup" 1 "$(grep -c '^Delegate=yes$' "$U2")
 eq "boxd-sshd.service has no install section (boxd starts it)" 0 "$(grep -c '^\[Install\]' "$U2")"
 eq "both units name the manager" 2 "$(grep -c '^Environment=BOXD_MANAGER=systemd$' "$U1" "$U2" | awk -F: '{s+=$2} END {print s}')"
 
+
+# 9. the card for --gpu boxes: the service start writes the CDI specification (fake nvidia-ctk and nvidia-smi, scratch folders)
+cat > "$T/bin/fake-ctk" <<EOF2
+#!/bin/sh
+echo "ctk \$*" >> "$T/calls"
+[ "\${FAKE_CTK_EXIT:-0}" = 0 ] || { echo "ctk chatter on stdout"; echo "ctk chatter on stderr" >&2; exit "\$FAKE_CTK_EXIT"; }
+printf 'kind: nvidia.com/gpu\ndevices:\n  - name: "0"\n' > "\${3#--output=}"
+echo "ctk chatter on stdout"
+EOF2
+cat > "$T/bin/fake-smi" <<EOF2
+#!/bin/sh
+echo "smi \$*" >> "$T/calls"
+exit \${FAKE_SMI_EXIT:-0}
+EOF2
+chmod +x "$T/bin/fake-ctk" "$T/bin/fake-smi"
+gpufresh() { fresh; mkdir -p "$T/cg/boxd/sshd"; rm -rf "$T/cdi-run" "$T/cdi-admin"; mkdir -p "$T/cdi-admin"
+    printf 'MemTotal:       1000000 kB\n' > "$T/meminfo"; : > "$T/swaps"
+    export BOXD_CGROOT="$T/cg" BOXD_MEMINFO="$T/meminfo" BOXD_SWAPS="$T/swaps" BOXD_NVIDIA_CTK="$T/bin/fake-ctk" BOXD_NVIDIA_SMI="$T/bin/fake-smi"
+    export BOXD_MANAGER=runit; unset BOXD_CGROUP BOXD_PROC_CGROUP FAKE_SMI_EXIT FAKE_CTK_EXIT; }
+CDI=$T/cdi-run/nvidia.yaml
+gpufresh; out=$(sh "$SV/boxd-sshd/run" 2>&1)
+eq "gpu: with the tools and a card the specification is written" "kind: nvidia.com/gpu" "$(head -n 1 "$CDI" 2>/dev/null)"
+eq "gpu: it asks for the file by --output, and the chatter of the tool is not in the service log" "ctk cdi generate --output=$CDI|0" "$(calls | tr '|' '\n' | grep '^ctk'|paste -sd'|')|$(grep -c 'chatter' <<<"$out")"
+eq "gpu: the sshd still starts" 1 "$(calls | tr '|' '\n' | grep -c '^sshd')"
+FAKE_SMI_EXIT=1 sh "$SV/boxd-sshd/run" >/dev/null 2>&1
+eq "gpu: nvidia-smi -L failing removes the file (a card that was taken out is not announced)" no "$([ -e "$CDI" ] && echo yes || echo no)"
+: > "$T/calls"; sh "$SV/boxd-sshd/run" >/dev/null 2>&1
+eq "gpu: the card back, the file is written again" yes "$([ -e "$CDI" ] && echo yes || echo no)"
+printf 'kind: "nvidia.com/gpu"\ndevices:\n  - name: "0"\n' > "$T/cdi-admin/mine.yaml"; : > "$T/calls"; sh "$SV/boxd-sshd/run" >/dev/null 2>&1
+eq "gpu: a file of the administrator in /etc/cdi means no generation" 0 "$(calls | grep -c '^ctk')"
+eq "gpu: and our own file, which would clash with it, is removed" no "$([ -e "$CDI" ] && echo yes || echo no)"
+gpufresh; printf 'kind: vendor.example/gpu\n' > "$T/cdi-admin/other.yaml"; sh "$SV/boxd-sshd/run" >/dev/null 2>&1
+eq "gpu: an administrator's file of another kind does not stop the generation" yes "$([ -e "$CDI" ] && echo yes || echo no)"
+gpufresh; export BOXD_NVIDIA_CTK="$T/bin/no-such-ctk"; out=$(sh "$SV/boxd-sshd/run" 2>&1)
+eq "gpu: nvidia-ctk missing does nothing, and the sshd starts" "no 1 0" "$([ -e "$CDI" ] && echo yes || echo no) $(calls | tr '|' '\n' | grep -c '^sshd') $(grep -c . <<<"$(grep -i 'cdi\|nvidia' <<<"$out")")"
+gpufresh; export BOXD_NVIDIA_SMI="$T/bin/no-such-smi"; sh "$SV/boxd-sshd/run" >/dev/null 2>&1
+eq "gpu: nvidia-smi missing does nothing, and the sshd starts" "no 1" "$([ -e "$CDI" ] && echo yes || echo no) $(calls | tr '|' '\n' | grep -c '^sshd')"
+gpufresh; mkdir -p "$T/cdi-run"; echo old > "$CDI"; export BOXD_NVIDIA_SMI="$T/bin/no-such-smi"; sh "$SV/boxd-sshd/run" >/dev/null 2>&1
+eq "gpu: the tools gone (driver removed) takes the old file away" no "$([ -e "$CDI" ] && echo yes || echo no)"
+gpufresh; FAKE_CTK_EXIT=3 sh "$SV/boxd-sshd/run" >/dev/null 2>&1
+eq "gpu: a failing generation leaves no file, and the sshd starts" "no 1" "$([ -e "$CDI" ] && echo yes || echo no) $(calls | tr '|' '\n' | grep -c '^sshd')"
+gpufresh; echo "no" > "$T/blocker"; BOXD_CDI_RUN_DIR="$T/blocker/sub" sh "$SV/boxd-sshd/run" >/dev/null 2>&1
+eq "gpu: a folder that cannot be made does not stop the service" 1 "$(calls | tr '|' '\n' | grep -c '^sshd')"
+unset BOXD_CGROOT BOXD_MEMINFO BOXD_SWAPS
 [ "$fails" -eq 0 ] && echo "ALL OK" || { echo "$fails FAILED"; exit 1; }

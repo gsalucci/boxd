@@ -22,7 +22,7 @@ trap 'exec 3>&-; while left; do read -r -t 0.05 <>"$T/poll"; done; rm -rf "$T"' 
 mkdir -p "$T/bin" "$T/vmbin"
 cat > "$T/bin/podman" <<'FAKE'
 #!/bin/sh
-# State: one file per container, "<image> <state> [user] [kvm]" (made with --user, with --kvm). Log: one line per call.
+# State: one file per container, "<image> <state> [user] [kvm] [gpu]" (made with --user, with --kvm, with --gpu). Log: one line per call.
 printf "%s\n" "$*" >> "$FAKE_LOG"   # printf: the cleanup script holds a backslash-zero that the shell's echo would turn into a NUL
 block() { exec 5<>"$FAKE_EV"; echo "$1" >&5; read -r _ <"$FAKE_REL"; }
 last() { for a; do n=$a; done; }
@@ -33,14 +33,14 @@ case $1 in
         read -r img st u < "$FAKE_STATE/$n"
         # the id the container was made from ({{.Image}}): kept at run; a box the test wrote by hand has the tag's id now (never stale)
         cid=$(cat "$FAKE_STATE/../cid/$n" 2>/dev/null || cat "$FAKE_IMAGES/$(echo "$img" | tr / _)" 2>/dev/null); cid=${cid:-noid}
-        l=; case " $u " in *" user "*) l=" boxd.user:1" ;; esac; case " $u " in *" kvm "*) l="$l boxd.kvm:1" ;; esac
+        l=; case " $u " in *" user "*) l=" boxd.user:1" ;; esac; case " $u " in *" kvm "*) l="$l boxd.kvm:1" ;; esac; case " $u " in *" gpu "*) l="$l boxd.gpu:1" ;; esac
         case "$*" in   # pod report asks for the init process id too (FAKE_CPID: the id of the running container's init process)
             *State.Pid*) echo "${FAKE_CPID:-0} map[boxd.box:x$l]" ;;
             *"{{.Image}} "*) echo "$cid $img $st map[boxd.box:x$l]" ;;
             *) echo "$img $st map[boxd.box:x$l]" ;;
         esac ;;
     run)
-        u=; while [ $# -gt 0 ]; do case $1 in --name) name=$2 ;; boxd.user=1) u="$u user" ;; boxd.kvm=1) u="$u kvm" ;; sleep) break ;; esac; img=$1; shift; done
+        u=; while [ $# -gt 0 ]; do case $1 in --name) name=$2 ;; boxd.user=1) u="$u user" ;; boxd.kvm=1) u="$u kvm" ;; boxd.gpu=1) u="$u gpu" ;; sleep) break ;; esac; img=$1; shift; done
         if mv "$FAKE_BLOCK" "$FAKE_BLOCK.used" 2>/dev/null; then : > "$FAKE_STATE/.creating"; block run-blocked; rm -f "$FAKE_STATE/.creating"; fi
         mkdir -p "$FAKE_STATE/../cid"; cat "$FAKE_IMAGES/$(echo "$img" | tr / _)" > "$FAKE_STATE/../cid/$name" 2>/dev/null
         echo "$img running${u:+ $u}" > "$FAKE_STATE/$name" ;;
@@ -216,7 +216,7 @@ setup() {
     W=$T/e/work
     export BOXD_WORK=$W FAKE_STATE=$T/e/state FAKE_LOG=$T/e/podman.log FAKE_RSYNC=$T/e/rsync FAKE_KEEP=$T/e/keep \
         FAKE_GIT=$T/e/git FAKE_OVERLAP=$T/e/overlap FAKE_EV=$T/e/ev FAKE_REL=$T/e/rel FAKE_BLOCK=$T/e/block \
-        BOXD_PROC=$T/e/proc BOXD_KVM=$T/e/kvm   # absent unless a case makes it: the host's own /dev/kvm never leaks into a case
+        BOXD_PROC=$T/e/proc BOXD_KVM=$T/e/kvm BOXD_CDI_DIRS=$T/e/cdi   # absent unless a case makes it: the host's own /dev/kvm never leaks into a case, and no CDI folder either
     mkdir -p "$T/e/imgs" "$T/e/archives" "$T/e/vmstate" "$T/e/vmimgs"
     export FAKE_IMAGES=$T/e/imgs BOXD_IMAGES_DIR=$T/e/archives FAKE_VM_STATE=$T/e/vmstate FAKE_VM_IMAGES=$T/e/vmimgs \
         FAKE_MSB_LOG=$T/e/msb.log FAKE_MSB_ENV=$T/e/msb.env FAKE_VM_BLOCK=$T/e/vmblock BOXD_POD_CLEAN=$T/e/clean \
@@ -270,7 +270,7 @@ for ((i = 0; i < n; i++)); do
     jq -j '.stdin // ""' <<<"$c" > "$STDIN"   # standard input of the call (box image push sends the archive)
     j() { jq -r "$1" <<<"$c"; }   # also used by calls
     name=$(j .name)
-    while IFS=' ' read -r cn img st u; do [ -n "$cn" ] && echo "$img $st $u" > "$FAKE_STATE/$cn"; done < <(j '.containers // {} | to_entries[] | "\(.key) \(.value.image) \(.value.state) \(if .value.user then "user" else "" end) \(if .value.kvm then "kvm" else "" end)"')
+    while IFS=' ' read -r cn img st u; do [ -n "$cn" ] && echo "$img $st $u" > "$FAKE_STATE/$cn"; done < <(j '.containers // {} | to_entries[] | "\(.key) \(.value.image) \(.value.state) \(if .value.user then "user" else "" end) \(if .value.kvm then "kvm" else "" end) \(if .value.gpu then "gpu" else "" end)"')
     while IFS=' ' read -r cn img st; do [ -n "$cn" ] && echo "$img $st" > "$FAKE_VM_STATE/$cn"; done < <(j '.sandboxes // {} | to_entries[] | "\(.key) \(.value.image) \(.value.state)"')
     export FAKE_EXEC_EXIT=$(j '.exec_exit // 0') FAKE_STARTER_EXIT=$(j '.starter_exit // 0')
     [ "$(j '.ssh_tty // ""')" = "" ] || export SSH_TTY=$(j .ssh_tty)
@@ -355,6 +355,26 @@ pod "pod report"; eq "archive: pod report shows what the machine store was loade
 # the build of a box's own Containerfile hands over its archive with the forced load, once
 setup; mkdir -p "$W/jobs/$box/src"; printf 'FROM scratch\nRUN v1\n' > "$W/jobs/$box/src/Containerfile"
 pod "pod run $box --image-file Containerfile --vm -- $B64"; eq "image-file vm: one load for a build handed over" 1 "$(loads)"
+
+# gpus: the cards the CDI specifications describe, in pod status and in the host line of pod report (a word at the end of each line)
+gword() { tr '\t' '\n' < "$T/e/out" | grep '^gpus='; }
+setup; mkdir -p "$T/e/cdi"
+pod "pod status"; eq "gpus: no specification, no card" "0 gpus=0" "$rc $(gword)"
+pod "pod report"; eq "gpus: the host line of pod report says 0 as well" "gpus=0" "$(head -n 1 "$T/e/out" | tr '\t' '\n' | grep '^gpus=')"
+printf -- '---\ncdiVersion: 0.8.0\nkind: nvidia.com/gpu\ndevices:\n    - name: "0"\n      containerEdits:\n        deviceNodes:\n            - path: /dev/nvidia0\n    - name: GPU-3b6c61de-d0e3-783d-2ccf-b98fb0ff4026\n    - name: all\n' > "$T/e/cdi/nvidia.yaml"
+pod "pod status"; eq "gpus: one card (devices 0, GPU-<uuid> and all) counts 1" "gpus=1" "$(gword)"
+pod "pod report"; eq "gpus: and the host line of pod report says 1" "gpus=1" "$(head -n 1 "$T/e/out" | tr '\t' '\n' | grep '^gpus=')"
+printf -- 'kind: nvidia.com/gpu\ndevices:\n  - name: 1\n  - name: "2"\n  - name: all\n' > "$T/e/cdi/second.yml"
+printf '{"cdiVersion":"0.8.0",\n"kind": "nvidia.com/gpu",\n"devices": [\n{ "name": "7" },\n{\n "name": "all"\n}\n]}\n' > "$T/e/cdi/third.json"
+pod "pod status"; eq "gpus: cards add up over .yaml, .yml and .json files, quoted or plain names" "gpus=4" "$(gword)"
+rm -f "$T/e/cdi/second.yml" "$T/e/cdi/third.json"
+printf -- 'kind: vendor.example/gpu\ndevices:\n  - name: "0"\n' > "$T/e/cdi/other.yaml"; rm -f "$T/e/cdi/nvidia.yaml"
+pod "pod status"; eq "gpus: a specification of another kind counts 0" "gpus=0" "$(gword)"
+printf -- 'kind: nvidia.com/gpu\ndevices:\n  - name: "0"\n' > "$T/e/cdi/nvidia.txt"; : > "$T/e/cdi/empty.yaml"
+pod "pod status"; eq "gpus: a file with another extension and an empty file count 0" "gpus=0" "$(gword)"
+BOXD_CDI_DIRS="$T/e/none $T/e/cdi" pod "pod status"; eq "gpus: a folder that does not exist is no error" "0 gpus=0" "$rc $(gword)"
+mkdir -p "$T/e/cdi2"; printf -- 'kind: nvidia.com/gpu\ndevices:\n  - name: "0"\n' > "$T/e/cdi2/a.yaml"
+BOXD_CDI_DIRS="$T/e/cdi $T/e/cdi2" pod "pod status"; eq "gpus: BOXD_CDI_DIRS lists the folders, a card in the second counts" "gpus=1" "$(gword)"
 
 # More refusals the cases do not list
 setup
@@ -837,20 +857,20 @@ eq "pod status: free memory is never below zero" mem_free_mb=0 "$(tr '\t' '\n' <
 # The three new words have the meaning and the code of the host line of pod report; mem_free_mb stays as it was.
 cg8; printf 'MemTotal: 32768000 kB\nMemAvailable: 9216000 kB\nSwapTotal: 0 kB\nSwapFree: 0 kB\n' > "$W/meminfo"; echo $((3 * 1048576)) > "$BOXD_CGROOT/boxd/memory.swap.current"
 CASE_ENV=(BOXD_MEMINFO="$W/meminfo"); pod "pod status"
-eq "pod status: after images come the host's available memory and the group's used and maximum" $'mem_avail_mb=9000\tgroup_mem_used_mb=3\tgroup_mem_max_mb=8192' "$(awk -F'\t' '{ print $(NF-8) "\t" $(NF-7) "\t" $(NF-6) }' "$T/e/out")"
+eq "pod status: after images come the host's available memory and the group's used and maximum" $'mem_avail_mb=9000\tgroup_mem_used_mb=3\tgroup_mem_max_mb=8192' "$(awk -F'\t' '{ print $(NF-9) "\t" $(NF-8) "\t" $(NF-7) }' "$T/e/out")"
 eq "pod status: mem_free_mb stays the group's accounting" mem_free_mb=8189 "$(tr '\t' '\n' < "$T/e/out" | grep '^mem_free_mb=')"
 pod "pod report"; eq "pod report: its host line has the same three figures as pod status" $'mem_avail_mb=9000\tgroup_mem_max_mb=8192\tgroup_mem_used_mb=3' "$(head -1 "$T/e/out" | tr '\t' '\n' | grep -E '^(mem_avail_mb|group_mem_max_mb|group_mem_used_mb)=' | paste -sd'\t')"
-# The host line has the group's swap before its last two words: memory.swap.current and memory.swap.max in megabytes, a dash when unreadable (and for `max`).
-hostend() { head -n 1 "$T/e/out" | awk -F'\t' '{ print $(NF-3) "\t" $(NF-2) }' | tr '\t' ' '; }
+# The host line has the group's swap before its last three words: memory.swap.current and memory.swap.max in megabytes, a dash when unreadable (and for `max`).
+hostend() { head -n 1 "$T/e/out" | awk -F'\t' '{ print $(NF-4) "\t" $(NF-3) }' | tr '\t' ' '; }
 echo 8534360064 > "$BOXD_CGROOT/boxd/memory.swap.current"; echo 8589934592 > "$BOXD_CGROOT/boxd/memory.swap.max"; pod "pod report"
 eq "pod report: the host line has the group's swap used and maximum before the zram words" "group_swap_used_mb=8139 group_swap_max_mb=8192" "$(hostend)"
 echo max > "$BOXD_CGROOT/boxd/memory.swap.max"; pod "pod report"; eq "pod report: swap maximum is a dash for max" "group_swap_used_mb=8139 group_swap_max_mb=-" "$(hostend)"
 rm -f "$BOXD_CGROOT/boxd/memory.swap.current" "$BOXD_CGROOT/boxd/memory.swap.max"; pod "pod report"; eq "pod report: both swap figures are dashes when unreadable" "group_swap_used_mb=- group_swap_max_mb=-" "$(hostend)"
 # Then the memory zram really holds: mm_stat field 3 (now) and field 5 (peak since boot), summed over the devices, megabytes; dashes without a device.
 mm() { mkdir -p "$BOXD_ZRAM_SYS/$1"; echo "$2" > "$BOXD_ZRAM_SYS/$1/mm_stat"; }
-hostzram() { head -n 1 "$T/e/out" | awk -F'\t' '{ print $(NF-1) "\t" $NF }' | tr '\t' ' '; }
+hostzram() { head -n 1 "$T/e/out" | awk -F'\t' '{ print $(NF-2) "\t" $(NF-1) }' | tr '\t' ' '; }
 mm zram0 "4294967296 1048576 3145728 0 5242880 0 0 0"; mm zram1 "100 100 2097152 0 3145728 0 0 0"; mkdir -p "$BOXD_ZRAM_SYS/sda"; echo "1 1 99999999999 0 99999999999 0 0 0" > "$BOXD_ZRAM_SYS/sda/mm_stat"; pod "pod report"
-eq "pod report: the host line ends with the zram memory used and peak, summed over the devices" "zram_used_mb=5 zram_peak_mb=8" "$(hostzram)"
+eq "pod report: the host line has the zram memory used and peak (before gpus), summed over the devices" "zram_used_mb=5 zram_peak_mb=8" "$(hostzram)"
 rm -rf "$BOXD_ZRAM_SYS"; pod "pod report"; eq "pod report: both zram figures are dashes without a device" "zram_used_mb=- zram_peak_mb=-" "$(hostzram)"
 CASE_ENV=()
 
@@ -881,10 +901,10 @@ eq "container memory counts in the commitment" "75 boxd-pod: no room for another
 rm -f "$FAKE_STATE/pod-x"; pod "pod run b2 --vm --size small -- $B64"; eq "the same machines without container memory are admitted" 0 "$rc"
 cg8; ctrcg 2048 0; pod "pod run b1 --vm --size small -- $B64"; eq "container memory alone does not refuse when everything fits" 0 "$rc"
 cg8; ctrcg 1024 0; pod "pod status"; eq "pod status: no room for a large machine once a container box uses memory" vm_room=no "$(tr '\t' '\n' < "$T/e/out" | grep '^vm_room=')"
-eq "pod status: vm_why comes before vm_fit_mb and the three words of container boxes, and says why no machine fits" "vm_why=0 MB of running machines + 1024 MB used by container boxes + 8192 MB asked > 8192 MB, 100% of the 8192 MB cap" "$(awk -F'\t' '{ print $(NF-5) }' "$T/e/out")"
+eq "pod status: vm_why comes before vm_fit_mb and the three words of container boxes, and says why no machine fits" "vm_why=0 MB of running machines + 1024 MB used by container boxes + 8192 MB asked > 8192 MB, 100% of the 8192 MB cap" "$(awk -F'\t' '{ print $(NF-6) }' "$T/e/out")"
 rm -f "$FAKE_STATE/pod-x"; pod "pod status"; eq "pod status: room for a large machine on an idle cap" vm_room=yes "$(tr '\t' '\n' < "$T/e/out" | grep '^vm_room=')"
-eq "pod status: vm_why is empty when a machine fits" vm_why= "$(awk -F'\t' '{ print $(NF-5) }' "$T/e/out")"
-eq "pod status: vm_fit_mb comes before the three words of container boxes, the whole cap on an idle host" vm_fit_mb=8192 "$(awk -F'\t' '{ print $(NF-4) }' "$T/e/out")"
+eq "pod status: vm_why is empty when a machine fits" vm_why= "$(awk -F'\t' '{ print $(NF-6) }' "$T/e/out")"
+eq "pod status: vm_fit_mb comes before the three words of container boxes, the whole cap on an idle host" vm_fit_mb=8192 "$(awk -F'\t' '{ print $(NF-5) }' "$T/e/out")"
 # vm_fit_mb: the largest machine `pod run` admits (the smaller of cap minus use and the commit share minus machines minus
 # containers); the seam test runs pod run itself, with a machine of just under, exactly and just over that size.
 fitword() { pod "pod status"; tr '\t' '\n' < "$T/e/out" | sed -n 's/^vm_fit_mb=//p'; }

@@ -69,6 +69,8 @@
 #  46. a running container box's processes all have /proc/<pid>/oom_score_adj 1000; with BOXD_VM_COMMIT set (settings changed for the
 #      scenario, put back after) to just fit the running machines and the asked size, the box's own gigabyte makes a small machine
 #      be refused with exit 75 and "<n> MB of running machines + <n> MB used by container boxes + 2048 MB asked > ..."
+#  47. a container box made with --gpu runs nvidia-smi -L with exit 0 and lists a card; a box made without it has no /dev/nvidiactl;
+#      skipped with a reason when pod status says gpus=0
 #  23. box ps lists a detached command that waits, with its working folder and command, on both engines; nothing changes
 #  28 to 36 (load management, need BOXD_TEST_HOST2, a second host set up with box setup; skipped with a reason without it):
 #  27. overflow: the first host is full, the next worktree's first vm call exits 0 on the second host, which its placement names
@@ -135,6 +137,7 @@ SCENARIOS=(
   "box forward: a port of a container box is reached on 127.0.0.1 here, the open channel keeps the box busy, a killed client leaves no relay and a free box; refusals, no ssh -L"
   "retention: a box folder unused past the limit is removed by the reaper with files of other users in it, the next call says so; pod drop removes box and folder"
   "container boxes: every process of a box has the out-of-memory score 1000, and a box's own memory counts in the commitment of machines (a machine is refused with the three numbers)"
+  "--gpu: a container box made with it sees the host's card (nvidia-smi -L lists one), a box made without it has no /dev/nvidiactl; skipped on a host that reports gpus=0"
 )
 
 if [ "${1:-}" = "--list" ]; then
@@ -1210,8 +1213,22 @@ s46() {
   podcmd "stop $box" >/dev/null 2>&1; wait "$hp" 2>/dev/null
 }
 
+# s47: --gpu hands the host's card to a container box through CDI (the Container Device Interface); needs a host with a card.
+s47() {
+  local wt out rc
+  case $(fieldof "$(podcmd status)" gpus) in
+    ''|0) echo "skip the host reports gpus=0 (or no gpus word): no card for boxes here"; return ;;
+  esac
+  wt=$(mkwt agent-gpu a=1)
+  out=$(med "$wt" --gpu nvidia-smi -L 2>&1); rc=$?
+  eq "a --gpu container box runs nvidia-smi -L with exit 0" 0 "$rc"
+  has "and it lists a card" "GPU 0:" "$out"
+  wt=$(mkwt agent-gpu-none a=1)
+  eq "a box without --gpu has no /dev/nvidiactl" absent "$(med "$wt" sh -c '[ -e /dev/nvidiactl ] && echo present || echo absent' 2>/dev/null | tail -1)"
+}
+
 # Scenario 22 resets /work, so it always runs last.
-pick=("$@"); [ ${#pick[@]} -gt 0 ] || pick=(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 22)
+pick=("$@"); [ ${#pick[@]} -gt 0 ] || pick=(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 22)
 for n in "${pick[@]}"; do
   printf '== %s. %s\n' "$n" "${SCENARIOS[$((n - 1))]}"
   "s$n"

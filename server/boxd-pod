@@ -20,9 +20,26 @@ CGROUP=${BOXD_CGROUP:-$CGROOT/boxd}
 PROC=${BOXD_PROC:-/proc}   # test hook, like BOXD_MEMINFO: where `pod report` finds a box's process and its cgroup
 ZRAM_SYS=${BOXD_ZRAM_SYS:-/sys/block}   # test hook: where `pod report` finds the zram devices (zram*/mm_stat)
 KVM=${BOXD_KVM:-/dev/kvm}   # test hook: the device a --kvm box gets
+CDI_DIRS=${BOXD_CDI_DIRS:-/etc/cdi /var/run/cdi}   # test hook: the folders of CDI specifications (the Container Device Interface) that tell which cards a --gpu box may get
+# The number of cards the CDI specifications describe: the devices of kind nvidia.com/gpu whose name is a plain number (a generated file
+# names one card `0`, `GPU-<uuid>` and `all`, and counts 1). No file, an unreadable file or no such kind: 0.
+gpu_count() {
+    local d f n=0 c
+    for d in $CDI_DIRS; do
+        while IFS= read -r f; do   # find, not a pattern: this script runs with set -f
+            [ -r "$f" ] || continue
+            c=$(awk '
+                /^[[:space:]]*"?kind"?:[[:space:]]*"?nvidia\.com\/gpu"?,?[[:space:]]*$/ { k = 1 }
+                /^[[:space:]]*(-[[:space:]]*)?\{?[[:space:]]*"?name"?:[[:space:]]*"?[0-9]+"?,?[[:space:]]*\}?,?[[:space:]]*$/ { c++ }
+                END { print k ? c + 0 : 0 }' "$f" 2>/dev/null) || c=0
+            n=$((n + ${c:-0}))
+        done < <(find -L "$d" -maxdepth 1 -type f \( -name '*.yaml' -o -name '*.yml' -o -name '*.json' \) 2>/dev/null)
+    done
+    echo "$n"
+}
 ROUTE=${BOXD_ROUTE:-/proc/net/route}   # test hooks: the routing table and the network interface folder `pod report` reads
 NETDIR=${BOXD_NET:-/sys/class/net}
-VERSION=0.4.78
+VERSION=0.4.79
 # Keys that may only read, one "<type> <key> [comment]" per line (view_only below); and the largest answer of pod calls and pod log.
 VIEW_KEYS=${BOXD_VIEW_KEYS:-/etc/boxd/view_keys}
 READ_MAX=${BOXD_READ_MAX:-1048576}
@@ -899,7 +916,7 @@ pod_status() {
     printf 'version=%s\tengines=%s\tcpus=%s\tload1=%s\tvm_used=%s\tvm_max=%s\tvm_room=%s\tboxes=%s\tdisk_pct=%s\tmem_free_mb=%s\timages=%s' \
         "$VERSION" "$eng" "$(nproc)" "$l1" "$used" "${vmax:-none}" "$room" "$(grep -c . <<<"$rows")" \
         "$(df --output=pcent "$WORK" | tail -1 | tr -dc 0-9)" "$mem" "$img"
-    printf '\tmem_avail_mb=%s\tgroup_mem_used_mb=%s\tgroup_mem_max_mb=%s\tvm_why=%s\tvm_fit_mb=%s\tbox_room=%s\tbox_fit_mb=%s\tbox_reserve_mb=%s\twaiting=%s\n' "${ma:--}" "$gcur" "$gmax" "$why" "$fit_mb" "$box_room" "$box_fit_mb" "$BOX_RESERVE" "$(queue_live | grep -c .)"
+    printf '\tmem_avail_mb=%s\tgroup_mem_used_mb=%s\tgroup_mem_max_mb=%s\tvm_why=%s\tvm_fit_mb=%s\tbox_room=%s\tbox_fit_mb=%s\tbox_reserve_mb=%s\twaiting=%s\tgpus=%s\n' "${ma:--}" "$gcur" "$gmax" "$why" "$fit_mb" "$box_room" "$box_fit_mb" "$BOX_RESERVE" "$(queue_live | grep -c .)" "$(gpu_count)"
 }
 
 # ---- The reading verbs for the dashboard: pod report, pod calls, pod log (docs/pod-contract.md). Read only like pod status:
@@ -1228,7 +1245,7 @@ pod_report() {
     { v=$(<"$CGROUP/memory.swap.max"); } 2>/dev/null && [[ $v =~ ^[0-9]+$ ]] && swm=$((v / 1048576))
     local zu zp   # the zram devices' real memory (field 3 of mm_stat: held now; field 5: peak since boot), whole host, megabytes
     read -r zu zp < <(find -L "$ZRAM_SYS" -maxdepth 2 -path "$ZRAM_SYS/zram*/mm_stat" -exec cat {} + 2>/dev/null | awk '{ u += $3; p += $5; n++ } END { if (n) printf "%d %d\n", u / 1048576, p / 1048576; else print "- -" }')
-    printf '\tgroup_swap_used_mb=%s\tgroup_swap_max_mb=%s\tzram_used_mb=%s\tzram_peak_mb=%s\n' "$swu" "$swm" "${zu:--}" "${zp:--}"
+    printf '\tgroup_swap_used_mb=%s\tgroup_swap_max_mb=%s\tzram_used_mb=%s\tzram_peak_mb=%s\tgpus=%s\n' "$swu" "$swm" "${zu:--}" "${zp:--}" "${S[gpus]:-0}"
     have_msb && vmrows=1
     rows=$(box_rows $vmrows) || exit 125   # a failed engine listing is no list (see pod_list)
     while IFS=$'\t' read -r box image state engine; do
@@ -1335,10 +1352,10 @@ image_stale_now() {
 }
 
 pod_run() {
-    local box=${1:-} image="" imgfile="" vm="" container="" queued="" user="" cuser="" kvm="" ckvm="" ulabels="" recreate="" snapshot="" run="" alive="" b64="" tty="" name J out rc
+    local box=${1:-} image="" imgfile="" vm="" container="" queued="" user="" cuser="" kvm="" ckvm="" gpu="" cgpu="" ulabels="" recreate="" snapshot="" run="" alive="" b64="" tty="" name J out rc
     local -a envs=()
     local size="" have="" lim="" asked="" pk pick chosen="" used_mb=0 cap_mb=0 max="" box_fit_mb box_why
-    local kengine="" kuser="" kkvm="" kimage="" gmine="" gother="" k v2 newid="" changed="" rebuilt="" full engine=container cid="" sc="" pc="" vc="" cimg="" cst="" vimg="" vst="" other mine cur st create="" start="" again="" n
+    local kengine="" kuser="" kkvm="" kgpu="" kimage="" gmine="" gother="" k v2 newid="" changed="" rebuilt="" full engine=container cid="" sc="" pc="" vc="" cimg="" cst="" vimg="" vst="" other mine cur st create="" start="" again="" n
     shift
     CALL_T0=${EPOCHREALTIME//[!0-9]/} CALL_BOX=$box CALL_ENGINE=container
     [[ $box =~ $BOX_RE ]] || die "bad box name"
@@ -1350,6 +1367,7 @@ pod_run() {
             --container) container=1; shift ;;
             --user) user=1; shift ;;
             --kvm) kvm=1; shift ;;
+            --gpu) gpu=1; shift ;;
             --size) [ $# -ge 2 ] || die "--size needs a value"
                 case $2 in small|medium|large|xlarge) size=$2 ;; *) die "bad size $2" ;; esac; shift 2 ;;
             --env) [ $# -ge 2 ] || die "--env needs a name"
@@ -1444,6 +1462,7 @@ pod_run() {
         pc=1 cimg=${out%% *} cst=${out#* } ulabels=${cst#* } cst=${cst%% *}
         [[ $ulabels == *boxd.user:1* ]] && cuser=1
         [[ $ulabels == *boxd.kvm:1* ]] && ckvm=1
+        [[ $ulabels == *boxd.gpu:1* ]] && cgpu=1
     fi
     if have_msb && out=$(vm_inspect "$name"); then vc=1 vimg=${out% *} vst=${out##* }; fi
     # A box that is gone (stopped, or removed by the idle time limit) while its folder stays: the folder's record (.kind, written at
@@ -1455,6 +1474,7 @@ pod_run() {
                 engine) case $v2 in vm|container) kengine=$v2 ;; esac ;;
                 user) [ "$v2" != 1 ] || kuser=1 ;;
                 kvm) [ "$v2" != 1 ] || kkvm=1 ;;
+                gpu) [ "$v2" != 1 ] || kgpu=1 ;;
                 image) kimage=$(norm_image "$v2") || kimage= ;;
             esac
         done <"$J/.kind"
@@ -1473,12 +1493,15 @@ pod_run() {
     # --user is sticky like the engine and the image: a box made with it keeps it, also through --recreate.
     # A machine has no label: its record is the file .vm-user in the box folder, next to .vm-size.
     if [ -n "$vm" ]; then cuser=; [ ! -e "$J/.vm-user" ] || cuser=1; fi
-    [ -z "$gmine" ] || [ -n "$vm" ] || { cuser=$kuser; ckvm=$kkvm; }   # a container has its labels only while it exists
+    [ -z "$gmine" ] || [ -n "$vm" ] || { cuser=$kuser; ckvm=$kkvm; cgpu=$kgpu; }   # a container has its labels only while it exists
     [ -z "$cuser" ] || user=1
     # --kvm is sticky the same way, and for container boxes only (a virtual machine box has no nested virtualization:
     # no /dev/kvm, no vmx or svm flag inside, checked on the tower 2026-11-14).
     [ -z "$vm" ] || [ -z "$kvm" ] || die "--kvm is only for container boxes"
     [ -n "$vm" ] || [ -z "$ckvm" ] || kvm=1
+    # --gpu is sticky the same way, for container boxes only.
+    [ -z "$vm" ] || [ -z "$gpu" ] || die "--gpu is only for container boxes"
+    [ -n "$vm" ] || [ -z "$cgpu" ] || gpu=1
     # The size of a virtual machine box is recorded at creation (large when there is no record: today's machine).
     [ -n "$vm" ] || [ -z "$size" ] || die "--size is only for virtual machine boxes"
     if [ -n "$vm" ]; then have=$(cat "$J/.vm-size" 2>/dev/null); have=${have:-large}; fi
@@ -1497,6 +1520,7 @@ pod_run() {
         [ -z "$mine" ] || [ "$cur" = "$image" ] || [ -n "$imgfile" ] || die "box $box runs $cur, asked for $image; add --recreate"
         [ -z "$mine$gmine" ] || [ -z "$user" ] || [ -n "$cuser" ] || die "box $box was made without --user, asked for --user; add --recreate"
         [ -z "$mine$gmine" ] || [ -z "$kvm" ] || [ -n "$ckvm" ] || die "box $box was made without --kvm, asked for --kvm; add --recreate"
+        [ -z "$mine$gmine" ] || [ -z "$gpu" ] || [ -n "$cgpu" ] || die "box $box was made without --gpu, asked for --gpu; add --recreate"
         [ -z "$mine" ] || [ -z "$size" ] || [ "$size" = "$have" ] || die "box $box is $have, asked for $size; add --recreate"
     fi
     asked=$size
@@ -1522,6 +1546,9 @@ pod_run() {
         # The kvm group passes the test above on the host but not inside a box: the account's own rule is what opens it there.
         ! command -v getfacl >/dev/null 2>&1 || getfacl -cp "$KVM" 2>/dev/null | grep -q "^user:$(id -un):rw" \
             || die "--kvm: $KVM has no access rule for $(id -un); run boxd-setup on this host"
+    fi
+    if [ -n "$create" ] && [ -n "$gpu" ]; then
+        [ "$(gpu_count)" -gt 0 ] || die "--gpu: this host has no graphics card for boxes (no CDI device nvidia.com/gpu; install the NVIDIA driver and nvidia-container-toolkit, then run boxd-setup)"
     fi
     if [ -n "$create" ]; then
         if [ -n "$imgfile" ] && [ -n "$vm" ] && { [ -n "$changed" ] || ! vmx image inspect "$image" </dev/null >/dev/null 2>&1; }; then
@@ -1614,6 +1641,9 @@ pod_run() {
         # --kvm: QEMU inside runs on KVM. The build account opens it through its own access rule on the device (boxd-setup):
         # rootless runc drops the kvm group inside, the user id stays.
         [ -z "$kvm" ] || uflags+=(--device "$KVM" --label boxd.kvm=1)
+        # --gpu: the card (compute, EGL, Vulkan) comes through the CDI specification the service start and boxd-setup write.
+        # shortcut: every --gpu box sees the whole card and its memory, no admission or limit; upgrade when two jobs on the card collide.
+        [ -z "$gpu" ] || uflags+=(--device nvidia.com/gpu=all --label boxd.gpu=1)
         # --oom-score-adj 1000: the kernel's badness is a process's memory plus score/1000 of the cgroup's limit, so 1000 adds the
         # whole cap and when the build cgroup is full the grower in a container dies before any machine (BOXD_LIMITS may override).
         # shortcut: boxes made before 0.4.9 keep their old score until recreated (--recreate, or retention removing them), when that
@@ -1648,7 +1678,7 @@ pod_run() {
     # made by an older server that has no record yet. The image only when it is not the default or the folder's own build.
     if [ -n "$create" ] || [ ! -e "$J/.kind" ]; then
         {
-            echo "engine=$engine"; [ -z "$user" ] || echo user=1; [ -z "$kvm" ] || echo kvm=1
+            echo "engine=$engine"; [ -z "$user" ] || echo user=1; [ -z "$kvm" ] || echo kvm=1; [ -z "$gpu" ] || echo gpu=1
             [ "$image" = "$DEFAULT_IMAGE" ] || [ "$image" = "localhost/built-$box:latest" ] || echo "image=$image"
         } >"$J/.kind.new" && mv -f "$J/.kind.new" "$J/.kind"
     fi

@@ -11,6 +11,19 @@ CONF=${BOXD_CONF:-/etc/boxd/boxd.conf}
 U=${BOXD_USER:-boxd}
 ROOT=${BOXD_CGROOT:-/sys/fs/cgroup}
 CG=${BOXD_CGROUP:-$ROOT/boxd}
+# The NVIDIA card for --gpu boxes: its CDI (Container Device Interface) specification is written at every start, as root. /var/run is
+# emptied at boot, so a driver update followed by a reboot gets a fresh file. A card that is gone (or a missing tool) takes the file away,
+# so a card that was taken out is not announced; the administrator's own file in /etc/cdi wins (two files with the same device names clash).
+# Whatever fails here never stops the service from starting.
+CTK=${BOXD_NVIDIA_CTK:-nvidia-ctk} SMI=${BOXD_NVIDIA_SMI:-nvidia-smi}
+CDI_ADMIN=${BOXD_CDI_ADMIN_DIR:-/etc/cdi} CDI_FILE=${BOXD_CDI_RUN_DIR:-/var/run/cdi}/nvidia.yaml
+if command -v "$CTK" >/dev/null 2>&1 && command -v "$SMI" >/dev/null 2>&1 && timeout 30 "$SMI" -L >/dev/null 2>&1 &&
+    ! grep -qs '^[[:space:]]*"\{0,1\}kind"\{0,1\}:[[:space:]]*"\{0,1\}nvidia\.com/gpu' "$CDI_ADMIN"/*.yaml "$CDI_ADMIN"/*.yml "$CDI_ADMIN"/*.json 2>/dev/null; then
+    { mkdir -p "${CDI_FILE%/*}" && timeout 60 "$CTK" cdi generate --output="$CDI_FILE" >/dev/null 2>&1 && chmod 644 "$CDI_FILE"; } ||
+        { rm -f "$CDI_FILE"; echo "boxd-sshd: nvidia-ctk could not write $CDI_FILE; --gpu boxes are not available"; }
+else
+    rm -f "$CDI_FILE"
+fi
 total_kb=$(awk '/^MemTotal:/ { print $2 }' "${BOXD_MEMINFO:-/proc/meminfo}")
 SWAP=${BOXD_SWAP_MAX:-$((total_kb * 25 / 100))K}
 # kB of a cgroup size ("max", bytes, or a K/M/G suffix as memory.max takes them); empty for "max".

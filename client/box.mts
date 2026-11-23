@@ -1,9 +1,9 @@
 // box: runs a command in the calling worktree's own box on a boxd build server (see docs/pod-contract.md).
-//   box [--host <name>] [--pod <name>] [--image <ref> | --image-file <path>] [--vm|--container] [--size small|medium|large|xlarge] [--user] [--kvm] [--recreate] [--no-sync] [--snapshot | --git | --commit <rev>] [--history] [--detach [--alive <path>]] [--wait] [--pull <path>]... [--] <command...>
+//   box [--host <name>] [--pod <name>] [--image <ref> | --image-file <path>] [--vm|--container] [--size small|medium|large|xlarge] [--user] [--kvm] [--gpu] [--recreate] [--no-sync] [--snapshot | --git | --commit <rev>] [--history] [--detach [--alive <path>]] [--wait] [--pull <path>]... [--] <command...>
 //   box --shards <n> [--tail <n>] [the usual run options] -- <command with {shard} and {shards}...>
 //   box image push [--host <name>] [--vm|--container] <ref>
 //   box setup <host> [--hostname <name>] [--port <n>] [--user <name>] [--identity <file>] [--wake <mac>,<mac> --broadcast <addr>] [--default]
-//   box hosts [--pick [--vm]]   (--pick: the one server a first call would pick now: name, reason, each host's state; exit 75 when none has room; places nothing)
+//   box hosts [--pick [--vm] [--gpu]]   (--pick: the one server a first call would pick now: name, reason, each host's state; exit 75 when none has room; places nothing)
 //   box runs [--follow [--tail <n>]] [--pod <pattern>]... [--host <name>]
 //   box --version
 //   box log <run> [--pod <name>] [--host <name>] [--follow [--quiet-limit <seconds>]] [--tail <n>] [--state]
@@ -23,7 +23,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-export const VERSION = "0.4.78";
+export const VERSION = "0.4.79";
 const BOX = /^[a-z0-9][a-z0-9_.-]{0,62}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const MAC = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i;
@@ -32,7 +32,7 @@ export const HELP = `usage: box [options] [--] <command...>
        box --shards <n> [--tail <n>] [options] -- <command...>   (the command in <n> boxes side by side; see --shards below)
        box setup <host> [options]      (once per build server; box setup --help)
        box hosts                       the registered build servers in order: asleep, awake (with its \`pod status\` line) or unreachable
-       box hosts --pick [--vm]         the one server a first call would pick now (name, reason, each host's state); exit 75 when none has room; places nothing
+       box hosts --pick [--vm] [--gpu]   the one server a first call would pick now (name, reason, each host's state); exit 75 when none has room; places nothing
        box image push [--host <name>] [--vm|--container] <ref>
                                        send an image from your machine to the build server's store for that engine (default
                                        container): for images of private registries, whose login stays on your machine. Pulls
@@ -114,6 +114,9 @@ container or, with --vm, a small virtual machine; the same box on every call) an
                    it once made with it, adding it to a root box needs --recreate. A hosted CI runner is --vm --user --git
   --kvm            the box gets the host's /dev/kvm, so QEMU inside runs on hardware virtualization (container boxes
                    only; the same virtualization the build account has); kept like --user, adding it needs --recreate
+  --gpu            the box gets the host's NVIDIA graphics card, for compute (CUDA) and accelerated rendering (EGL, Vulkan)
+                   (container boxes only); kept like --user, adding it needs --recreate. Every --gpu box sees the whole card
+                   and shares its memory with the others. The first call goes to a server that has a card (box hosts shows gpus=<n>)
   --recreate       replace the box with a fresh one (files stay; same engine and image unless you name others)
   --detach         run in the background; prints a run id and the command that reads its log (box log); --pull does nothing
                    with it. Files outside /job go when the idle box is removed: keep results under /job/src. Only a detached
@@ -147,7 +150,8 @@ container or, with --vm, a small virtual machine; the same box on every call) an
                    more servers set up) the server with room that has the most free memory, a busy one (load above its processors) after the calm ones (ties: \`box hosts\` order; a
                    sleeping one counts as empty); for a machine (--vm) the awake server with room that has the smallest
                    memory cap for boxes, so the big server stays free for big machines; never waking a sleeping one just
-                   to ask; no server with room: exit 75 with one reason per server. A worktree whose server has no room
+                   to ask; with --gpu only a server that reports a card (gpus=1 or more) counts, and a sleeping one comes after every awake server
+                   with a card; no server with room: exit 75 with one reason per server. A worktree whose server has no room
                    moves to one that has by itself (one line says so), unless its box still holds a machine, a container
                    or a run there, or the call named a server (--host, $BOXD_HOST); then exit 75 and the command that moves it.
                    A server that cannot be reached (ssh got no answer) ends the call with exit 255 and starts nothing; the
@@ -222,9 +226,9 @@ export type Plan = { box: string; remote: string } | { error: string; exit: 2 };
 
 // --env names: credentials only (the server checks the same pattern before putting the value in the engine's environment).
 export const SECRET = /^[A-Z][A-Z0-9_]{0,62}_(TOKEN|KEY|SECRET|PASSWORD)$/;
-// flags: --git (the client's own, never sent), --alive <path> (sent only with --detach), --pod <name>, --image <ref>, --image-file <path>, --vm, --container, --size <word>, --user, --kvm, --env <name>, --recreate, --snapshot, --detach <run>; other flags are the client's own.
+// flags: --git (the client's own, never sent), --alive <path> (sent only with --detach), --pod <name>, --image <ref>, --image-file <path>, --vm, --container, --size <word>, --user, --kvm, --gpu, --env <name>, --recreate, --snapshot, --detach <run>; other flags are the client's own.
 export function plan(toplevel: string, flags: string[], argv: string[]): Plan {
-  let pod: string | undefined, image: string | undefined, imageFile: string | undefined, run: string | undefined, alive: string | undefined, recreate = false, snapshot = false, vm = false, container = false, user = false, kvm = false, size: string | undefined;
+  let pod: string | undefined, image: string | undefined, imageFile: string | undefined, run: string | undefined, alive: string | undefined, recreate = false, snapshot = false, vm = false, container = false, user = false, kvm = false, gpu = false, size: string | undefined;
   const envs: string[] = [];
   for (let i = 0; i < flags.length; i++) {
     const f = flags[i];
@@ -238,6 +242,7 @@ export function plan(toplevel: string, flags: string[], argv: string[]): Plan {
     else if (f === "--size") size = flags[++i];
     else if (f === "--user") user = true;
     else if (f === "--kvm") kvm = true;
+    else if (f === "--gpu") gpu = true;
     else if (f === "--env") envs.push(flags[++i] as string);
     else if (f === "--recreate") recreate = true;
     else if (f === "--snapshot") snapshot = true;
@@ -258,7 +263,7 @@ export function plan(toplevel: string, flags: string[], argv: string[]): Plan {
   if (run !== undefined && !/^[A-Za-z0-9_.-]{1,64}$/.test(run)) return { error: "box: bad run id", exit: 2 };
   // As --image-file: a plain relative path inside the worktree, which the server checks again.
   if (alive !== undefined && (!/^[A-Za-z0-9_.-]+(\/[A-Za-z0-9_.-]+)*$/.test(alive) || alive.length > 200 || alive.split("/").some((c) => c === "." || c === ".."))) return { error: "box: --alive must be a relative path inside the worktree (letters, digits, . _ - and /; no .. part)", exit: 2 };
-  const opts = [image && `--image ${image}`, imageFile && `--image-file ${imageFile}`, vm && "--vm", container && "--container", size && `--size ${size}`, user && "--user", kvm && "--kvm", ...envs.map((n) => `--env ${n}`), recreate && "--recreate", snapshot && "--snapshot", run && `--detach ${run}`, run && alive && `--alive ${alive}`].filter(Boolean);
+  const opts = [image && `--image ${image}`, imageFile && `--image-file ${imageFile}`, vm && "--vm", container && "--container", size && `--size ${size}`, user && "--user", kvm && "--kvm", gpu && "--gpu", ...envs.map((n) => `--env ${n}`), recreate && "--recreate", snapshot && "--snapshot", run && `--detach ${run}`, run && alive && `--alive ${alive}`].filter(Boolean);
   if (image && /\s/.test(image)) return { error: "box: bad image", exit: 2 };
   return { box, remote: ["pod run", box, ...opts, "--", Buffer.from(argv.join("\0")).toString("base64")].join(" ") };
 }
@@ -410,7 +415,7 @@ export const parseStatus = (line: string): Record<string, string> =>
   Object.fromEntries(line.trim().split("\t").filter((w) => w.includes("=")).map((w) => [w.slice(0, w.indexOf("=")), w.slice(w.indexOf("=") + 1)]));
 
 export type HostState = { name: string; state: "asleep" | "awake" | "unreachable"; status?: string };
-export type Request = { vm: boolean; image?: string; size?: "small" | "medium" | "xlarge" };   // size only when it is not the default: the server's vm_room judges the default (8192 MB); a size above it is judged by vm_fit_mb like the ones below
+export type Request = { vm: boolean; gpu?: true; image?: string; size?: "small" | "medium" | "xlarge" };   // size only when it is not the default: the server's vm_room judges the default (8192 MB); a size above it is judged by vm_fit_mb like the ones below
 export type Choice =
   | { host: string; reason: "order" | "spread" | "overflow" | "fit"; room: string[]; notes: string[] }
   | { refusal: string[]; notes: string[]; wait: boolean };
@@ -424,14 +429,14 @@ export type Choice =
 // local image must be on the host; one whose memory is unknown comes after those that report it. An awake host that
 // printed no status (a server older than `pod status`) is the last resort. An awake host whose `load1` is above its `cpus` is busy (a
 // suite took 1015 s on such a host and 443 s on a calm one with room): it comes after every host with room that is not busy, the order
-// inside each group is the one above, and it is still chosen when it is the only one with room; a word that is missing or not a number is not busy. Spreading by free memory, not filling the
+// inside each group is the one above, and it is still chosen when it is the only one with room; a word that is missing or not a number is not busy. A `--gpu` call (`req.gpu`) needs an awake host whose `gpus` word is 1 or more (a missing word is 0: an older server; the reason `no graphics card` is not one a wait can end); a sleeping host still counts as room, since nothing is known of it without waking it, but comes after every awake host that reports a card (the order above holds inside each group). Spreading by free memory, not filling the
 // first host: on 2026-11-15 the first host took every new worktree until its kernel killed a machine, the second stayed idle.
 // `room` lists every host that can take the call, best first (the retry after a lost race walks it); `notes` is one
 // "<host>=<state or reason>" per host.
 const SIZE_MB = { small: 2048, medium: 4096, xlarge: 12288 };
 export function choose(hosts: HostState[], req: Request): Choice {
   const want = req.image?.startsWith("localhost/") ? (req.image.slice("localhost/".length).split(":")[0] as string) : undefined;
-  const room: { name: string; free: number; cap?: number; busy?: true }[] = [], late: string[] = [], why: string[] = [];
+  const room: { name: string; free: number; cap?: number; busy?: true; asleep?: true }[] = [], late: string[] = [], why: string[] = [];
   const need = req.size ? SIZE_MB[req.size] : undefined;
   let waitable = false; // a host said no for room, which time can change (a missing image or engine, a host that is down: not)
   for (const h of hosts) {
@@ -439,18 +444,19 @@ export function choose(hosts: HostState[], req: Request): Choice {
     let no: string | undefined;
     const busy = h.state === "awake" && s && /^\d+(\.\d+)?$/.test(s.load1 ?? "") && /^\d+$/.test(s.cpus ?? "") && Number(s.load1) > Number(s.cpus) ? `busy, load ${s.load1} on ${s.cpus} processors` : undefined;
     if (h.state === "unreachable") no = "unreachable";
-    else if (h.state === "asleep") room.push({ name: h.name, free: Infinity });
+    else if (h.state === "asleep") room.push({ name: h.name, free: Infinity, ...(req.gpu ? { asleep: true as const } : {}) });
     else if (!s) late.push(h.name);
     else if (req.vm && !(s.engines ?? "").split(",").includes("vm")) no = "no virtual machines";
     else if (req.vm && need !== undefined && /^\d+$/.test(s.group_mem_max_mb ?? "") && need > Number(s.group_mem_max_mb)) no = `${need} MB never fits, the cap is ${s.group_mem_max_mb} MB`;   // from 0.4.52 the server refuses such a size for good; a wait could never end
     else if (req.vm && (need !== undefined && /^\d+$/.test(s.vm_fit_mb ?? "") ? Number(s.vm_fit_mb) < need : s.vm_room !== "yes")) { no = need !== undefined && /^\d+$/.test(s.vm_fit_mb ?? "") ? `${s.vm_fit_mb} MB fit, ${need} MB asked` : s.vm_why || (Number(s.vm_used) >= Number(s.vm_max) ? `${s.vm_used} of ${s.vm_max} machines` : `no memory for another machine (${s.vm_used} running)`); waitable = true; }   // the server's own reason (0.4.11), else the count ceiling, else the memory rule
     else if (want && !(s.images ?? "").split(",").includes(want)) no = `image ${want} missing`;
+    else if (req.gpu && !(Number(s.gpus) >= 1)) no = "no graphics card";
     else if (!req.vm && s.box_room === "no") { no = `no memory for another busy box (${s.box_fit_mb} MB fit, ${s.box_reserve_mb} MB wanted)`; waitable = true; }
     else room.push({ name: h.name, ...(busy ? { busy: true as const } : {}), free: /^\d+$/.test(s.mem_free_mb ?? "") ? Number(s.mem_free_mb) : -1, ...(req.vm && /^\d+$/.test(s.group_mem_max_mb ?? "") ? { cap: Number(s.group_mem_max_mb) } : {}) });
     why.push(no ?? busy ?? (h.state === "awake" && !s ? "awake, no status" : h.state));
   }
   const notes = hosts.map((h, i) => `${h.name}=${why[i]}`);
-  room.sort((a, b) => (a.busy ? 1 : 0) - (b.busy ? 1 : 0) || (a.cap !== undefined || b.cap !== undefined ? (a.cap ?? Infinity) - (b.cap ?? Infinity) : a.free === b.free ? 0 : b.free > a.free ? 1 : -1));   // stable: ties keep the order
+  room.sort((a, b) => (a.asleep ? 1 : 0) - (b.asleep ? 1 : 0) || (a.busy ? 1 : 0) - (b.busy ? 1 : 0) || (a.cap !== undefined || b.cap !== undefined ? (a.cap ?? Infinity) - (b.cap ?? Infinity) : a.free === b.free ? 0 : b.free > a.free ? 1 : -1));   // stable: ties keep the order
   const order = [...room.map((r) => r.name), ...late];
   const host = order[0];
   if (host === undefined) return { refusal: hosts.map((h, i) => `${h.name}: ${why[i]}`), notes, wait: waitable };
@@ -586,16 +592,16 @@ function logChoice(env: Env, box: string, req: Request, host: string, reason: st
   } catch { /* evidence only: never a reason to fail a call */ }
 }
 
-// box hosts [--pick [--vm]]: --pick prints the host a first call for a NEW box would get now (where the worktree is already
+// box hosts [--pick [--vm] [--gpu]]: --pick prints the host a first call for a NEW box would get now (where the worktree is already
 // placed is not looked at), tab separated: host, reason, notes; exit 75 and a line on standard error when none has room. Read only.
 async function hosts(args: string[], env: Env): Promise<number> {
-  const bad = args.find((a) => a !== "--pick" && a !== "--vm") ?? (args.includes("--vm") && !args.includes("--pick") ? "--vm" : undefined);
-  if (bad) return usage(`box hosts: unknown argument ${bad}; box hosts [--pick [--vm]]`);
+  const bad = args.find((a) => a !== "--pick" && a !== "--vm" && a !== "--gpu") ?? ((args.includes("--vm") || args.includes("--gpu")) && !args.includes("--pick") ? (args.includes("--vm") ? "--vm" : "--gpu") : undefined);
+  if (bad) return usage(`box hosts: unknown argument ${bad}; box hosts [--pick [--vm] [--gpu]]`);
   const order = hostOrder(env);
   if (!order.length) return usage("box hosts: no build server is set up; run box setup <host>");
   const seen = await Promise.all(order.map((n) => probe(n, env)));
   if (args.includes("--pick")) {
-    const c = choose(seen, { vm: args.includes("--vm") });
+    const c = choose(seen, { vm: args.includes("--vm"), ...(args.includes("--gpu") ? { gpu: true as const } : {}) });
     if ("refusal" in c) { process.stderr.write(`box hosts --pick: no build server has room: ${c.refusal.join("; ")}\n`); return 75; }
     process.stdout.write(`${[c.host, c.reason, c.notes.join(",")].join("\t")}\n`);
     return 0;
@@ -1310,7 +1316,7 @@ export function main(args: string[], env: Env = process.env, inner?: { run: stri
     else if (a === "--wait") wait = true;
     else if (a === "--clean") clean = true;
     else if (a === "--history") history = true;
-    else if (a === "--recreate" || a === "--snapshot" || a === "--git" || a === "--vm" || a === "--container" || a === "--user" || a === "--kvm") flags.push(a);
+    else if (a === "--recreate" || a === "--snapshot" || a === "--git" || a === "--vm" || a === "--container" || a === "--user" || a === "--kvm" || a === "--gpu") flags.push(a);
     else if (a === "--shards") {
       const v = args[++i];
       if (!/^\d{1,2}$/.test(v ?? "") || Number(v) < 2 || Number(v) > 32) return usage("box: --shards needs a whole number from 2 to 32");
@@ -1399,7 +1405,7 @@ export function main(args: string[], env: Env = process.env, inner?: { run: stri
   const minutes = Number(psAfter), { box, remote } = p;
   const image = flags[flags.indexOf("--image") + 1];
   const sz = flags[flags.indexOf("--size") + 1];
-  const req: Request = { vm: flags.includes("--vm"), ...(flags.includes("--image") && image ? { image } : {}), ...(flags.includes("--size") && (sz === "small" || sz === "medium" || sz === "xlarge") ? { size: sz } : {}) };
+  const req: Request = { vm: flags.includes("--vm"), ...(flags.includes("--gpu") ? { gpu: true as const } : {}), ...(flags.includes("--image") && image ? { image } : {}), ...(flags.includes("--size") && (sz === "small" || sz === "medium" || sz === "xlarge") ? { size: sz } : {}) };
   // --env: the value rides in ssh's own environment passing (SendEnv / the host's AcceptEnv BOXD_SECRET_*), never in
   // the command line, a file or a log.
   const names = flags.flatMap((f, j) => f === "--env" ? [flags[j + 1] as string] : []);

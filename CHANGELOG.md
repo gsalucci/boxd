@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.79
+
+- `--gpu`: a container box can use the build server's NVIDIA graphics card, for compute (CUDA) and for accelerated rendering
+  (EGL, Vulkan). The card comes through the Container Device Interface: device files, driver libraries and the Vulkan and EGL
+  vendor files are put into the box; the CUDA toolkit, a Vulkan loader or Mesa utilities belong in the image. Kept by the box
+  like `--kvm` (adding it needs `--recreate`), refused for virtual machine boxes and on a server without a card. Every `--gpu`
+  box sees the whole card and shares its memory with the others; there is no admission for it yet.
+- A server needs the NVIDIA driver and nvidia-container-toolkit; `boxd-setup` says whether `--gpu` boxes are available. The
+  device description is written to `/var/run/cdi/nvidia.yaml` at every start of the build service, unless `/etc/cdi` already
+  holds one, and removed when the card is gone.
+- `pod status` and `box hosts` end with `gpus=<n>`. A first call with `--gpu` goes only to a server with a card (an awake one
+  that reports a card before a sleeping one); none has one: exit 75, `no graphics card`. `box hosts --pick --gpu` answers the
+  same question. The dashboard shows the card count on a server that has one.
+
 ## 0.4.78
 
 - Swap on zram now counts at its full size against the memory cap of the boxes. The default cap is 85 percent of the host's

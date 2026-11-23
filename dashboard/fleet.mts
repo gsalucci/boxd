@@ -95,6 +95,7 @@ function hostRow(h: HostInput, rep: Report | null, st: Kv | null, now: number) {
   const diskPct = num(r.disk_pct ?? st?.disk_pct);
   const last = h.kills.length ? h.kills[h.kills.length - 1]![0] : null;
   const vmMax = num((r.vm_max ?? st?.vm_max));
+  const gpus = num(r.gpus ?? st?.gpus);
   const room = r.vm_room ?? st?.vm_room;
   const l1 = num(r.load1 ?? st?.load1);
   const sw = num(r.swap_total_mb), pr = num(r.pressure_some10);
@@ -116,6 +117,7 @@ function hostRow(h: HostInput, rep: Report | null, st: Kv | null, now: number) {
     disk: diskPct === null ? null : { pct: diskPct, totalGiB: gib(num(r.disk_total_mb)), usedGiB: gib(num(r.disk_used_mb)), thresholdPct: num(r.reset_at) },
     ttlSec: num(r.ttl),
     idle: power === "on" && idleChecks !== null ? { timeoutSec: idleChecks * 60, quietSec: (num(r.idle_count) ?? 0) * 60, busy: dash(r.idle_last) } : null,
+    ...(gpus !== null && gpus >= 1 ? { gpus } : {}),   // graphics cards of the host (since server 0.4.79); no field for none or an older server
     keepawake: r.keepawake === "held" ? true : r.keepawake === "free" ? false : null,
   };
 }

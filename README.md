@@ -85,7 +85,7 @@ streams the output back with the command's exit code; the last line on standard 
 ## Requirements
 
 - **Build host:** Linux on x86_64 with podman. Packaged for Void Linux (runit) and for Debian 13 and its
-  derivatives (systemd). Virtual machine boxes need `/dev/kvm`. A btrfs work area gives instant resets; any other
+  derivatives (systemd). Virtual machine boxes need `/dev/kvm`. `--gpu` container boxes need the host's NVIDIA driver and nvidia-container-toolkit installed, then `boxd-setup` (it writes the specification of the card). A btrfs work area gives instant resets; any other
   file system works as a plain folder.
 - **Agents' machine:** Linux with Node.js 20 or newer, ssh, rsync and git.
 
@@ -148,6 +148,7 @@ box --vm --image localhost/toolbox docker run --rm hello-world
 box --image-file ci/Containerfile make test          # the box's image built from a file in the worktree
 box --vm --size small -- nproc                       # 2 processors and 2 GB; medium, large and xlarge (8 processors, 12 GB) exist
 box --vm --env API_TOKEN ./deploy-check              # hand over one secret from your environment
+box --gpu nvidia-smi                                 # a container box with the host's NVIDIA graphics card (CUDA, EGL, Vulkan); box hosts shows gpus=<n>
 box --detach make release                            # background run; prints how to read its log
 box log <run> --state                                # still running (how old, how long its log was silent), or ended: exit code, when, how long
 box log <run> --follow                               # wait for the end, exit with the run's code; last line: box: run <run> exit <code> on <host>
