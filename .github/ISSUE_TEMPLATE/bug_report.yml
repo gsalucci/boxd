@@ -1,0 +1,56 @@
+name: Bug report
+description: Something in box, pod or the build server does not work as described.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Replace machine names and addresses you do not want public. Never paste a secret.
+        For a security problem use the private report on the Security tab instead.
+  - type: textarea
+    id: command
+    attributes:
+      label: What you ran
+      description: The exact `box` or `pod` command.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened
+      description: The exact output, including the refusal or error line. Replace machine names. Never paste a secret.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Output of `box --version`
+    validations:
+      required: true
+  - type: dropdown
+    id: distribution
+    attributes:
+      label: Distribution of the build server
+      options:
+        - Void Linux
+        - Debian 13
+        - other
+    validations:
+      required: true
+  - type: dropdown
+    id: engine
+    attributes:
+      label: Engine of the box
+      options:
+        - container
+        - virtual machine
+    validations:
+      required: true

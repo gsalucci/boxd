@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 480" width="860" height="480" role="img" aria-labelledby="t d">
+<title id="t">boxd in a terminal: box runs a command on a build server</title>
+<desc id="d">A recording of three commands. First, box hosts lists two build servers, tower and laptop, and tower has room. Then box sh test.sh makes a box for the worktree on tower, syncs the files and runs three checks, which pass in 7.4 seconds. The same command again reuses the box and finishes in 5.8 seconds, three of them the checks themselves.</desc>
+<style>
+text{font:15px ui-monospace,SFMono-Regular,Menlo,Consolas,"DejaVu Sans Mono",monospace}
+.w0{animation:w0 18s infinite}@keyframes w0{0%,2.22%{width:0;animation-timing-function:steps(23,end)}7.78%,100%{width:820px}}
+.o1{animation:o1 18s infinite}@keyframes o1{0%,10.50%{opacity:0}10.56%,100%{opacity:1}}
+.o2{animation:o2 18s infinite}@keyframes o2{0%,12.72%{opacity:0}12.78%,100%{opacity:1}}
+.o3{animation:o3 18s infinite}@keyframes o3{0%,18.83%{opacity:0}18.89%,100%{opacity:1}}
+.w4{animation:w4 18s infinite}@keyframes w4{0%,32.22%{width:0;animation-timing-function:steps(28,end)}37.78%,100%{width:820px}}
+.o5{animation:o5 18s infinite}@keyframes o5{0%,39.94%{opacity:0}40.00%,100%{opacity:1}}
+.o6{animation:o6 18s infinite}@keyframes o6{0%,46.61%{opacity:0}46.67%,100%{opacity:1}}
+.o7{animation:o7 18s infinite}@keyframes o7{0%,49.39%{opacity:0}49.44%,100%{opacity:1}}
+.o8{animation:o8 18s infinite}@keyframes o8{0%,52.17%{opacity:0}52.22%,100%{opacity:1}}
+.o9{animation:o9 18s infinite}@keyframes o9{0%,54.94%{opacity:0}55.00%,100%{opacity:1}}
+.o10{animation:o10 18s infinite}@keyframes o10{0%,56.61%{opacity:0}56.67%,100%{opacity:1}}
+.o11{animation:o11 18s infinite}@keyframes o11{0%,57.72%{opacity:0}57.78%,100%{opacity:1}}
+.o12{animation:o12 18s infinite}@keyframes o12{0%,59.39%{opacity:0}59.44%,100%{opacity:1}}
+.w13{animation:w13 18s infinite}@keyframes w13{0%,66.11%{width:0;animation-timing-function:steps(28,end)}71.67%,100%{width:820px}}
+.o14{animation:o14 18s infinite}@keyframes o14{0%,72.72%{opacity:0}72.78%,100%{opacity:1}}
+.o15{animation:o15 18s infinite}@keyframes o15{0%,74.39%{opacity:0}74.44%,100%{opacity:1}}
+.o16{animation:o16 18s infinite}@keyframes o16{0%,76.06%{opacity:0}76.11%,100%{opacity:1}}
+.o17{animation:o17 18s infinite}@keyframes o17{0%,77.72%{opacity:0}77.78%,100%{opacity:1}}
+.o18{animation:o18 18s infinite}@keyframes o18{0%,79.39%{opacity:0}79.44%,100%{opacity:1}}
+.o19{animation:o19 18s infinite}@keyframes o19{0%,80.50%{opacity:0}80.56%,100%{opacity:1}}
+.o20{animation:o20 18s infinite}@keyframes o20{0%,83.28%{opacity:0}83.33%,100%{opacity:1}}
+.sa{animation:fa 18s infinite}@keyframes fa{0%,27.22%{opacity:1}28.89%,100%{opacity:0}}
+.sb{animation:fb 18s infinite}@keyframes fb{0%,28.89%{opacity:0}30.56%,61.11%{opacity:1}62.78%,100%{opacity:0}}
+.sc{animation:fc 18s infinite}@keyframes fc{0%,62.78%{opacity:0}64.44%,95.56%{opacity:1}97.22%,100%{opacity:0}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important}.sa,.sb{opacity:0!important}.sc{opacity:1!important}.sc *{opacity:1!important}[class^=w]{width:820px!important}}
+</style>
+<defs>
+<clipPath id="k0"><rect class="w0" x="40" y="82" width="820" height="24"/></clipPath>
+<clipPath id="k4"><rect class="w4" x="40" y="82" width="820" height="24"/></clipPath>
+<clipPath id="k13"><rect class="w13" x="40" y="82" width="820" height="24"/></clipPath>
+</defs>
+<rect x="10" y="10" width="840" height="460" rx="12" fill="#0f1418" stroke="#2b333b"/>
+<path d="M10 22a12 12 0 0 1 12-12h816a12 12 0 0 1 12 12v22H10z" fill="#171d22"/>
+<circle cx="34" cy="27" r="6" fill="#ff5f56"/><circle cx="56" cy="27" r="6" fill="#ffbd2e"/><circle cx="78" cy="27" r="6" fill="#27c93f"/>
+<text x="430" y="32" fill="#8b949e" text-anchor="middle" style="font-size:13px">box: build server for coding agents</text>
+<g class="sa" opacity="0">
+<g><g clip-path="url(#k0)"><text x="40" y="100" xml:space="preserve"><tspan fill="#8b949e">~/src/myapp $ </tspan><tspan fill="#6db3e0">box hosts</tspan></text></g></g>
+<g class="o1"><text x="40" y="132" xml:space="preserve"><tspan fill="#d7dce0">tower   sleeps     awake  cpus=16  boxes=4  box_room=</tspan><tspan fill="#7fc98f">yes</tspan></text></g>
+<g class="o2"><text x="40" y="164" xml:space="preserve"><tspan fill="#d7dce0">laptop  always on  awake  cpus=12  boxes=1  box_room=</tspan><tspan fill="#8b949e">no</tspan></text></g>
+<g class="o3"><text x="40" y="228" xml:space="preserve"><tspan fill="#8b949e"># two build servers: tower has room, laptop is full right now</tspan></text></g>
+</g>
+<g class="sb" opacity="0">
+<g><g clip-path="url(#k4)"><text x="40" y="100" xml:space="preserve"><tspan fill="#8b949e">~/src/myapp $ </tspan><tspan fill="#6db3e0">box sh test.sh</tspan></text></g></g>
+<g class="o5"><text x="40" y="132" xml:space="preserve"><tspan fill="#8b949e">boxd-pod: new container box myapp-3f9a21c7: commands run as root</tspan></text></g>
+<g class="o6"><text x="40" y="164" xml:space="preserve"><tspan fill="#d7dce0">running 3 checks</tspan></text></g>
+<g class="o7"><text x="40" y="196" xml:space="preserve"><tspan fill="#d7dce0">check parse_config ... </tspan><tspan fill="#7fc98f">ok</tspan></text></g>
+<g class="o8"><text x="40" y="228" xml:space="preserve"><tspan fill="#d7dce0">check roundtrip ... </tspan><tspan fill="#7fc98f">ok</tspan></text></g>
+<g class="o9"><text x="40" y="260" xml:space="preserve"><tspan fill="#d7dce0">check cli_flags ... </tspan><tspan fill="#7fc98f">ok</tspan></text></g>
+<g class="o10"><text x="40" y="292" xml:space="preserve"><tspan fill="#7fc98f">3 passed, 0 failed</tspan></text></g>
+<g class="o11"><text x="40" y="324" xml:space="preserve"><tspan fill="#7fc98f">box: exit 0 on tower</tspan></text></g>
+<g class="o12"><text x="40" y="388" xml:space="preserve"><tspan fill="#8b949e"># first call: box made, files synced, 7.4 s</tspan></text></g>
+</g>
+<g class="sc">
+<g><g clip-path="url(#k13)"><text x="40" y="100" xml:space="preserve"><tspan fill="#8b949e">~/src/myapp $ </tspan><tspan fill="#6db3e0">box sh test.sh</tspan></text></g></g>
+<g class="o14"><text x="40" y="132" xml:space="preserve"><tspan fill="#d7dce0">running 3 checks</tspan></text></g>
+<g class="o15"><text x="40" y="164" xml:space="preserve"><tspan fill="#d7dce0">check parse_config ... </tspan><tspan fill="#7fc98f">ok</tspan></text></g>
+<g class="o16"><text x="40" y="196" xml:space="preserve"><tspan fill="#d7dce0">check roundtrip ... </tspan><tspan fill="#7fc98f">ok</tspan></text></g>
+<g class="o17"><text x="40" y="228" xml:space="preserve"><tspan fill="#d7dce0">check cli_flags ... </tspan><tspan fill="#7fc98f">ok</tspan></text></g>
+<g class="o18"><text x="40" y="260" xml:space="preserve"><tspan fill="#7fc98f">3 passed, 0 failed</tspan></text></g>
+<g class="o19"><text x="40" y="292" xml:space="preserve"><tspan fill="#7fc98f">box: exit 0 on tower</tspan></text></g>
+<g class="o20"><text x="40" y="356" xml:space="preserve"><tspan fill="#8b949e"># same box, caches kept: 5.8 s (3 s of it is the checks)</tspan></text></g>
+</g>
+</svg>

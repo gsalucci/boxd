@@ -19,6 +19,21 @@ boxd ("boxed") moves the heavy work of coding agents off your own machine. Put `
 inside a git worktree and the command runs in that worktree's own box on a build server you own: the same box on
 every call, with its caches kept.
 
+<p align="center"><img src="docs/assets/demo.svg" alt="A terminal recording: box hosts lists two build servers, box sh test.sh runs in the worktree's own box and ends with exit 0, and the second run reuses the box" width="800"></p>
+
+**Install.** Set up a build host first (steps 1 and 2 of the install section), then on your own machine:
+
+```sh
+sudo xbps-install -S boxd-client        # Void; Debian: sudo apt install ./boxd-client_*.deb
+box setup <host> --hostname <address>   # once per build server
+box hosts                               # the server is listed
+box npm test                            # first call, inside any git worktree
+```
+
+Full setup: [Install](#install)
+
+What a call looks like:
+
 ```sh
 box cargo test -p mycrate          # runs on the build server, in this worktree's own box
 box --pull target/release make     # build there, copy the result back
@@ -53,6 +68,16 @@ boxd turns that machine into a build host for agents:
 - **Nothing to trust on the host.** The build account can do one thing over ssh: talk to `boxd-pod`. It holds no
   registry logins and no credentials of yours. A secret reaches a command only through `--env`, never through a
   command line, a file or a log.
+
+## Compared with the alternatives
+
+| | On your own machine | A rented runner or cloud sandbox | boxd on a machine you own |
+|---|---|---|---|
+| Cost | none extra | money per minute | none per run; you own and run the machine |
+| Start and caches | warm, but shared with everything else | cold on every start | the same box on every call, caches kept |
+| Load on your desktop | all of it | none | none |
+| Where your code and secrets go | stay on the machine | to the provider | to your own host; secrets only through `--env` |
+| What you maintain | nothing new | an account and its bill | the host (Void Linux or Debian 13 only) and one more package to install |
 
 ## How it works
 

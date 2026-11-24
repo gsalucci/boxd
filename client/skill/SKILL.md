@@ -96,6 +96,9 @@ A program that reads the refusal sets `BOXD_REFUSAL_JSON=1`: every exit 75 for r
   `box forward <local-port> <box-port>` (local port 0 picks a free one; it prints it) listens on `127.0.0.1` here and runs until Ctrl+C or until the process that started it is gone; each
   connection is one ssh channel that holds the box busy while it is open. `box vnc` does it for port 5900 and opens `vnc://`. Container
   boxes only, the box must be running (a forward never starts one); needs a build server 0.4.0 or newer.
+  Many short commands to an ssh server inside the box (a guest machine, for example): forward its port once, then use plain `ssh -p <local-port>` with
+  `-o ControlMaster=auto -o ControlPath=~/.ssh/cm-%C -o ControlPersist=10m`; one channel carries every command (measured 0.05 seconds a command
+  against 0.70 for one `box` call each). A key that exists only in the box (a file git ignores) comes out with `box pull <path> --to <folder>`.
 - A server in a box that should not hold the build server awake (a model server on the graphics card, a dev server): start it with
   `box serve <local-port> <box-port> --idle <seconds> -- <box arguments>`, where `<box arguments>` is what you would write after `box` to run it in the
   foreground (for example `--gpu --no-sync llama-server --port 8080`). It listens on `127.0.0.1` here, starts the server on the first connection, and the host stops it once
