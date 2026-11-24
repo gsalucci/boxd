@@ -99,7 +99,7 @@ A program that reads the refusal sets `BOXD_REFUSAL_JSON=1`: every exit 75 for r
 - A server in a box that should not hold the build server awake (a model server on the graphics card, a dev server): start it with
   `box serve <local-port> <box-port> --idle <seconds> -- <box arguments>`, where `<box arguments>` is what you would write after `box` to run it in the
   foreground (for example `--gpu --no-sync llama-server --port 8080`). It listens on `127.0.0.1` here, starts the server on the first connection, and the host stops it once
-  no connection has been open for the idle time (default 300 seconds); the first connection after a stop waits for the start (up to `--start-wait`, default 180 seconds).
+  no connection has been open for the idle time (default 300 seconds); the first connection after a stop waits for the start (up to `--start-wait`, default 180 seconds, counted from the end of the start call; a relay started while the server still runs uses it and starts nothing; a server that crashed at start fails at once with its exit code). A server that accepts connections while it still loads a model (answers 503) needs `--ready-path /health` (any path that gives status 200 once it is ready), else the first client gets the 503.
   Keep the data the server needs under /job outside /job/src (the model files, caches), so a start does not fetch them again; run one `box serve` process per server and keep it
   running on your machine (it ends when the process that started it is gone, like `box forward`, unless `BOXD_KEEP_ORPHAN=1`).
 - A command seems stuck (no output for a long while, tests that never finish): `box ps` lists the processes running in

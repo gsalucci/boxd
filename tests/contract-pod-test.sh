@@ -72,6 +72,7 @@ case $1 in
             exit 0 ;; esac
         [ -z "${FAKE_EXEC_OUT:-}" ] || echo "$FAKE_EXEC_OUT"
         [ -z "${FAKE_BLOCK_EXEC:-}" ] || block exec-blocked
+        [ -z "${FAKE_EXEC_LATE:-}" ] || echo "$FAKE_EXEC_LATE"   # written after the block, as a run that prints while it shuts down
         # FAKE_EXEC_CRASH=<n>: the kernel killed a process meanwhile, the out-of-memory kill counter then reads n
         [ -z "${FAKE_EXEC_CRASH:-}" ] || printf 'oom_kill %s\n' "$FAKE_EXEC_CRASH" > "$BOXD_CGROOT/boxd/memory.events"
         exit "${FAKE_EXEC_EXIT:-0}" ;;
@@ -1887,6 +1888,42 @@ idleclock $((f2 + 9)); looks
 eq "idle-exit: a channel that closed moves the deadline: nine seconds after it, still running" running "$(runstate "$IC")"
 idleclock $((f2 + 10)); ended "$IC"
 eq "idle-exit: ten seconds after the channel closed the run is ended" "$(idle_line "$IC" 10)|boxd: ended by box stop --run|EXIT 143" "$(paste -sd'|' "$R/$IC.log")"
+
+# the host looks and decides under the exclusive lock on .forwarding and keeps it while the run is ended: a channel that opens then waits
+idle_setup t3; IE=20261121-100000-0005; t0=$(date +%s); export FAKE_CLEAN=$T/e/clean; mkfifo "$FAKE_CLEAN"
+pod "pod run $box --detach $IE --idle-exit 10 -- $B64"; read -r _ <&3
+idleclock $((t0 + 100))
+exec 7<>"$FAKE_CLEAN"; read -r -t 20 c <&7; exec 7>&-   # the watcher is inside pod end now; -t only keeps a failure from hanging
+eq "idle-exit: the host is ending the run" cleaned "$c"
+eq "idle-exit: while it ends the run it holds .forwarding, so a new channel waits" busy "$(flock -n -s "$W/jobs/$box/.forwarding" true && echo free || echo busy)"
+env "${CASE_ENV[@]}" SSH_ORIGINAL_COMMAND="pod forward $box 8080" timeout 60 bash "$POD" </dev/null >/dev/null 2>&1 & fp=$!
+ended "$IE"; wait "$fp"
+eq "idle-exit: the channel that waited came back once the run had ended" 0 "$?"
+eq "idle-exit: .forwarding is free once the run ended" free "$(flock -n -x "$W/jobs/$box/.forwarding" true && echo free || echo busy)"
+eq "idle-exit: the watcher is gone, no process of it keeps the lock" gone "$(for i in $(seq 400); do tagged t3 || { echo gone; break; }; read -r -t 0.05 <>"$T/poll"; done)"
+unset FAKE_CLEAN
+
+# a channel that is killed hard writes no end stamp: the host stamps it at every look while the lock is held
+idle_setup t4; ID=20261121-100000-0006; t0=$(date +%s)
+pod "pod run $box --detach $ID --idle-exit 10 -- $B64"; read -r _ <&3
+exec 6>>"$W/jobs/$box/.forwarding"; flock -s 6
+touch -d @100 "$W/jobs/$box/.forwarded"
+idleclock $((t0 + 5000)); looks
+eq "idle-exit: a channel open for hours keeps the run" running "$(runstate "$ID")"
+idleclock $((t0 + 9)); exec 6>&-; looks   # released with no end stamp
+s=$(stat -c %Y "$W/jobs/$box/.forwarded")
+eq "idle-exit: the host stamped the open channel itself" yes "$([ "$s" -ge "$t0" ] && echo yes || echo no)"
+eq "idle-exit: nine seconds after the last stamp the run is still there" running "$(runstate "$ID")"
+idleclock $((s + 10)); ended "$ID"
+eq "idle-exit: ten seconds after it the run is ended" "$(idle_line "$ID" 10)|boxd: ended by box stop --run|EXIT 143" "$(paste -sd'|' "$R/$ID.log")"
+
+# a run that prints after the host wrote its note must not overwrite the note: the log is opened in append mode
+idle_setup t5; IF=20261121-100000-0007; export FAKE_EXEC_OUT=first FAKE_EXEC_LATE=late
+pod "pod run $box --detach $IF -- $B64"; read -r _ <&3
+echo note >> "$R/$IF.log"
+echo go > "$FAKE_REL"; logwait "$R/$IF.log" '^EXIT'
+eq "detached log: output written after a note of the host lands behind it" "first|note|late|EXIT 0" "$(paste -sd'|' "$R/$IF.log")"
+unset FAKE_EXEC_OUT FAKE_EXEC_LATE
 unset FAKE_BLOCK_EXEC; CASE_ENV=()
 
 [ "$fails" -eq 0 ] && echo "ALL OK" || { echo "$fails FAILED"; exit 1; }

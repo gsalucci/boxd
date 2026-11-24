@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.82
+
+- `box serve --ready-path <path>`: the server counts as started only when an HTTP GET of that path answers with status 200,
+  for servers that accept connections while they still load (a model server). Without it nothing changes.
+- `box serve`: a server that ends while its port is awaited fails the connection at once (`the server ended with exit
+  <code> before the port answered`) instead of after the whole `--start-wait`; that wait now counts from the end of the
+  start call, so a long file sync or image build no longer eats it; a relay started while the server still runs uses it
+  and starts no second one; a client that hangs up during a restart no longer leaves a connection behind that kept the
+  idle stop from firing.
+- Idle stop (`--idle-exit`): a connection that opens while the run is being stopped is no longer killed with it (it waits
+  and then finds the run gone); a relay process killed hard no longer makes a long connection count as idle; late output
+  of the run no longer overwrites the lines the build server appended to its log.
+- `BOXD_REFUSAL_JSON=1`: the line lists every server the client asked, not only the refusing one, and `text` is never
+  empty. `box list` marks `gone` exactly when the collector counts the worktree as gone.
+
 ## 0.4.81
 
 - `box list`: every box this machine recorded and the worktree that owns it, from the local record only (no server is

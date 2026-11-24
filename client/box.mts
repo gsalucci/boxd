@@ -11,7 +11,7 @@
 //   box log <run> --events [--pod <name>] [--host <name>]
 //   box forward [--host <name>] [--pod <name>] <local-port> <box-port>
 //   box vnc [--host <name>] [--pod <name>] [--port <box-port>]
-//   box serve [--host <name>] [--pod <name>] [--idle <seconds>] [--start-wait <seconds>] <local-port> <box-port> -- <box arguments>
+//   box serve [--host <name>] [--pod <name>] [--idle <seconds>] [--start-wait <seconds>] [--ready-path <path>] <local-port> <box-port> -- <box arguments>
 //   box pull <path>... [--to <folder>] [--host <name>] [--pod <name>]
 //   box drop [--pod <name>] [--host <name>]
 //   box stop [--pod <name>] [--host <name>]
@@ -25,7 +25,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-export const VERSION = "0.4.81";
+export const VERSION = "0.4.82";
 const BOX = /^[a-z0-9][a-z0-9_.-]{0,62}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const MAC = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i;
@@ -36,7 +36,7 @@ export const HELP = `usage: box [options] [--] <command...>
        box hosts                       the registered build servers in order: asleep, awake (with its \`pod status\` line) or unreachable
        box hosts --pick [--vm] [--gpu]   the one server a first call would pick now (name, reason, each host's state); exit 75 when none has room; places nothing
        box list                        every box this machine recorded, from the local record only (no server is contacted), one line each, tab separated: host, box, worktree, and
-                                       \`here\` for the worktree you are in, \`gone\` for a worktree that no longer exists; sorted by host, then box
+                                       \`here\` for the worktree you are in, \`gone\` for a worktree the collector counts as gone (the folder is missing or is no longer a git worktree top folder); sorted by host, then box
        box image push [--host <name>] [--vm|--container] <ref>
                                        send an image from your machine to the build server's store for that engine (default
                                        container): for images of private registries, whose login stays on your machine. Pulls
@@ -74,14 +74,15 @@ export const HELP = `usage: box [options] [--] <command...>
                                        (0 picks a free local port); one ssh per connection, no sync, starts nothing; Ctrl+C stops
        box vnc [--host <name>] [--pod <name>] [--port <box-port>]
                                        forward (default box port 5900) and open vnc://<loopback>:<port> with xdg-open
-       box serve [--host <name>] [--pod <name>] [--idle <seconds>] [--start-wait <seconds>] <local-port> <box-port> -- <box arguments>
+       box serve [--host <name>] [--pod <name>] [--idle <seconds>] [--start-wait <seconds>] [--ready-path <path>] <local-port> <box-port> -- <box arguments>
                                        a server in a box that starts on the first connection and is stopped when unused: listens as box forward
                                        does; <box arguments> are what you would write after box to run the server in the foreground (options first, for
                                        example --gpu --image-file Containerfile --no-sync llama-server --port 8080). The first connection (and the first after the
                                        host stopped the server) starts it as box --detach --idle-exit <idle> <box arguments> does (sync and box as for any call),
-                                       waits up to --start-wait seconds (5 to 3600, default 180) for the box port to answer, then relays; the host ends the run once
+                                       waits up to --start-wait seconds (5 to 3600, default 180, counted from the end of the start call: the file sync and an image build are not part of it) for the box port to answer (with --ready-path <path>, starting with /: for an HTTP GET of that path to give status 200, as a server that still loads a model answers 503), or until the run ends, then relays; the host ends the run once
                                        no connection has been open for --idle seconds (10 to 86400, default 300). A connection whose channel fails before the
-                                       server sent a byte starts the server again once and is replayed. Ctrl+C stops this relay, never a running server. Container boxes only
+                                       server sent a byte starts the server again once and is replayed. Ctrl+C stops this relay, never a running server; a relay started while that server still runs
+                                       (the port answers) uses it and starts nothing. Container boxes only
        box pull <path>... [--to <folder>] [--host <name>] [--pod <name>]
                                        copies each path (relative to the worktree, from the box's files on the build server) back into your working
                                        folder with no command run in the box: a stopped box, also a stopped machine, stays stopped. Same host and
@@ -437,7 +438,7 @@ export const parseStatus = (line: string): Record<string, string> =>
 export type HostState = { name: string; state: "asleep" | "awake" | "unreachable"; status?: string };
 export type Request = { vm: boolean; gpu?: true; image?: string; size?: "small" | "medium" | "xlarge" };   // size only when it is not the default: the server's vm_room judges the default (8192 MB); a size above it is judged by vm_fit_mb like the ones below
 export type Choice =
-  | { host: string; reason: "order" | "spread" | "overflow" | "fit"; room: string[]; notes: string[] }
+  | { host: string; reason: "order" | "spread" | "overflow" | "fit"; room: string[]; notes: string[]; hosts: RefusalHost[] }
   | { refusal: string[]; notes: string[]; wait: boolean; hosts: RefusalHost[] };
 
 // What the client knows of one host that said no: its state, the reason as printed, and the memory figures it was told (units in the key
@@ -493,9 +494,10 @@ export function choose(hosts: HostState[], req: Request): Choice {
   room.sort((a, b) => (a.asleep ? 1 : 0) - (b.asleep ? 1 : 0) || (a.busy ? 1 : 0) - (b.busy ? 1 : 0) || (a.cap !== undefined || b.cap !== undefined ? (a.cap ?? Infinity) - (b.cap ?? Infinity) : a.free === b.free ? 0 : b.free > a.free ? 1 : -1));   // stable: ties keep the order
   const order = [...room.map((r) => r.name), ...late];
   const host = order[0];
-  if (host === undefined) return { refusal: hosts.map((h, i) => `${h.name}: ${why[i]}`), notes, wait: waitable, hosts: hosts.map((h, i) => ({ host: h.name, state: h.state, reason: why[i] as string, ...figures[i] })) };
+  const table = hosts.map((h, i): RefusalHost => ({ host: h.name, state: h.state, reason: why[i] as string, ...figures[i] }));
+  if (host === undefined) return { refusal: hosts.map((h, i) => `${h.name}: ${why[i]}`), notes, wait: waitable, hosts: table };
   const first = hosts[0]?.name;
-  return { host, reason: room[0]?.cap !== undefined ? "fit" : host === first ? "order" : room.some((r) => r.name === first) ? "spread" : "overflow", room: order, notes };
+  return { host, reason: room[0]?.cap !== undefined ? "fit" : host === first ? "order" : room.some((r) => r.name === first) ? "spread" : "overflow", room: order, notes, hosts: table };
 }
 
 // --git: a repository at this worktree's own commit, made here and sent next to the synced files. A shallow fetch of exactly
@@ -957,28 +959,29 @@ async function forwardCall(verb: "forward" | "vnc", args: string[], env: Env): P
   return orphaned ? 129 : 0;
 }
 
-// box serve [--host <name>] [--pod <name>] [--idle <seconds>] [--start-wait <seconds>] <local-port> <box-port> -- <box arguments>: box forward
+// box serve [--host <name>] [--pod <name>] [--idle <seconds>] [--start-wait <seconds>] [--ready-path <path>] <local-port> <box-port> -- <box arguments>: box forward
 // whose server starts on the first connection (box --detach --idle-exit <idle> <box arguments>, through main with an inner record, as --shards
 // starts its runs) and is ended by the host when unused. State: the run this process started and whether the server is believed up. A channel
 // that fails before one byte came back means the server is down: it is started again once and the client's bytes are replayed (up to 1 MiB kept).
 // The port answers when a probe (one pod forward channel with no input) exits 0: socat exits 1 at once on a closed port and 0 when its input ends
 // on an open one, and pod forward passes its code on. Probes repeat every BOXD_SERVE_RETRY_MS (1000) until
-// --start-wait seconds, on the clock BOXD_SERVE_CLOCK (a file of epoch milliseconds, a test hook) or the machine's.
-// shortcut: the file sync of a start blocks this process (rsync runs synchronously), so connections wait it out; when the run ends while the wait goes on,
-// the wait still lasts --start-wait. Upgrade when either shows in use.
-const SERVE_USAGE = "usage: box serve [--host <name>] [--pod <name>] [--idle <seconds>] [--start-wait <seconds>] <local-port> <box-port> -- <box arguments>";
+// --start-wait seconds counted from the end of the start call (a relay with no known run probes once before it starts anything: a server an earlier relay started is used), on the clock BOXD_SERVE_CLOCK (a file of epoch milliseconds, a test hook) or the machine's. After each failed probe the run is
+// asked its state, and a run that ended ends the wait at once. With --ready-path the probe is one HTTP GET of that path through a channel and counts only on status 200.
+// shortcut: the file sync of a start blocks this process (rsync runs synchronously); every connection waits for the start anyway, so nothing else is held up.
+const SERVE_USAGE = "usage: box serve [--host <name>] [--pod <name>] [--idle <seconds>] [--start-wait <seconds>] [--ready-path <path>] <local-port> <box-port> -- <box arguments>";
 async function serveCall(args: string[], env: Env): Promise<number> {
   const dd = args.indexOf("--"), before = dd < 0 ? args : args.slice(0, dd), boxArgs = dd < 0 ? [] : args.slice(dd + 1);
-  let hostFlag: string | undefined, pod: string | undefined, idle = 300, startWait = 180;
+  let hostFlag: string | undefined, pod: string | undefined, idle = 300, startWait = 180, readyPath: string | undefined;
   const pos: string[] = [];
   for (let i = 0; i < before.length; i++) {
     const a = before[i] as string, v = before[i + 1];
     if (a === "--help" || a === "-h") { process.stdout.write(`${HELP}\n`); return 0; }
-    if (a === "--host" || a === "--pod" || a === "--idle" || a === "--start-wait") {
+    if (a === "--host" || a === "--pod" || a === "--idle" || a === "--start-wait" || a === "--ready-path") {
       if (v === undefined) return usage(`box serve: ${a} needs a value`);
       i++;
       if (a === "--host") hostFlag = v; else if (a === "--pod") pod = v;
       else if (a === "--idle") { if (!/^\d{1,6}$/.test(v) || Number(v) < 10 || Number(v) > 86400) return usage("box serve: bad --idle (10 to 86400 seconds)"); idle = Number(v); }
+      else if (a === "--ready-path") { if (!v.startsWith("/") || /\s/.test(v)) return usage("box serve: bad --ready-path (must start with /)"); readyPath = v; }
       else { if (!/^\d{1,5}$/.test(v) || Number(v) < 5 || Number(v) > 3600) return usage("box serve: bad --start-wait (5 to 3600 seconds)"); startWait = Number(v); }
     } else if (!a.startsWith("--")) pos.push(a);
     else return usage(`box serve: unknown option ${a}`);
@@ -1001,8 +1004,22 @@ async function serveCall(args: string[], env: Env): Promise<number> {
     child.on("error", () => resolve(false));
     child.on("close", (code) => resolve(code === 0));
   });
+  // With --ready-path the same channel carries one HTTP GET and the port counts only when the answer is status 200: a server that accepts connections while it loads answers 503 or drops.
+  // The input stays open until the first reply line is read: the host's relay (socat) stops about half a second after the end of its input, which would cut a slow answer. The
+  // reply line ends the probe (the child is killed), so a server that keeps the connection open (HTTP/1.1 keep-alive) is not waited for.
+  const ready = (p: string): Promise<boolean> => new Promise((resolve) => {
+    const child = spawn("ssh", [alias(), `pod forward ${box} ${boxPort}`], { stdio: ["pipe", "pipe", "ignore"] });
+    let out = "";
+    const verdict = () => resolve(/^HTTP\/1\.[01] 200 /.test(out));
+    child.stdout.on("data", (d: Buffer) => { if (out.length < 64) out += d; if (out.includes("\n")) { verdict(); child.kill("SIGTERM"); } });
+    child.stdin.on("error", () => {});
+    child.stdin.write(`GET ${p} HTTP/1.0\r\nHost: localhost\r\n\r\n`);
+    child.on("error", () => resolve(false));
+    child.on("close", verdict);
+  });
+  const answers = () => readyPath ? ready(readyPath) : probe();
   const bringUp = async (): Promise<string | undefined> => {
-    const began = now();
+    const unknown = !run;
     if (run && host) {
       const r = await ask(host, `pod log ${box} ${run} 0`);
       const state = r.code === 0 ? /\tstate=(running|ended)(\t|$)/m.exec(r.out.split("\n")[0] ?? "")?.[1] : undefined;
@@ -1011,15 +1028,21 @@ async function serveCall(args: string[], env: Env): Promise<number> {
         run = undefined; // ended (idle exit, or stopped by someone), or gone: the normal case, it is started again
       }
     }
+    // The run id lives in this process only: a relay started while an earlier relay's server still runs must use it, not start a second one in the same box.
+    if (unknown && host && await answers()) { up = true; return undefined; }
     if (!run) {
       const inner: { run: string; host?: string; err?: string } = { run: newRunId() };
       const code = await main([...(hostFlag ? ["--host", hostFlag] : []), "--pod", box, "--idle-exit", String(idle), ...boxArgs], env, inner);
       if (code !== 0 || !inner.host) return (inner.err ?? "").trimEnd().split("\n").pop() || `the start failed (exit ${code})`;
       run = inner.run; host = inner.host;
     }
+    const began = now(); // the wait counts from here: the file sync and an image build of a start are not part of it
     while (!stopping) {
-      if (await probe()) { up = true; return undefined; }
-      if (now() - began >= startWait * 1000) return `the port did not answer within ${startWait} seconds`;
+      if (await answers()) { up = true; return undefined; }
+      if (now() - began >= startWait * 1000) return readyPath ? `${readyPath} did not answer with status 200 within ${startWait} seconds` : `the port did not answer within ${startWait} seconds`;
+      // A server that crashed at start never opens the port: the run's end is the reason, found without waiting out --start-wait. A failed question changes nothing.
+      const r = await ask(host, `pod log ${box} ${run} 0`), head = r.code === 0 ? (r.out.split("\n")[0] ?? "") : "";
+      if (/\tstate=ended(\t|$)/.test(head)) { const x = /\texit=(\d+)(\t|$)/.exec(head)?.[1]; return x ? `the server ended with exit ${x} before the port answered` : "the run ended before the port answered"; }
       await sleep(retryMs);
     }
     return "this relay is ending";
@@ -1035,6 +1058,7 @@ async function serveCall(args: string[], env: Env): Promise<number> {
     sock.on("end", () => { ended = true; });
     const fail = (reason: string) => { if (!stopping) process.stderr.write(`box serve: the server did not start: ${reason}\n`); sock.destroy(); };
     const open = (retry: boolean) => {
+      if (sock.destroyed || stopping) return;
       const child = spawn("ssh", [alias(), `pod forward ${box} ${boxPort}`], { stdio: ["pipe", "pipe", "pipe"] });
       kids.add(child);
       let err = "", got = false;
@@ -1050,7 +1074,7 @@ async function serveCall(args: string[], env: Env): Promise<number> {
         if (code !== 0 && code !== null && !got && retry && !over && !stopping && !sock.destroyed) {
           up = false;
           const why = await ensureUp();
-          if (why !== undefined) fail(why); else open(false);
+          if (why !== undefined) fail(why); else open(false); // open() checks that the client is still there: it may have hung up during the wait
         } else {
           sock.destroy();
           const msg = err.trim();
@@ -1063,7 +1087,7 @@ async function serveCall(args: string[], env: Env): Promise<number> {
     };
     void (async () => {
       if (!up) { const why = await ensureUp(); if (why !== undefined) return fail(why); }
-      if (!sock.destroyed) open(true);
+      open(true);
     })();
   });
   const listening = await new Promise<number | string>((resolve) => {
@@ -1131,7 +1155,7 @@ function listCall(args: string[], env: Env): number {
   if (args[0] !== undefined) return usage(`box list: unknown argument ${args[0]}; box list takes no argument`);
   const here = spawnSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).stdout.trim();
   for (const e of entries(env).sort((a, b) => (a.host < b.host ? -1 : a.host > b.host ? 1 : a.box < b.box ? -1 : a.box > b.box ? 1 : 0))) {
-    process.stdout.write(`${[e.host, e.box, e.worktree, e.worktree === here ? "here" : existsSync(e.worktree) ? "" : "gone"].join("\t")}\n`);
+    process.stdout.write(`${[e.host, e.box, e.worktree, e.worktree === here ? "here" : worktreeHere(e.worktree) ? "" : "gone"].join("\t")}\n`);
   }
   return 0;
 }
@@ -1767,7 +1791,9 @@ export function main(args: string[], env: Env = process.env, inner?: { run: stri
       process.stderr.write(text);
       const code = last(r.code, name);
       // Only the server's own sentence exists for the host that refused (its last line, as the server wrote it); the hosts asked about afterwards carry their figures.
-      if (!inner) emitRefusal(env, [{ host: name, state: "awake", reason: (r.err.trimEnd().split("\n").pop() ?? "") }, ...(c && "refusal" in c ? c.hosts : [])], text, true);
+      // With one registered host the client has no sentence of its own: the server's line stands in for it. The other hosts were asked in elsewhere(); none is asked again.
+      const reason = r.err.trimEnd().split("\n").pop() ?? "";
+      if (!inner) emitRefusal(env, [{ host: name, state: "awake", reason }, ...(c ? c.hosts : [])], text.trim() === "" ? reason : text, true);
       return code;
     }
     if (inner && r.code === 0) { inner.host = name; return 0; }

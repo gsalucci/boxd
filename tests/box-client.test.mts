@@ -120,19 +120,42 @@ fi
 // file exists, else waits for a write into the fifo D/release when there is one, then makes D/running and (unless D/noport exists) D/port.open;
 // `pod log` answers the header of a run, running while D/running exists; `pod forward` relays with cat while D/port.open exists (a port that
 // answers), else ends at once with exit 1 as socat does for a closed port, and adds 1000 to the clock file BOXD_SERVE_CLOCK (milliseconds)
-// when there is one; D/die.once makes the next `pod forward` end at once with exit 1 and the server go down (running and port.open removed).
+// when there is one; D/crash makes `pod run` leave nothing running (the server died at start) and D/exit (a number) is the exit its `pod log` header
+// names once ended; D/http (a number N) makes an open port speak HTTP: no input is a bare connect (exit 0), a request gets status 503 N times, then 200;
+// D/slowstart makes `pod run` add 100000 to the clock file; D/keepalive makes the next `pod forward` on an open port a server that keeps the connection open: it reads the request, waits for a write into the fifo D/answer
+// (it makes D/asked first), and answers 200 only if its input has not ended by then (as socat cuts a slow answer after the end of its input), then waits for its input to end;
+// D/die.once makes the next `pod forward` end at once with exit 1 and the server go down (running and port.open removed).
 const serveFake = `if [ -n "\${FAKE_SERVE_DIR:-}" ]; then
   D=$FAKE_SERVE_DIR
   case "$*" in
     *" pod run "*)
       [ ! -f "$D/refuse" ] || { cat "$D/refuse" >&2; exit 125; }
       [ ! -p "$D/release" ] || read -r _ < "$D/release"
+      [ ! -f "$D/crash" ] || exit 0
+      [ ! -f "$D/slowstart" ] || [ -z "\${BOXD_SERVE_CLOCK:-}" ] || echo $(( $(cat "$BOXD_SERVE_CLOCK") + 100000 )) > "$BOXD_SERVE_CLOCK"
       : > "$D/running"; [ -f "$D/noport" ] || : > "$D/port.open"; exit 0;;
     *" pod log "*)
       if [ -f "$D/running" ]; then s=running; else s=ended; fi
-      printf 'log\\tsize=0\\tfrom=0\\tnext=0\\tstate=%s\\texit=-\\n' "$s"; exit 0;;
+      x=-; [ ! -f "$D/exit" ] || x=$(cat "$D/exit")
+      printf 'log\\tsize=0\\tfrom=0\\tnext=0\\tstate=%s\\texit=%s\\n' "$s" "$x"; exit 0;;
     *" pod forward "*)
       if [ -f "$D/die.once" ]; then rm -f "$D/die.once" "$D/running" "$D/port.open"; echo "E connect: Connection refused" >&2; exit 1; fi
+      if [ -f "$D/port.open" ] && [ -f "$D/keepalive" ]; then
+        rm -f "$D/keepalive"
+        read -r _ || exit 0
+        while read -r l && [ "$l" != "$(printf '\\r')" ]; do :; done
+        exec 3<&0; cat <&3 > /dev/null & c=$! # fd 3: an async command gets /dev/null for fd 0 before its own redirections
+        : > "$D/asked"; read -r _ < "$D/answer"
+        kill -0 $c 2>/dev/null || exit 1
+        printf 'HTTP/1.1 200 OK\\r\\n\\r\\n'; wait $c; exit 0
+      fi
+      if [ -f "$D/port.open" ] && [ -f "$D/http" ]; then
+        read -r _ || exit 0
+        while read -r l && [ "$l" != "$(printf '\\r')" ]; do :; done
+        n=$(cat "$D/n" 2>/dev/null || echo 0); echo $((n + 1)) > "$D/n"
+        if [ "$n" -lt "$(cat "$D/http")" ]; then [ -z "\${BOXD_SERVE_CLOCK:-}" ] || echo $(( $(cat "$BOXD_SERVE_CLOCK") + 1000 )) > "$BOXD_SERVE_CLOCK"; printf 'HTTP/1.0 503 Loading model\\r\\n\\r\\n'; else printf 'HTTP/1.0 200 OK\\r\\n\\r\\nok'; fi
+        exit 0
+      fi
       if [ -f "$D/port.open" ]; then echo $ > "$D/pid.$"; exec cat; fi
       [ -z "\${BOXD_SERVE_CLOCK:-}" ] || echo $(( $(cat "$BOXD_SERVE_CLOCK") + 1000 )) > "$BOXD_SERVE_CLOCK"
       echo "E connect: Connection refused" >&2; exit 1;;
@@ -1447,6 +1470,11 @@ test("box list prints every recorded box of this machine, sorted, with here and 
   assert.equal(bad.code, 2);
   assert.ok(bad.err.startsWith("box list: unknown argument --all; box list takes no argument\n"), bad.err);
   assert.match(runBox(["--help"]).out, /box list /);
+  // The collector counts a folder that is no longer a worktree top folder as gone: so does the list.
+  const plain = path.join(root, "folder-not-a-worktree");
+  mkdirSync(plain);
+  putEntry(s, "tower", "boxd-c", plain);
+  assert.ok(go(rp, s, ["list"]).out.includes(`tower\tboxd-c\t${plain}\tgone\n`));
 });
 
 test("gc: a worktree seen missing once is not removed; seen again too soon, not removed; 15 minutes later, stopped and logged", () => {
@@ -1867,13 +1895,14 @@ test("box serve: the first connection starts the run once with --idle-exit and t
   const a = await viaPort(port, "hello");
   assert.equal(a.got, "hello");
   const calls = serveCalls();
-  assert.match(calls[0] ?? "", new RegExp(`^ssh boxd-test pod run pbox --detach \\d{8}-\\d{6}-[0-9a-f]{4} --idle-exit 120 -- ${b64("sleep", "9")}$`));
-  assert.deepEqual(calls.slice(1), ["ssh boxd-test pod forward pbox 8080", "ssh boxd-test pod forward pbox 8080"], "the probe, then the relay");
+  assert.equal(calls[0], "ssh boxd-test pod forward pbox 8080", "a relay with no known run asks the port first: nothing may already serve it");
+  assert.match(calls[1] ?? "", new RegExp(`^ssh boxd-test pod run pbox --detach \\d{8}-\\d{6}-[0-9a-f]{4} --idle-exit 120 -- ${b64("sleep", "9")}$`));
+  assert.deepEqual(calls.slice(2), ["ssh boxd-test pod forward pbox 8080", "ssh boxd-test pod forward pbox 8080"], "the probe, then the relay");
   const b = await viaPort(port, "again");
   assert.equal(b.got, "again");
   assert.equal(countOf("run"), 1);
   assert.equal(countOf("log"), 0, "a server believed up is not asked about");
-  assert.equal(serveCalls().filter((l) => l.includes(" pod forward ")).length, 3, "one channel more, no probe");
+  assert.equal(serveCalls().filter((l) => l.includes(" pod forward ")).length, 4, "one channel more, no probe");
   a.s.destroy(); b.s.destroy();
   c.child.kill("SIGTERM");
   assert.equal(await c.exit, 0);
@@ -1888,7 +1917,7 @@ test("box serve: two connections that arrive during a start cause one start, and
   const [s1, s2] = [await open("one"), await open("two")];
   const got = [once(s1, "data"), once(s2, "data")];
   await callsReach(/ pod run /);
-  assert.equal(serveCalls().filter((l) => l.includes(" pod forward ")).length, 0, "no channel before the start has ended");
+  assert.equal(serveCalls().filter((l) => l.includes(" pod forward ")).length, 1, "only the first probe, no relay channel before the start has ended");
   execFileSync("sh", ["-c", `echo go > "${fifo}"`]);
   assert.deepEqual((await Promise.all(got)).map(([d]) => String(d)).sort(), ["one", "two"]);
   assert.equal(countOf("run"), 1);
@@ -1908,7 +1937,7 @@ test("box serve: a channel that fails before any byte came back means the server
   assert.equal(b.got, "hello", "the bytes written before the failure were replayed to the new channel");
   assert.equal(countOf("run"), 2, "one new start");
   assert.equal(countOf("log"), 1, "its state was asked first: ended");
-  assert.equal(serveCalls().filter((l) => l.includes(" pod forward ")).length, 5, "the first connection's probe and relay, the failed channel, then the probe and the relay of the new start");
+  assert.equal(serveCalls().filter((l) => l.includes(" pod forward ")).length, 6, "the first connection's first probe, probe and relay, the failed channel, then the probe and the relay of the new start (a known run is asked, not probed first)");
   const c3 = await viaPort(port, "third");
   assert.equal(c3.got, "third");
   assert.equal(countOf("run"), 2, "believed up again: no start for the next connection");
@@ -1923,7 +1952,7 @@ test("box serve: a start the server refuses closes the connection without a byte
   const { c, port } = await serving(env);
   assert.equal(await closedWithoutBytes(port), 0);
   await c.until(/^box serve: the server did not start: boxd-pod: --idle-exit is only for container boxes\n/m, c.err);
-  assert.equal(serveCalls().some((l) => l.includes(" pod forward ")), false, "no channel is opened for a server that did not start");
+  assert.equal(serveCalls().filter((l) => l.includes(" pod forward ")).length, 1, "only the first probe: no channel is opened for a server that did not start");
   c.child.kill("SIGTERM");
   assert.equal(await c.exit, 0);
 });
@@ -1936,12 +1965,148 @@ test("box serve: a port that never answers ends the wait with its own line; a la
   assert.equal(await closedWithoutBytes(port), 0);
   await c.until(/^box serve: the server did not start: the port did not answer within 5 seconds\n/m, c.err);
   assert.equal(countOf("run"), 1);
-  assert.equal(serveCalls().filter((l) => l.includes(" pod forward ")).length, 5, "one probe per second of the wait, counted on the injected clock");
+  assert.equal(serveCalls().filter((l) => l.includes(" pod forward ")).length, 6, "the first probe, then one probe per second of the wait, counted on the injected clock from the end of the start");
+  const asked = countOf("log");
+  assert.equal(asked, 4, "the run is asked about after each failed probe but the last: the wait ends on the clock first");
   writeFileSync(path.join(env.FAKE_SERVE_DIR as string, "port.open"), "");
   const a = await viaPort(port, "late");
   assert.equal(a.got, "late");
   assert.equal(countOf("run"), 1, "the run that is still running is not started again");
-  assert.equal(countOf("log"), 1);
+  assert.equal(countOf("log"), asked + 1, "one more state question: the later connection's");
+  a.s.destroy();
+  c.child.kill("SIGTERM");
+  assert.equal(await c.exit, 0);
+});
+
+test("box serve: a run that ended while the port is awaited fails at once and names the run's exit", async () => {
+  for (const [exit, reason] of [["3", "the server ended with exit 3 before the port answered"], ["-", "the run ended before the port answered"]] as const) {
+    const env = serveEnv({ BOXD_SERVE_CLOCK: path.join(root, "serve-clock") });
+    writeFileSync(env.BOXD_SERVE_CLOCK as string, "0");
+    writeFileSync(path.join(env.FAKE_SERVE_DIR as string, "crash"), "");
+    writeFileSync(path.join(env.FAKE_SERVE_DIR as string, "exit"), exit);
+    const { c, port } = await serving(env, ["serve", "--pod", "pbox", "--idle", "120", "--start-wait", "3600", "0", "8080", "--", "--no-sync", "sleep", "9"]);
+    assert.equal(await closedWithoutBytes(port), 0);
+    await c.until(new RegExp(`^box serve: the server did not start: ${reason}\\n`, "m"), c.err);
+    assert.equal(serveCalls().filter((l) => l.includes(" pod forward ")).length, 2, "the first probe and one probe after the start, then the run was seen ended: no more waiting");
+    c.child.kill("SIGTERM");
+    assert.equal(await c.exit, 0);
+  }
+});
+
+const READY = ["serve", "--pod", "pbox", "--idle", "120", "--ready-path", "/health", "0", "8080", "--", "--no-sync", "sleep", "9"];
+const forwards = () => serveCalls().filter((l) => l.includes(" pod forward ")).length;
+const askHttp = async (port: number) => {
+  const s = net.connect(port, "127.0.0.1");
+  await once(s, "connect");
+  s.write("GET / HTTP/1.0\r\n\r\n");
+  const [d] = await once(s, "data");
+  return { s, got: String(d) };
+};
+
+test("box serve --ready-path: a port that connects but answers 503 is not started yet; the relay opens only after status 200", async () => {
+  const env = serveEnv();
+  writeFileSync(path.join(env.FAKE_SERVE_DIR as string, "http"), "2");
+  const { c, port } = await serving(env, READY);
+  const a = await askHttp(port);
+  assert.match(a.got, /^HTTP\/1\.0 200 /, "the client's own request is the first one answered 200");
+  assert.equal(forwards(), 5, "the first probe (closed), two probes answered 503, one answered 200, then the relay");
+  a.s.destroy();
+  c.child.kill("SIGTERM");
+  assert.equal(await c.exit, 0);
+});
+
+test("box serve --ready-path: a path that never gives 200 ends the wait with its own line", async () => {
+  const env = serveEnv({ BOXD_SERVE_CLOCK: path.join(root, "serve-clock") });
+  writeFileSync(env.BOXD_SERVE_CLOCK as string, "0");
+  writeFileSync(path.join(env.FAKE_SERVE_DIR as string, "http"), "1000000");
+  const { c, port } = await serving(env, ["serve", "--pod", "pbox", "--idle", "120", "--start-wait", "5", "--ready-path", "/health", "0", "8080", "--", "--no-sync", "sleep", "9"]);
+  assert.equal(await closedWithoutBytes(port), 0);
+  await c.until(/^box serve: the server did not start: \/health did not answer with status 200 within 5 seconds\n/m, c.err);
+  c.child.kill("SIGTERM");
+  assert.equal(await c.exit, 0);
+});
+
+test("box serve without --ready-path: a bare connect counts, whatever the server would answer", async () => {
+  const env = serveEnv();
+  writeFileSync(path.join(env.FAKE_SERVE_DIR as string, "http"), "1000000");
+  const { c, port } = await serving(env);
+  const a = await askHttp(port);
+  assert.match(a.got, /^HTTP\/1\.0 503 /);
+  assert.equal(forwards(), 3, "the first bare probe (closed), one after the start, then the relay");
+  a.s.destroy();
+  c.child.kill("SIGTERM");
+  assert.equal(await c.exit, 0);
+});
+
+test("box serve: a relay started while the server still runs uses it and starts nothing (the run id lives in one relay only)", async () => {
+  for (const args of [SERVE, READY]) {
+    const env = serveEnv();
+    writeFileSync(path.join(env.FAKE_SERVE_DIR as string, "port.open"), "");
+    writeFileSync(path.join(env.FAKE_SERVE_DIR as string, "http"), "0");
+    const { c, port } = await serving(env, args);
+    const a = await askHttp(port);
+    assert.match(a.got, /^HTTP\/1\.0 200 /);
+    assert.equal(countOf("run"), 0, "nothing is started");
+    assert.equal(countOf("log"), 0);
+    a.s.destroy();
+    c.child.kill("SIGTERM");
+    assert.equal(await c.exit, 0);
+  }
+});
+
+test("box serve --ready-path: the probe keeps its input open until the answer line is read, and does not wait for a server that keeps the connection open", async () => {
+  const env = serveEnv(), dir = env.FAKE_SERVE_DIR as string, answer = path.join(dir, "answer");
+  writeFileSync(path.join(dir, "port.open"), "");
+  writeFileSync(path.join(dir, "keepalive"), "");
+  execFileSync("mkfifo", [answer]);
+  const { c, port } = await serving(env, READY);
+  const s = net.connect(port, "127.0.0.1");
+  await once(s, "connect");
+  s.write("hi");
+  const got = once(s, "data");
+  while (!existsSync(path.join(dir, "asked"))) await new Promise((r) => setTimeout(r, 5)); // the fake has the request; its answer waits for the fifo
+  execFileSync("sh", ["-c", `echo go > "${answer}"`]);
+  assert.equal(String((await got)[0]), "hi", "the probe saw 200 although its channel never closed, then the relay carried the bytes");
+  assert.equal(countOf("run"), 0);
+  s.destroy();
+  c.child.kill("SIGTERM");
+  assert.equal(await c.exit, 0);
+});
+
+test("box serve: a client that hung up during the restart wait gets no channel", async () => {
+  const env = serveEnv(), dir = env.FAKE_SERVE_DIR as string, fifo = path.join(dir, "release");
+  execFileSync("mkfifo", [fifo]);
+  const release = () => execFileSync("sh", ["-c", `echo go > "${fifo}"`]);
+  const { c, port } = await serving(env);
+  const first = viaPort(port, "first");
+  await callsReach(/ pod run /);
+  release();
+  const a = await first;
+  assert.equal(a.got, "first");
+  writeFileSync(path.join(dir, "die.once"), "");
+  const b = net.connect(port, "127.0.0.1");
+  await once(b, "connect");
+  b.write("gone");
+  while (countOf("run") < 2) await new Promise((r) => setTimeout(r, 5)); // the second start is waiting on the fifo: the restart wait
+  b.destroy();
+  await once(b, "close");
+  release();
+  const d = await viaPort(port, "third");
+  assert.equal(d.got, "third");
+  assert.equal(forwards(), 6, "first probe, probe and relay of the first start; the failed channel; the probe of the restart; the third connection's relay: none for the client that left");
+  a.s.destroy(); d.s.destroy();
+  c.child.kill("SIGTERM");
+  assert.equal(await c.exit, 0);
+});
+
+test("box serve: the --start-wait counts from the end of the start call, not from before the file sync and the build", async () => {
+  const env = serveEnv({ BOXD_SERVE_CLOCK: path.join(root, "serve-clock") });
+  writeFileSync(env.BOXD_SERVE_CLOCK as string, "0");
+  writeFileSync(path.join(env.FAKE_SERVE_DIR as string, "http"), "2");
+  writeFileSync(path.join(env.FAKE_SERVE_DIR as string, "slowstart"), ""); // the start call itself takes 100 seconds on the clock
+  const { c, port } = await serving(env, ["serve", "--pod", "pbox", "--idle", "120", "--start-wait", "5", "--ready-path", "/health", "0", "8080", "--", "--no-sync", "sleep", "9"]);
+  const a = await askHttp(port);
+  assert.match(a.got, /^HTTP\/1\.0 200 /, "one probe answered 503 after the slow start, and the wait went on");
   a.s.destroy();
   c.child.kill("SIGTERM");
   assert.equal(await c.exit, 0);
@@ -1958,7 +2123,7 @@ test("box serve: SIGTERM with no connection ends with exit 0 and has made nothin
   const a = await viaPort(port, "x");
   assert.equal(a.got, "x");
   assert.match(c2.out(), /stopped after 300 idle seconds/, "the default idle time");
-  assert.match(serveCalls()[0] ?? "", / --idle-exit 300 -- /);
+  assert.match(serveCalls().find((l) => l.includes(" pod run ")) ?? "", / --idle-exit 300 -- /);
   a.s.destroy();
   c2.child.kill("SIGINT");
   assert.equal(await c2.exit, 0);
@@ -1979,6 +2144,8 @@ test("box serve usage errors exit 2 and run no ssh", () => {
     [["serve", "--idle", "soon", "0", "80", ...tail], /^box serve: bad --idle \(10 to 86400 seconds\)/],
     [["serve", "--start-wait", "4", "0", "80", ...tail], /^box serve: bad --start-wait \(5 to 3600 seconds\)/],
     [["serve", "--start-wait", "3601", "0", "80", ...tail], /^box serve: bad --start-wait \(5 to 3600 seconds\)/],
+    [["serve", "--ready-path", "health", "0", "80", ...tail], /^box serve: bad --ready-path \(must start with \/\)/],
+    [["serve", "--ready-path"], /^box serve: --ready-path needs a value/],
     [["serve", "--bogus", "0", "80", ...tail], /^box serve: unknown option --bogus/],
   ];
   for (const [args, re] of cases) {
@@ -3587,7 +3754,19 @@ test("BOXD_REFUSAL_JSON=1: a placed worktree whose host refuses at the call gets
   assert.equal(r.code, NO_ROOM);
   const { rest, json } = refusalOf(r.err);
   assert.ok(rest.endsWith("box: exit 75 on tower\n"), rest);
-  assert.deepEqual(json.hosts, [{ host: "tower", state: "awake", reason: REFUSAL }]);
+  assert.deepEqual(json.hosts[0], { host: "tower", state: "awake", reason: REFUSAL });
+  assert.deepEqual(json.hosts.map((h: { host: string; state: string }) => [h.host, h.state]), [["tower", "awake"], ["laptop", "awake"]], "the host the client asked afterwards is listed too, with its figures");
+  assert.equal(json.hosts[1].need_mb, 8192);
   assert.equal(json.waitable, true);
   assert.ok(json.text.includes("hosts that do: laptop"), json.text);
+});
+
+test("BOXD_REFUSAL_JSON=1: a host's own refusal with one registered host: the text is the server's last line", () => {
+  const s = servers([{ name: "tower", status: FULL, runExit: NO_ROOM, runErr: REFUSAL }]), rp = newRepo();
+  go(rp, s, ["--host", "tower", "--no-sync", "true"]);
+  const r = go(rp, s, ["--no-sync", "--vm", "true"], JSON_ON);
+  assert.equal(r.code, NO_ROOM);
+  const { json } = refusalOf(r.err);
+  assert.equal(json.text, REFUSAL);
+  assert.deepEqual(json.hosts, [{ host: "tower", state: "awake", reason: REFUSAL }]);
 });
