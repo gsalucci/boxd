@@ -781,9 +781,45 @@ test("a busy host (load1 above cpus) comes after the calm ones with room; it is 
   assert.equal(two(withLoad(realStatus(1, 20000), "1", "12"), big, true).host, "tower", "(d) both calm: the smallest cap as before");
   const room = (load1?: string, cpus?: string) => two(withLoad(realStatus(1, 30000), load1, cpus), calm, false).room;
   for (const [l, c] of [[undefined, "12"], ["35", undefined], ["abc", "12"], ["35", "x"], ["", "12"], ["35", ""]] as const) assert.deepEqual(room(l, c), ["tower", "laptop"], `(e) load1=${l} cpus=${c}: not busy, the order of before`);
-  assert.deepEqual(room("12", "12"), ["tower", "laptop"], "(f) load1 equal to cpus is not busy");
+  assert.equal(two(withLoad(realStatus(1, 30000), "12", "12"), calm, false).notes[0], "tower=awake", "(f) load1 equal to cpus is not busy (the order is no proxy any more: spare processors decide it)");
   assert.deepEqual(room("12.01", "12"), ["laptop", "tower"]);
   assert.deepEqual(choose([{ name: "tower", state: "asleep" }, { name: "laptop", state: "awake", status: busy }], { vm: false }).room, ["tower", "laptop"], "a sleeping host is never busy");
+});
+
+// Spare processors (cpus - load1) order the containers: 24 November 2026, 12.46 on 16 processors took every call over 0.46 on 12 because it had more free memory.
+const withLoad2 = (s: string, load1?: string, cpus?: string) => s.split("\t").filter((w) => !/^(load1|cpus)=/.test(w)).concat(load1 === undefined ? [] : [`load1=${load1}`], cpus === undefined ? [] : [`cpus=${cpus}`]).join("\t");
+const pair = (a: string, b: string, vm = false) => choose([{ name: "tower", state: "awake", status: a }, { name: "laptop", state: "awake", status: b }], { vm });
+test("calm: a container goes to the host with 2 or more spare processors more, whatever its free memory; reason calm, room lists the calm one first", () => {
+  const r = pair(withLoad2(realStatus(1, 30000), "12.46", "16"), withLoad2(realStatus(1, 20000), "0.46", "12"));
+  assert.deepEqual([r.host, "reason" in r && r.reason, "room" in r && r.room], ["laptop", "calm", ["laptop", "tower"]]);
+  const back = pair(withLoad2(realStatus(1, 20000), "0.46", "12"), withLoad2(realStatus(1, 30000), "12.46", "16"));
+  assert.deepEqual([back.host, "reason" in back && back.reason], ["tower", "order"], "the calm host listed first: order");
+});
+test("calm: spare processors in the same step of 2, or a missing figure, keeps the free memory order", () => {
+  const near = pair(withLoad2(realStatus(1, 30000), "9.5", "12"), withLoad2(realStatus(1, 20000), "9", "12"));   // spare 2.5 against 3: the same step of 2
+  assert.deepEqual([near.host, "reason" in near && near.reason], ["tower", "order"], "a difference inside one step of 2 is noise");
+  const far = pair(withLoad2(realStatus(1, 20000), "9.5", "12"), withLoad2(realStatus(1, 30000), "9", "12"));
+  assert.deepEqual([far.host, "reason" in far && far.reason], ["laptop", "spread"], "noise: free memory decides, as before");
+  for (const [l, c] of [[undefined, "16"], ["12.46", undefined], ["abc", "16"]] as const) {
+    const r = pair(withLoad2(realStatus(1, 30000), l, c), withLoad2(realStatus(1, 20000), "0.46", "12"));
+    assert.deepEqual([r.host, "reason" in r && r.reason], ["tower", "order"], `load1=${l} cpus=${c}: free memory decides`);
+  }
+});
+test("calm: a machine keeps the smallest cap, the busy group still comes last, a sleeping host keeps its place", () => {
+  const loaded = withLoad2(realStatus(1, 20000), "12.46", "16"), idle = withLoad2(realStatus(1, 30000), "0.46", "12");
+  const vm = pair(loaded, idle, true);
+  assert.deepEqual([vm.host, "reason" in vm && vm.reason], ["tower", "fit"], "--vm: the smaller cap, load not looked at");
+  const busyHost = withLoad2(realStatus(1, 30000), "13", "12"), loadedCalm = withLoad2(realStatus(1, 20000), "11", "12");
+  assert.deepEqual(pair(busyHost, loadedCalm).room, ["laptop", "tower"], "busy comes after not busy, by group");
+  const farBusy = withLoad2(realStatus(1, 30000), "40", "12"), nearlyFull = withLoad2(realStatus(1, 20000), "11.9", "12");
+  assert.deepEqual(pair(nearlyFull, farBusy).room, ["tower", "laptop"], "the group order holds, spare processors only order inside a group");
+  const bothBusy = pair(withLoad2(realStatus(1, 30000), "35", "12"), withLoad2(realStatus(1, 20000), "13", "12"));
+  assert.deepEqual([bothBusy.host, "reason" in bothBusy && bothBusy.reason], ["laptop", "calm"], "inside the busy group, the one with more spare processors first");
+  const asleep = choose([{ name: "tower", state: "awake", status: loaded }, { name: "laptop", state: "asleep" }, { name: "fleet", state: "awake", status: idle }], { vm: false });
+  assert.deepEqual("room" in asleep && asleep.room, ["laptop", "fleet", "tower"], "a sleeping host is still ahead of every awake host with room");
+  assert.equal(choose([{ name: "tower", state: "asleep" }, { name: "laptop", state: "awake", status: idle }], { vm: false }).host, "tower");
+  const gpu = choose([{ name: "tower", state: "asleep" }, { name: "laptop", state: "awake", status: idle.replace(/gpus=\d+/, "gpus=1") }], { vm: false, gpu: true });
+  assert.equal(gpu.host, "laptop", "--gpu: a sleeping host still comes after an awake one with a card");
 });
 
 // box hosts --pick: the host a first call would choose now, for a script; read only, never wakes a host, writes no choices log.

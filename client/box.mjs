@@ -24,7 +24,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-export const VERSION = "0.4.82";
+export const VERSION = "0.4.83";
 const BOX = /^[a-z0-9][a-z0-9_.-]{0,62}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const MAC = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i;
@@ -492,7 +492,9 @@ const emitRefusal = (env, hosts, text, waitable) => {
     if (env.BOXD_REFUSAL_JSON === "1")
         process.stderr.write(`${refusalLine(hosts, text.trimEnd(), waitable)}\n`);
 };
-// The host with room for this request that has the most free memory (`mem_free_mb`), ties in the given order. A machine
+// The host with room for this request that has the most free memory (`mem_free_mb`), ties in the given order; a container
+// call looks first at spare processors (`cpus - load1`) counted in steps of 2 so that a small difference is not a reason, when two awake hosts in the same group differ (24 November
+// 2026: load 12 on 16 processors against 0.5 on 12, and the first had more free memory, so it took every call; reason `calm`). A machine
 // (`--vm`) goes to the awake host with room that has the smallest cap for boxes (`group_mem_max_mb`) instead, so the big host
 // stays free for big machines (reason `fit`); a host that reports no cap, and a sleeping one, come after those. Asleep
 // counts as room and as the most free (nothing runs there; the call itself wakes it). Awake: a container
@@ -539,20 +541,21 @@ export function choose(hosts, req) {
             waitable = true;
         }
         else
-            room.push({ name: h.name, ...(busy ? { busy: true } : {}), free: /^\d+$/.test(s.mem_free_mb ?? "") ? Number(s.mem_free_mb) : -1, ...(req.vm && /^\d+$/.test(s.group_mem_max_mb ?? "") ? { cap: Number(s.group_mem_max_mb) } : {}) });
+            room.push({ name: h.name, ...(busy ? { busy: true } : {}), ...(!req.vm && s.load1 !== undefined && /^\d+(\.\d+)?$/.test(s.load1) && /^\d+$/.test(s.cpus ?? "") ? { spare: Math.floor((Number(s.cpus) - Number(s.load1)) / 2) } : {}), free: /^\d+$/.test(s.mem_free_mb ?? "") ? Number(s.mem_free_mb) : -1, ...(req.vm && /^\d+$/.test(s.group_mem_max_mb ?? "") ? { cap: Number(s.group_mem_max_mb) } : {}) });
         why.push(no ?? busy ?? (h.state === "awake" && !s ? "awake, no status" : h.state));
         const fig = s && h.state === "awake" ? { free_mb: num(s.mem_free_mb), fit_mb: num(req.vm ? s.vm_fit_mb : s.box_fit_mb), need_mb: req.vm ? need ?? 8192 : num(s.box_reserve_mb), cap_mb: num(s.group_mem_max_mb) } : {};
         figures.push(Object.fromEntries(Object.entries(fig).filter(([, v]) => v !== undefined)));
     }
     const notes = hosts.map((h, i) => `${h.name}=${why[i]}`);
-    room.sort((a, b) => (a.asleep ? 1 : 0) - (b.asleep ? 1 : 0) || (a.busy ? 1 : 0) - (b.busy ? 1 : 0) || (a.cap !== undefined || b.cap !== undefined ? (a.cap ?? Infinity) - (b.cap ?? Infinity) : a.free === b.free ? 0 : b.free > a.free ? 1 : -1)); // stable: ties keep the order
+    room.sort((a, b) => (a.asleep ? 1 : 0) - (b.asleep ? 1 : 0) || (a.busy ? 1 : 0) - (b.busy ? 1 : 0) || (a.cap !== undefined || b.cap !== undefined ? (a.cap ?? Infinity) - (b.cap ?? Infinity) : a.spare !== undefined && b.spare !== undefined && a.spare !== b.spare ? b.spare - a.spare : a.free === b.free ? 0 : b.free > a.free ? 1 : -1)); // stable: ties keep the order
     const order = [...room.map((r) => r.name), ...late];
     const host = order[0];
     const table = hosts.map((h, i) => ({ host: h.name, state: h.state, reason: why[i], ...figures[i] }));
     if (host === undefined)
         return { refusal: hosts.map((h, i) => `${h.name}: ${why[i]}`), notes, wait: waitable, hosts: table };
-    const first = hosts[0]?.name;
-    return { host, reason: room[0]?.cap !== undefined ? "fit" : host === first ? "order" : room.some((r) => r.name === first) ? "spread" : "overflow", room: order, notes, hosts: table };
+    const first = hosts[0]?.name, top = room[0], at = (n) => hosts.findIndex((h) => h.name === n);
+    const calm = top?.spare !== undefined && room.some((r) => r.spare !== undefined && at(r.name) < at(top.name) && !r.busy === !top.busy && (top.spare ?? 0) > r.spare);
+    return { host, reason: room[0]?.cap !== undefined ? "fit" : host === first ? "order" : calm ? "calm" : room.some((r) => r.name === first) ? "spread" : "overflow", room: order, notes, hosts: table };
 }
 // --git: a repository at this worktree's own commit, made here and sent next to the synced files. A shallow fetch of exactly
 // that commit (git sends only what the one commit needs) into an empty temporary repository; HEAD is detached on it (no branch
@@ -695,7 +698,7 @@ function place(gitDir, name, keepFirst) {
     return name;
 }
 // ~/.local/state/boxd/choices.log: one tab separated line per placement decision (not per call): time, box, request
-// (engine,image), host, reason (order, spread, overflow, retry, moved), and what each probed host said.
+// (engine,image), host, reason (order, spread, calm, overflow, retry, moved), and what each probed host said.
 function logChoice(env, box, req, host, reason, notes) {
     const dir = path.join(env.HOME ?? "", ".local", "state", "boxd");
     try {

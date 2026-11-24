@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.83
+
+- **A container call goes to the host with more spare processors.** Among the hosts with room, the client used to take the
+  one with the most free memory, so a big host took every build until its load passed its processor count while a small one
+  idled (measured: load 12 on 16 processors against 0.5 on 12). It now looks first at spare processors (`cpus` minus `load1`,
+  counted in steps of 2 so a small difference decides nothing), then at free memory. `box hosts --pick` and the choice log
+  name this reason `calm`. Unchanged: the memory admission of the server, the rule for machines (the smallest cap that
+  fits), a host with load above its processors still comes last, a sleeping host keeps its place. Known limit: the load is
+  that of the last minute, and a host is chosen once when a box is made, so two builds placed minutes apart can still land
+  on the same host.
+- The skill text says how to send many short commands through one `box forward` channel with ssh connection sharing, and
+  that `box pull` fetches a file git ignores.
+- The README's first screen has a terminal recording, the install lines and a comparison table; the repository has a
+  contributing guide, a code of conduct, a security policy, issue forms and a pull request template.
+
 ## 0.4.82
 
 - `box serve --ready-path <path>`: the server counts as started only when an HTTP GET of that path answers with status 200,
