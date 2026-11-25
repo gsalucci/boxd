@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.85
+
+- **A model server is not a build.** 0.4.84 counted every box with a call or a run going in the `busy` word, so a model
+  server started by `box serve` (a detached run with `--idle-exit`) made its host look half loaded for hours while its
+  processors idled (seen 25 Nov: a server on the graphics card at load 0.8 steered every build away from that host). A box
+  whose live run was started with `--idle-exit` is no longer counted. Known limit: a build called into that same box while
+  its server runs is not counted either.
+- **A test that failed under load is fixed.** One check of the forward idle timer moved the test clock back and released the
+  channel in one step, so a look that read the old clock ended the run; it now lets the timer look twice on the new clock first.
+
 ## 0.4.84
 
 - **Two builds placed seconds apart no longer land on the same host.** The 0.4.83 rule counts spare processors from `load1`,

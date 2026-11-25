@@ -39,7 +39,7 @@ gpu_count() {
 }
 ROUTE=${BOXD_ROUTE:-/proc/net/route}   # test hooks: the routing table and the network interface folder `pod report` reads
 NETDIR=${BOXD_NET:-/sys/class/net}
-VERSION=0.4.84
+VERSION=0.4.85
 # Keys that may only read, one "<type> <key> [comment]" per line (view_only below); and the largest answer of pod calls and pod log.
 VIEW_KEYS=${BOXD_VIEW_KEYS:-/etc/boxd/view_keys}
 READ_MAX=${BOXD_READ_MAX:-1048576}
@@ -471,7 +471,10 @@ ctr_commit() {
 # the other side of vm_idle.
 box_busy() { local f=$WORK/jobs/$1/.running; [ -e "$f" ] && ! flock -n -x "$f" true 2>/dev/null; }
 # busy_count: how many boxes of this host a call or a run holds now (box_busy over every jobs folder, no engine call); the word `busy` of `pod status`.
-busy_count() { local b n=0; while IFS= read -r b; do box_busy "$b" && n=$((n + 1)); done < <(find "$WORK/jobs" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null); echo "$n"; }   # find, not a pattern: this script runs with set -f
+# A box with a live --idle-exit run (box serve: runs/<id>.idle until the run ends) is a server, not a build, and is not counted
+# (25 Nov 2026: a model server on the graphics card held its box for hours at load 0.8 and made its host look half loaded).
+# shortcut: a build called into the same box while its server runs is not counted either; upgrade if serve boxes take builds.
+busy_count() { local b n=0; while IFS= read -r b; do box_busy "$b" && [ -z "$(find "$WORK/jobs/$b/runs" -maxdepth 1 -name '*.idle' -print -quit 2>/dev/null)" ] && n=$((n + 1)); done < <(find "$WORK/jobs" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null); echo "$n"; }   # find, not a pattern: this script runs with set -f
 box_young() { [ $(($(date +%s) - $(stamp_of "$1"))) -le "$VM_IDLE_MIN" ]; }
 # Idle machines give their room back when another machine asks for it (owner, 2026-11-16: "we really need a way to auto-cleanup
 # the idle vms"; an idle 8 GB machine held a slot on a full host until the reaper's 30 minutes). vm_idle <sandbox>: unused for

@@ -1378,6 +1378,12 @@ eq "drop idle: a box with a run going is kept, exit 75 and the message" "75|boxd
 eq "drop idle: the folder, the container and the log are untouched" "yes|pod-$box|" "$([ -d "$W/jobs/$box" ] && echo yes)|$(ls "$FAKE_STATE")|$(evlog)"
 bword() { tr '\t' '\n' < "$T/e/out" | grep '^busy='; }
 pod "pod status"; eq "busy: a box whose .running is held counts 1, and it is the last word of pod status" "busy=1 busy" "$(bword) $(tr '\t' '\n' < "$T/e/out" | tail -n 1 | cut -d= -f1)"
+# A server started by box serve (a detached run with --idle-exit, marked by runs/<id>.idle) is not a build (25 Nov: a model
+# server on the graphics card held its box for hours at load 0.8 and made its host look half loaded).
+mkdir -p "$W/jobs/$box/runs"; echo 300 > "$W/jobs/$box/runs/20261125-060058-9613.idle"
+pod "pod status"; eq "busy: a box held by a run started with --idle-exit (box serve) counts 0" "busy=0" "$(bword)"
+rm -f "$W/jobs/$box/runs/20261125-060058-9613.idle"
+pod "pod status"; eq "busy: the same box once that run ended counts 1 again" "busy=1" "$(bword)"
 exec 8<&-
 pod "pod status"; eq "busy: once the holder ended, 0" "busy=0" "$(bword)"
 pod "pod drop $box idle"; eq "drop idle: once the holder ended the box is removed" "0||$box	worktree gone" "$rc|$(folders)|$(evlog)"
@@ -1883,7 +1889,7 @@ eq "forward: the channel stamped .forwarded when it opened" yes "$([ "$(stat -c 
 touch -d @100 "$W/jobs/$box/.forwarded"
 idleclock $((t0 + 5000)); looks
 eq "idle-exit: an open channel keeps the run, however long it is quiet" running "$(runstate "$IC")"
-idleclock $t0; echo go > "$T/hold"; wait "$fp"
+idleclock $t0; looks; echo go > "$T/hold"; wait "$fp"   # two looks on the new clock before the channel ends (the race of the killed channel below)
 f2=$(stat -c %Y "$W/jobs/$box/.forwarded")
 eq "forward: the channel stamped .forwarded again when it ended" yes "$([ "$f2" -ge "$t0" ] && echo yes || echo no)"
 eq "forward: .forwarding is free once the channel ended" free "$(flock -n -x "$W/jobs/$box/.forwarding" true && echo free || echo busy)"
@@ -1913,7 +1919,9 @@ exec 6>>"$W/jobs/$box/.forwarding"; flock -s 6
 touch -d @100 "$W/jobs/$box/.forwarded"
 idleclock $((t0 + 5000)); looks
 eq "idle-exit: a channel open for hours keeps the run" running "$(runstate "$ID")"
-idleclock $((t0 + 9)); exec 6>&-; looks   # released with no end stamp
+# Two looks on the new clock before the release: a look that read the old clock (t0 + 5000) and tested the lock after the release
+# would end the run (seen 25 Nov under load). Real clocks never go back, so this is the test's race, not the host's.
+idleclock $((t0 + 9)); looks; exec 6>&-; looks   # released with no end stamp
 s=$(stat -c %Y "$W/jobs/$box/.forwarded")
 eq "idle-exit: the host stamped the open channel itself" yes "$([ "$s" -ge "$t0" ] && echo yes || echo no)"
 eq "idle-exit: nine seconds after the last stamp the run is still there" running "$(runstate "$ID")"
