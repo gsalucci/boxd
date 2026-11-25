@@ -3586,7 +3586,7 @@
       "command": "pod status",
       "msb": false,
       "exit": 0,
-      "stdout_re": "^version=0\\.4\\.83\tengines=container\tcpus=8\tload1=[0-9]+\\.[0-9]+\tvm_used=0\tvm_max=3\tvm_room=no\tboxes=0\tdisk_pct=37\tmem_free_mb=unknown\timages=\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=-\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096\twaiting=0\tgpus=0$"
+      "stdout_re": "^version=0\\.4\\.84\tengines=container\tcpus=8\tload1=[0-9]+\\.[0-9]+\tvm_used=0\tvm_max=3\tvm_room=no\tboxes=0\tdisk_pct=37\tmem_free_mb=unknown\timages=\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=-\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096\twaiting=0\tgpus=0\tbusy=0$"
     },
     {
       "name": "pod status: one of three machines running, room for another; boxes counts both engines",
@@ -3608,7 +3608,7 @@
           "state": "stopped"
         }
       },
-      "stdout_re": "^version=0\\.4\\.83\tengines=container,vm\tcpus=8\tload1=[0-9]+\\.[0-9]+\tvm_used=1\tvm_max=3\tvm_room=yes\tboxes=3\tdisk_pct=37\tmem_free_mb=unknown\timages=\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=-\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096\twaiting=0\tgpus=0$"
+      "stdout_re": "^version=0\\.4\\.84\tengines=container,vm\tcpus=8\tload1=[0-9]+\\.[0-9]+\tvm_used=1\tvm_max=3\tvm_room=yes\tboxes=3\tdisk_pct=37\tmem_free_mb=unknown\timages=\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=-\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096\twaiting=0\tgpus=0\tbusy=0$"
     },
     {
       "name": "pod status: all machines used, no room (vm_room is the server's own answer)",
@@ -3643,7 +3643,7 @@
           "state": "running"
         }
       },
-      "stdout_re": "\tvm_used=1\tvm_max=1\tvm_room=no\t.*\tvm_why=1 of 1 running\tvm_fit_mb=0\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096\twaiting=0\tgpus=0$"
+      "stdout_re": "\tvm_used=1\tvm_max=1\tvm_room=no\t.*\tvm_why=1 of 1 running\tvm_fit_mb=0\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096\twaiting=0\tgpus=0\tbusy=0$"
     },
     {
       "name": "pod status: images lists the archives of local images, sorted, and leaves out per-box builds",
@@ -3654,7 +3654,7 @@
         "another"
       ],
       "archives_built": true,
-      "stdout_re": "\timages=another,toolbox\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=-\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096\twaiting=0\tgpus=0$"
+      "stdout_re": "\timages=another,toolbox\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=-\tgroup_mem_max_mb=-\tvm_why=\tvm_fit_mb=-\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096\twaiting=0\tgpus=0\tbusy=0$"
     },
     {
       "name": "pod status: free memory is the cgroup's limit minus its anonymous and shared memory (the admission's figure), in megabytes; file cache, active or not, is free",
@@ -3665,7 +3665,7 @@
         "memory.current": "12884901888\n",
         "memory.stat": "anon 1073741824\nshmem 1073741824\ninactive_file 2147483648\nactive_file 5368709120\n"
       },
-      "stdout_re": "\tmem_free_mb=30720\timages=\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=2048\tgroup_mem_max_mb=32768\tvm_why=\tvm_fit_mb=30720\tbox_room=yes\tbox_fit_mb=32768\tbox_reserve_mb=4096\twaiting=0\tgpus=0$"
+      "stdout_re": "\tmem_free_mb=30720\timages=\tmem_avail_mb=[0-9]+\tgroup_mem_used_mb=2048\tgroup_mem_max_mb=32768\tvm_why=\tvm_fit_mb=30720\tbox_room=yes\tbox_fit_mb=32768\tbox_reserve_mb=4096\twaiting=0\tgpus=0\tbusy=0$"
     },
     {
       "name": "pod status takes no lock, writes nothing and starts or removes nothing",
@@ -4178,7 +4178,7 @@
         "jobs/a/.mem-peak": "700",
         "jobs/b/.vm-user": ""
       },
-      "stdout_re": "^host\tversion=0\\.4\\.83\tengines=container,vm\tcpus=8\tload1=[0-9]+\\.[0-9]+\tload5=[0-9]+\\.[0-9]+\tload15=[0-9]+\\.[0-9]+\tboot=[0-9]+\tmem_total_mb=32000\tmem_avail_mb=9000\tswap_total_mb=8000\tswap_used_mb=1200\tgroup_mem_max_mb=32768\tgroup_mem_used_mb=1024\tpressure_some10=2\\.31\tpressure_some60=1\\.12\tpressure_full10=0\\.40\tpressure_full60=0\\.18\toom_kills=1\tpressure_some_ms=1234\tpressure_full_ms=7654\tnet_tx_timeouts=8\tnet_link_changes=4\tvm_used=0\tvm_max=none\tvm_room=yes\tvm_mem_mb=8192\tbox_mem_mb=12288\tdisk_pct=37\tdisk_total_mb=976562\tdisk_used_mb=361328\tttl=1800\twork_own=no\twork_shared=yes\tevict_at=70\tevict_to=60\tkeep_days=14\tpower=on\tidle_checks=20\tidle_count=7\tidle_last=idle\treset_at=85\tkeepawake=free\twaiting=0\tgroup_swap_used_mb=-\tgroup_swap_max_mb=-\tzram_used_mb=-\tzram_peak_mb=-\tgpus=0\nbox\tbox=a\tengine=container\timage=docker\\.io/library/rust:1\tstate=running\tlast_used=0\tuser=no\tsize=-\tmem_limit_mb=12288\tmem_mb=(-|[0-9]+)\tbusy=no\truns=1\tmem_peak_mb=-\nbox\tbox=b\tengine=vm\timage=localhost/toolbox:latest\tstate=stopped\tlast_used=0\tuser=yes\tsize=small\tmem_limit_mb=2048\tmem_mb=-\tbusy=no\truns=0\tmem_peak_mb=2900\nrun\tbox=a\tid=r1\tstate=ended\texit=3\tbytes=11\tchanged=[0-9]+\nrun\tbox=a\tid=r2\tstate=running\texit=-\tbytes=4\tchanged=[0-9]+\nimage\tname=toolbox\tbytes=0\tbuilt=[0-9]+\tvm_loaded=-$",
+      "stdout_re": "^host\tversion=0\\.4\\.84\tengines=container,vm\tcpus=8\tload1=[0-9]+\\.[0-9]+\tload5=[0-9]+\\.[0-9]+\tload15=[0-9]+\\.[0-9]+\tboot=[0-9]+\tmem_total_mb=32000\tmem_avail_mb=9000\tswap_total_mb=8000\tswap_used_mb=1200\tgroup_mem_max_mb=32768\tgroup_mem_used_mb=1024\tpressure_some10=2\\.31\tpressure_some60=1\\.12\tpressure_full10=0\\.40\tpressure_full60=0\\.18\toom_kills=1\tpressure_some_ms=1234\tpressure_full_ms=7654\tnet_tx_timeouts=8\tnet_link_changes=4\tvm_used=0\tvm_max=none\tvm_room=yes\tvm_mem_mb=8192\tbox_mem_mb=12288\tdisk_pct=37\tdisk_total_mb=976562\tdisk_used_mb=361328\tttl=1800\twork_own=no\twork_shared=yes\tevict_at=70\tevict_to=60\tkeep_days=14\tpower=on\tidle_checks=20\tidle_count=7\tidle_last=idle\treset_at=85\tkeepawake=free\twaiting=0\tgroup_swap_used_mb=-\tgroup_swap_max_mb=-\tzram_used_mb=-\tzram_peak_mb=-\tgpus=0\nbox\tbox=a\tengine=container\timage=docker\\.io/library/rust:1\tstate=running\tlast_used=0\tuser=no\tsize=-\tmem_limit_mb=12288\tmem_mb=(-|[0-9]+)\tbusy=no\truns=1\tmem_peak_mb=-\nbox\tbox=b\tengine=vm\timage=localhost/toolbox:latest\tstate=stopped\tlast_used=0\tuser=yes\tsize=small\tmem_limit_mb=2048\tmem_mb=-\tbusy=no\truns=0\tmem_peak_mb=2900\nrun\tbox=a\tid=r1\tstate=ended\texit=3\tbytes=11\tchanged=[0-9]+\nrun\tbox=a\tid=r2\tstate=running\texit=-\tbytes=4\tchanged=[0-9]+\nimage\tname=toolbox\tbytes=0\tbuilt=[0-9]+\tvm_loaded=-$",
       "podman_calls_absent": [
         "^run",
         "^start",
@@ -4214,7 +4214,7 @@
         "BOXD_IDLE_STATE": "/work/no-idle",
         "FAKE_STAT_FAIL": "1"
       },
-      "stdout_re": "^host\tversion=0\\.4\\.83\tengines=container\tcpus=8\t.*\tgroup_mem_max_mb=-\tgroup_mem_used_mb=-\tpressure_some10=-\tpressure_some60=-\tpressure_full10=-\tpressure_full60=-\toom_kills=-\tpressure_some_ms=-\tpressure_full_ms=-\tnet_tx_timeouts=-\tnet_link_changes=-\tvm_used=0\tvm_max=3\tvm_room=no\tvm_mem_mb=8192\tbox_mem_mb=12288\tdisk_pct=37\tdisk_total_mb=976562\tdisk_used_mb=361328\tttl=1800\twork_own=-\twork_shared=-\tevict_at=70\tevict_to=60\tkeep_days=14\tpower=off\tidle_checks=-\tidle_count=-\tidle_last=-\treset_at=-\tkeepawake=none\twaiting=0\tgroup_swap_used_mb=-\tgroup_swap_max_mb=-\tzram_used_mb=-\tzram_peak_mb=-\tgpus=0$"
+      "stdout_re": "^host\tversion=0\\.4\\.84\tengines=container\tcpus=8\t.*\tgroup_mem_max_mb=-\tgroup_mem_used_mb=-\tpressure_some10=-\tpressure_some60=-\tpressure_full10=-\tpressure_full60=-\toom_kills=-\tpressure_some_ms=-\tpressure_full_ms=-\tnet_tx_timeouts=-\tnet_link_changes=-\tvm_used=0\tvm_max=3\tvm_room=no\tvm_mem_mb=8192\tbox_mem_mb=12288\tdisk_pct=37\tdisk_total_mb=976562\tdisk_used_mb=361328\tttl=1800\twork_own=-\twork_shared=-\tevict_at=70\tevict_to=60\tkeep_days=14\tpower=off\tidle_checks=-\tidle_count=-\tidle_last=-\treset_at=-\tkeepawake=none\twaiting=0\tgroup_swap_used_mb=-\tgroup_swap_max_mb=-\tzram_used_mb=-\tzram_peak_mb=-\tgpus=0$"
     },
     {
       "name": "pod report: a work area that is a file system of its own, on another disk than the system, shows the levels in force",
@@ -5675,7 +5675,7 @@
         "memory.max": "10737418240\n",
         "memory.stat": "anon 0\nshmem 0\n"
       },
-      "stdout_re": "\tvm_fit_mb=2048\tbox_room=no\tbox_fit_mb=2048\tbox_reserve_mb=4096\twaiting=0\tgpus=0$"
+      "stdout_re": "\tvm_fit_mb=2048\tbox_room=no\tbox_fit_mb=2048\tbox_reserve_mb=4096\twaiting=0\tgpus=0\tbusy=0$"
     },
     {
       "name": "pod status: room for another busy box says how many megabytes fit",
@@ -5691,7 +5691,7 @@
         "memory.max": "15032385536\n",
         "memory.stat": "anon 0\nshmem 0\n"
       },
-      "stdout_re": "\tbox_room=yes\tbox_fit_mb=6144\tbox_reserve_mb=4096\twaiting=0\tgpus=0$"
+      "stdout_re": "\tbox_room=yes\tbox_fit_mb=6144\tbox_reserve_mb=4096\twaiting=0\tgpus=0\tbusy=0$"
     },
     {
       "name": "pod status: with the rule off the host says yes and no figure, and the reserve 0",
@@ -5710,7 +5710,7 @@
       "env": {
         "BOXD_BOX_RESERVE": "0"
       },
-      "stdout_re": "\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=0\twaiting=0\tgpus=0$"
+      "stdout_re": "\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=0\twaiting=0\tgpus=0\tbusy=0$"
     },
     {
       "name": "pod status: a host that cannot measure its memory says yes and no figure",
@@ -5722,7 +5722,7 @@
           "state": "running"
         }
       },
-      "stdout_re": "\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096\twaiting=0\tgpus=0$"
+      "stdout_re": "\tbox_room=yes\tbox_fit_mb=-\tbox_reserve_mb=4096\twaiting=0\tgpus=0\tbusy=0$"
     },
     {
       "name": "size from the past need: 1638 MB gives small",
@@ -5979,7 +5979,7 @@
         ".mem-peak": "2900",
         ".vm-size": "medium"
       },
-      "stdout_re": "^evicted boxd-2889387319 \\(worktree gone\\), needed 2900 MB of 4096 MB \\(medium\\), [0-9]+ MB freed$",
+      "stdout_re": "^evicted boxd-2889387319 \\(dropped on request\\), needed 2900 MB of 4096 MB \\(medium\\), [0-9]+ MB freed$",
       "files_absent": [
         "/work/jobs/boxd-2889387319"
       ],
@@ -6001,7 +6001,7 @@
       "job_files": {
         ".mem-peak": "7900"
       },
-      "stdout_re": "^evicted boxd-2889387319 \\(worktree gone\\), needed 7900 MB of 8192 MB \\(large\\), [0-9]+ MB freed$",
+      "stdout_re": "^evicted boxd-2889387319 \\(dropped on request\\), needed 7900 MB of 8192 MB \\(large\\), [0-9]+ MB freed$",
       "files_match": {
         "/work/cache/mem-peaks.log": "^[0-9]+\tboxd-2889387319\tlarge\t8192\t7900$"
       }
@@ -6020,7 +6020,7 @@
       "job_files": {
         ".vm-size": "medium"
       },
-      "stdout_re": "^evicted boxd-2889387319 \\(worktree gone\\), [0-9]+ MB freed$",
+      "stdout_re": "^evicted boxd-2889387319 \\(dropped on request\\), [0-9]+ MB freed$",
       "files_absent": [
         "/work/cache/mem-peaks.log"
       ]

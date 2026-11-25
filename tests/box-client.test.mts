@@ -703,7 +703,7 @@ const choices = (s: Servers) => { try { return readFileSync(path.join(s.home, ".
 const closedPort = async () => { const s = net.createServer().listen(0, "127.0.0.1"); await once(s, "listening"); const p = (s.address() as net.AddressInfo).port; s.close(); await once(s, "close"); return p; };
 
 test("seam: the real server's status line is what the client's choice reads", () => {
-  assert.deepEqual(Object.keys(parseStatus(FULL)), ["version", "engines", "cpus", "load1", "vm_used", "vm_max", "vm_room", "boxes", "disk_pct", "mem_free_mb", "images", "mem_avail_mb", "group_mem_used_mb", "group_mem_max_mb", "vm_why", "vm_fit_mb", "box_room", "box_fit_mb", "box_reserve_mb", "waiting", "gpus"]);
+  assert.deepEqual(Object.keys(parseStatus(FULL)), ["version", "engines", "cpus", "load1", "vm_used", "vm_max", "vm_room", "boxes", "disk_pct", "mem_free_mb", "images", "mem_avail_mb", "group_mem_used_mb", "group_mem_max_mb", "vm_why", "vm_fit_mb", "box_room", "box_fit_mb", "box_reserve_mb", "waiting", "gpus", "busy"]);
   assert.equal(parseStatus(FULL).vm_room, "no");
   assert.equal(parseStatus(FREE).vm_room, "yes");
   assert.equal(parseStatus(FREE).images, "toolbox");
@@ -803,6 +803,24 @@ test("calm: spare processors in the same step of 2, or a missing figure, keeps t
   for (const [l, c] of [[undefined, "16"], ["12.46", undefined], ["abc", "16"]] as const) {
     const r = pair(withLoad2(realStatus(1, 30000), l, c), withLoad2(realStatus(1, 20000), "0.46", "12"));
     assert.deepEqual([r.host, "reason" in r && r.reason], ["tower", "order"], `load1=${l} cpus=${c}: free memory decides`);
+  }
+});
+// busy: 25 November 2026, 06:05: a second call 7 seconds after the first went to the same 16 processor host because load1 (0.5) had not moved; the word `busy` (boxes holding a call) counts at least half the host per call.
+const withBusy = (s: string, busy?: string) => s.replace(/\tbusy=[^\t]*$/, "") + (busy === undefined ? "" : `\tbusy=${busy}`);   // the real server now prints busy=0 last: replace it, or leave it out (an older server)
+test("busy: one running call on the tower (load1 still 0.5) sends the next container call to the laptop, reason calm", () => {
+  const r = pair(withBusy(withLoad2(realStatus(1, 30000), "0.5", "16"), "1"), withBusy(withLoad2(realStatus(1, 20000), "0.1", "12"), "0"));
+  assert.deepEqual([r.host, "reason" in r && r.reason, "room" in r && r.room], ["laptop", "calm", ["laptop", "tower"]]);
+});
+test("busy: no busy word on either line (an older server) leaves the measured load: the tower stays first", () => {
+  const r = pair(withBusy(withLoad2(realStatus(1, 30000), "0.5", "16")), withBusy(withLoad2(realStatus(1, 20000), "0.1", "12")));
+  assert.deepEqual([r.host, "reason" in r && r.reason], ["tower", "order"]);
+});
+test("busy: two calls count as the whole host; a busy word that is not digits is ignored", () => {
+  const two = pair(withBusy(withLoad2(realStatus(1, 30000), "0.5", "16"), "2"), withBusy(withLoad2(realStatus(1, 20000), "7", "12"), "0"));
+  assert.deepEqual([two.host, "reason" in two && two.reason], ["laptop", "calm"], "busy=2 on 16: spare 0 against spare 2");
+  for (const bad of ["", "x", "1.5", "-1", "1e1"]) {
+    const r = pair(withBusy(withLoad2(realStatus(1, 30000), "0.5", "16"), bad), withBusy(withLoad2(realStatus(1, 20000), "0.1", "12"), "0"));
+    assert.deepEqual([r.host, "reason" in r && r.reason], ["tower", "order"], `busy=${bad} is ignored`);
   }
 });
 test("calm: a machine keeps the smallest cap, the busy group still comes last, a sleeping host keeps its place", () => {

@@ -22,7 +22,7 @@
 #                 the work area is above the eviction level; the work area is no file system of its own, or shares the
 #                 system's disk while cleanup starts at 60 percent or more (words work_own, work_shared, evict_at);
 #                 a host stays awake without work; a box whose worktree is gone for hours is still recorded
-#   hosts         a host that should answer does not; the hosts run different versions
+#   hosts         a host that should answer does not; the hosts run different versions; one host is over its processors while another has room and sits under half of its own (`lopsided`)
 set -u
 D=${HOST_WATCH_DIR:-$HOME/.local/state/boxd/watch}
 STATE=${BOXD_STATE:-$HOME/.local/state/boxd}
@@ -89,16 +89,21 @@ choices() { # <choices.log> <from line>
     }' "$1"
 }
 
-# Boxes whose worktree is gone but which the collector has not removed: it runs only after somebody's `box` call.
+# Boxes whose worktree is gone but which the collector failed to remove. The collector runs only after somebody's `box`
+# call, marks a missing worktree on one pass (missingSince) and removes its box on a pass at least 15 minutes later; its
+# last pass is the time of gc.stamp. A record still there after such a pass is the fault; one waiting for the next call
+# is not (25 Nov 2026: two records waited the quiet night, the earlier ones went at the next call).
 # A record of a host that is not awake is not a finding: the collector never wakes a host, the record waits for it.
+# shortcut: a pass made while the host slept leaves the record legally and reads as a finding once the host wakes, until the next pass; upgrade if it shows up.
 stranded() { # <now> <awake hosts, space separated>
-  local r w since
+  local r w since pass
+  pass=$(stat -c %Y "$STATE/gc.stamp" 2>/dev/null) || return 0
   for r in "$STATE"/boxes/*; do
     [ -f "$r" ] || continue
     case " $2 " in *" $(jq -r .host "$r" 2>/dev/null) "*) ;; *) continue ;; esac
     since=$(jq -r '.missingSince // empty' "$r" 2>/dev/null); [ -n "$since" ] || continue
     w=$(jq -r .worktree "$r")
-    [ ! -d "$w" ] && [ $(( $1 - since / 1000 )) -gt 7200 ] &&
+    [ ! -d "$w" ] && [ $(( $1 - since / 1000 )) -gt 7200 ] && [ "$pass" -ge $(( since / 1000 + 900 )) ] &&
       printf '1\tWARN\tstranded:%s\tthe worktree %s is gone for %s hours and its box is still recorded (%s)\n' "${r##*/}" "$w" $(( ($1 - since / 1000) / 3600 )) "${r##*/}"
   done
 }
@@ -118,7 +123,7 @@ settle() { # <counts file>
 
 # One sample of every registered host. Prints the settled findings.
 sample() {
-  local now host kind state rest f prev boot oom versions="" line awake="" pb pp pt pf tx lc stall
+  local now host kind state rest f prev boot oom versions="" line awake="" loads="" st pb pp pt pf tx lc stall
   now=$(date +%s); mkdir -p "$D/state"
   {
     while IFS=$'\t' read -r host kind state rest; do
@@ -132,6 +137,8 @@ sample() {
       ssh -n -o ConnectTimeout=8 -o BatchMode=yes "boxd-$host" pod report > "$f.new" 2>/dev/null && grep -q '^host' "$f.new" ||
         { printf '2\tALERT\t%s:down\t%s: answers `pod status` but not `pod report`\n' "$host" "$host"; continue; }
       mv "$f.new" "$f"; awake="$awake $host"
+      st=$(tr '\t' '\n' <<<"$rest")   # the status line of `box hosts`: the only place that has box_room
+      loads="$loads $host:$(sed -n 's/^cpus=//p' <<<"$st"):$(sed -n 's/^load1=//p' <<<"$st"):$(sed -n 's/^box_room=//p' <<<"$st")"
       check "$host" "$f" "$now"
       line=$(grep -m1 '^host' "$f" | tr '\t' '\n')
       boot=$(sed -n 's/^boot=//p' <<<"$line"); oom=$(sed -n 's/^oom_kills=//p' <<<"$line")
@@ -151,10 +158,19 @@ sample() {
         [ "$tx" -gt "$pt" ] 2>/dev/null && printf '1\tWARN\t%s:event:txtimeout:%s\t%s: the network card stalled while sending (transmit timeouts %s, were %s)\n' "$host" "$tx" "$host" "$tx" "$pt"
       fi
       echo "$boot ${pf:--} ${tx:--} ${lc:--}" > "$D/state/$host.stall"
-      printf '%s\t%s\n' "$host" "$(tr '\t' '\n' <<<"$line" | grep -E '^(vm_used|vm_max|group_mem_used_mb|group_mem_max_mb|group_swap_used_mb|zram_used_mb|zram_peak_mb|mem_avail_mb|swap_used_mb|disk_pct|oom_kills|keepawake)=' | tr '\n' ' ')stall_ms=$stall tx_timeouts=${tx:--} link_changes=${lc:--} $(grep -c '^box' "$f") boxes, $(grep -c $'^run\t.*state=running' "$f") runs" >> "$D/state/summary.new"
+      printf '%s\t%s\n' "$host" "$(tr '\t' '\n' <<<"$line" | grep -E '^(vm_used|vm_max|group_mem_used_mb|group_mem_max_mb|group_swap_used_mb|zram_used_mb|zram_peak_mb|mem_avail_mb|swap_used_mb|disk_pct|oom_kills|keepawake|cpus|load1)=' | tr '\n' ' ')stall_ms=$stall tx_timeouts=${tx:--} link_changes=${lc:--} $(grep -c '^box' "$f") boxes, $(grep -c $'^run\t.*state=running' "$f") runs" >> "$D/state/summary.new"
     done < <(box hosts 2>/dev/null)
     # shellcheck disable=SC2086
     [ "$(printf '%s\n' $versions | sort -u | wc -l)" -gt 1 ] && printf '1\tWARN\tversions\tthe hosts run different versions:%s\n' "$versions"
+    # One host over its processors while another has room and sits under half its processors: builds are not spreading
+    # (24 November 2026: load 12 to 31 on 16 processors for hours while the other idled at 0.5 on 12). Only hosts that
+    # answered with numbers count; a sleeping or unreachable host is not in `loads`.
+    # shellcheck disable=SC2086
+    printf '%s\n' $loads | awk -F: '
+      { n++; h[n] = $1; c[n] = $2; l[n] = $3; r[n] = $4; ok[n] = (c[n] ~ /^[0-9]+$/ && c[n] + 0 > 0 && l[n] ~ /^[0-9]+(\.[0-9]+)?$/) }
+      END { for (i = 1; i <= n; i++) { if (!ok[i] || l[i] + 0 <= c[i] + 0) continue
+        for (j = 1; j <= n; j++) if (j != i && ok[j] && r[j] == "yes" && l[j] * 2 < c[j]) {
+          printf "2\tWARN\t%s:lopsided\t%s: load %s on %s processors while %s has room and load %s on %s; builds are not spreading (a caller pinning with --host, placements made while %s had no room, or calls placed seconds apart before the load average rose)\n", h[i], h[i], l[i], c[i], h[j], l[j], c[j], h[j]; break } } }'
     if [ -f "$STATE/choices.log" ]; then
       { read -r prev < "$D/state/choices.line"; } 2>/dev/null || prev=$(( $(wc -l < "$STATE/choices.log") + 1 ))   # first sample: only what comes after it
       choices "$STATE/choices.log" "$prev"; echo $(( $(wc -l < "$STATE/choices.log") + 1 )) > "$D/state/choices.line"

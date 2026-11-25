@@ -39,7 +39,7 @@ gpu_count() {
 }
 ROUTE=${BOXD_ROUTE:-/proc/net/route}   # test hooks: the routing table and the network interface folder `pod report` reads
 NETDIR=${BOXD_NET:-/sys/class/net}
-VERSION=0.4.83
+VERSION=0.4.84
 # Keys that may only read, one "<type> <key> [comment]" per line (view_only below); and the largest answer of pod calls and pod log.
 VIEW_KEYS=${BOXD_VIEW_KEYS:-/etc/boxd/view_keys}
 READ_MAX=${BOXD_READ_MAX:-1048576}
@@ -470,6 +470,8 @@ ctr_commit() {
 # reaper does. box_young <box>: its stamp (.last-used, touched when a call begins) is no more than BOXD_VM_IDLE_MIN seconds old,
 # the other side of vm_idle.
 box_busy() { local f=$WORK/jobs/$1/.running; [ -e "$f" ] && ! flock -n -x "$f" true 2>/dev/null; }
+# busy_count: how many boxes of this host a call or a run holds now (box_busy over every jobs folder, no engine call); the word `busy` of `pod status`.
+busy_count() { local b n=0; while IFS= read -r b; do box_busy "$b" && n=$((n + 1)); done < <(find "$WORK/jobs" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null); echo "$n"; }   # find, not a pattern: this script runs with set -f
 box_young() { [ $(($(date +%s) - $(stamp_of "$1"))) -le "$VM_IDLE_MIN" ]; }
 # Idle machines give their room back when another machine asks for it (owner, 2026-11-16: "we really need a way to auto-cleanup
 # the idle vms"; an idle 8 GB machine held a slot on a full host until the reaper's 30 minutes). vm_idle <sandbox>: unused for
@@ -828,14 +830,14 @@ evict() {
         if drop_box "$box" "disk $pct percent full" "$now"; then break; fi
     done <<<"$list"
 }
-# pod drop <box>: an order, removes the box even under a run. pod drop <box> idle: the collector's guess that nothing runs is not trusted,
+# pod drop <box>: an order (box drop), removes the box even under a run; reason "dropped on request". pod drop <box> idle: the collector (worktree gone); its guess that nothing runs is not trusted,
 # so a box with a run or a call going (.running held) is kept, exit 75 (temporary: asked again at its next pass).
 pod_drop() {
     [[ ${1:-} =~ $BOX_RE ]] || die "bad box name"
     [ -z "${2:-}" ] || [ "$2" = idle ] || die "unknown command"
     if [ ! -d "$WORK/jobs/$1" ]; then pod_stop "$1"; return; fi
     if [ "${2:-}" = idle ]; then drop_box "$1" "worktree gone" "$(date +%s)" || noroom "box $1 has a run or a call going; kept"; return; fi
-    drop_box "$1" "worktree gone" "$(date +%s)" force || die "box $1 is being made or removed right now; not removed"
+    drop_box "$1" "dropped on request" "$(date +%s)" force || die "box $1 is being made or removed right now; not removed"
 }
 
 # The shared package caches of every box (cache/pod, /cache inside): one download serves all boxes of the host, which also
@@ -938,7 +940,7 @@ pod_status() {
     printf 'version=%s\tengines=%s\tcpus=%s\tload1=%s\tvm_used=%s\tvm_max=%s\tvm_room=%s\tboxes=%s\tdisk_pct=%s\tmem_free_mb=%s\timages=%s' \
         "$VERSION" "$eng" "$(nproc)" "$l1" "$used" "${vmax:-none}" "$room" "$(grep -c . <<<"$rows")" \
         "$(df --output=pcent "$WORK" | tail -1 | tr -dc 0-9)" "$mem" "$img"
-    printf '\tmem_avail_mb=%s\tgroup_mem_used_mb=%s\tgroup_mem_max_mb=%s\tvm_why=%s\tvm_fit_mb=%s\tbox_room=%s\tbox_fit_mb=%s\tbox_reserve_mb=%s\twaiting=%s\tgpus=%s\n' "${ma:--}" "$gcur" "$gmax" "$why" "$fit_mb" "$box_room" "$box_fit_mb" "$BOX_RESERVE" "$(queue_live | grep -c .)" "$(gpu_count)"
+    printf '\tmem_avail_mb=%s\tgroup_mem_used_mb=%s\tgroup_mem_max_mb=%s\tvm_why=%s\tvm_fit_mb=%s\tbox_room=%s\tbox_fit_mb=%s\tbox_reserve_mb=%s\twaiting=%s\tgpus=%s\tbusy=%s\n' "${ma:--}" "$gcur" "$gmax" "$why" "$fit_mb" "$box_room" "$box_fit_mb" "$BOX_RESERVE" "$(queue_live | grep -c .)" "$(gpu_count)" "$(busy_count)"
 }
 
 # ---- The reading verbs for the dashboard: pod report, pod calls, pod log (docs/pod-contract.md). Read only like pod status:

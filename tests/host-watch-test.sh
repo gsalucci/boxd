@@ -126,7 +126,13 @@ has "gone: ended" "OK	ended: tower:idle-box:old" "$(: | $W settle "$T/counts")"
 # A recorded box whose worktree is gone for hours is a finding only while its host is awake (the collector wakes no host).
 mkdir -p "$T/state/boxes"
 printf '{"box":"b","host":"tower","worktree":"%s/gone","missingSince":%s}\n' "$T" $(( (NOW - 10800) * 1000 )) > "$T/state/boxes/tower.b"
-has "worktree gone, host awake" "gone for 3 hours and its box is still recorded (tower.b)" "$(BOXD_STATE=$T/state $W stranded $NOW ' laptop tower')"
+[ -z "$(BOXD_STATE=$T/state $W stranded $NOW ' laptop tower')" ] && ok "no collector pass ever: not a finding" || bad "finding without a collector pass"
+touch -d @$(( NOW - 10800 )) "$T/state/gc.stamp"
+[ -z "$(BOXD_STATE=$T/state $W stranded $NOW ' laptop tower')" ] && ok "worktree gone, the last pass only marked it: waits for the next call, not a finding" || bad "marked record is a finding"
+touch -d @$(( NOW - 10800 + 899 )) "$T/state/gc.stamp"
+[ -z "$(BOXD_STATE=$T/state $W stranded $NOW ' laptop tower')" ] && ok "a pass under 15 minutes after the mark: not a finding" || bad "pass under 15 minutes is a finding"
+touch -d @$(( NOW - 10800 + 900 )) "$T/state/gc.stamp"
+has "worktree gone, host awake, a pass 15 minutes after the mark left it" "gone for 3 hours and its box is still recorded (tower.b)" "$(BOXD_STATE=$T/state $W stranded $NOW ' laptop tower')"
 [ -z "$(BOXD_STATE=$T/state $W stranded $NOW ' laptop')" ] && ok "worktree gone, host asleep: not a finding" || bad "asleep host's record is a finding"
 
 # The stall counters: two samples through `sample` with a fake `box` and `ssh`; the second sample's progress line and findings.
@@ -161,5 +167,35 @@ out=$(sample "$T/old")
 has "a report without the new words: dashes" "stall_ms=- tx_timeouts=- link_changes=- " "$out"
 out=$(sample "$T/old")
 has "and again, on the same boot" "stall_ms=- tx_timeouts=- link_changes=- " "$out"
+
+# Load: the sample line carries load1 and cpus; one host over its processors while another has room and is under half
+# of its own is a finding (key <busy host>:lopsided, after two samples, once). Two fake hosts, each with a status line.
+out=$(sample "$T/s1")
+has "the sample line shows the load and the processors" "load1=1 " "$out"
+has "the sample line shows the processors" "cpus=16 " "$out"
+mkdir -p "$T/bin2"
+printf '#!/bin/sh\ncat "$FAKE_HOSTS"\n' > "$T/bin2/box"; cp "$T/bin/ssh" "$T/bin2/ssh"; chmod +x "$T/bin2/box" "$T/bin2/ssh"
+hosts2() { # <tower cpus> <tower load1> <tower box_room> <laptop cpus> <laptop load1> <laptop box_room>
+  printf 'tower\tsleeps\tawake\tversion=0.4.10\tcpus=%s\tload1=%s\tbox_room=%s\n' "$1" "$2" "$3"
+  printf 'laptop\tsleeps\tawake\tversion=0.4.10\tcpus=%s\tload1=%s\tbox_room=%s\n' "$4" "$5" "$6"
+}
+lop() { # <case name> <hosts2 words>: three samples of a fresh watch directory, the findings of each
+  hosts2 "${@:2}" > "$T/hosts-$1"; rm -rf "$T/l-$1"
+  for n in 1 2 3; do FAKE_HOSTS=$T/hosts-$1 FAKE_REPORT=$T/s1 PATH=$T/bin2:$PATH HOST_WATCH_DIR=$T/l-$1 BOXD_STATE=$T/nostate $W > "$T/l-$1.$n"; done
+}
+lop busy 16 29.6 yes 12 0.3 yes
+[ -z "$(cat "$T/l-busy.1")" ] && ok "lopsided load: silent at the first sample" || bad "lopsided load at the first sample: $(cat "$T/l-busy.1")"
+has "lopsided load: the warning at the second sample" "WARN	tower: load 29.6 on 16 processors while laptop has room and load 0.3 on 12; builds are not spreading (a caller pinning with --host, placements made while laptop had no room, or calls placed seconds apart before the load average rose)" "$(cat "$T/l-busy.2")"
+[ -z "$(cat "$T/l-busy.3")" ] && ok "lopsided load: shown once" || bad "lopsided load repeated: $(cat "$T/l-busy.3")"
+lop reverse 16 1.3 yes 12 21 yes
+has "the reverse: the other host is the busy one" "WARN	laptop: load 21 on 12 processors while tower has room and load 1.3 on 16" "$(cat "$T/l-reverse.2")"
+lop balanced 16 12 yes 12 9 yes
+lop nobusy 16 17 yes 12 7 yes
+lop noroom 16 29.6 yes 12 0.3 no
+lop blank 16 29.6 yes 12 - yes
+lop words 16 29.6 yes 12 many yes
+for c in balanced nobusy noroom blank words; do
+  out=$(cat "$T/l-$c".[123]); hasnot "no lopsided warning: $c" "lopsided\|builds are not spreading" "$out"
+done
 
 [ "$fails" = 0 ] && echo "ALL OK" || { echo "$fails FAILED"; exit 1; }

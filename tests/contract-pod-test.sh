@@ -859,7 +859,7 @@ eq "pod status: free memory is never below zero" mem_free_mb=0 "$(tr '\t' '\n' <
 # The three new words have the meaning and the code of the host line of pod report; mem_free_mb stays as it was.
 cg8; printf 'MemTotal: 32768000 kB\nMemAvailable: 9216000 kB\nSwapTotal: 0 kB\nSwapFree: 0 kB\n' > "$W/meminfo"; echo $((3 * 1048576)) > "$BOXD_CGROOT/boxd/memory.swap.current"
 CASE_ENV=(BOXD_MEMINFO="$W/meminfo"); pod "pod status"
-eq "pod status: after images come the host's available memory and the group's used and maximum" $'mem_avail_mb=9000\tgroup_mem_used_mb=3\tgroup_mem_max_mb=8192' "$(awk -F'\t' '{ print $(NF-9) "\t" $(NF-8) "\t" $(NF-7) }' "$T/e/out")"
+eq "pod status: after images come the host's available memory and the group's used and maximum" $'mem_avail_mb=9000\tgroup_mem_used_mb=3\tgroup_mem_max_mb=8192' "$(awk -F'\t' '{ print $(NF-10) "\t" $(NF-9) "\t" $(NF-8) }' "$T/e/out")"
 eq "pod status: mem_free_mb stays the group's accounting" mem_free_mb=8189 "$(tr '\t' '\n' < "$T/e/out" | grep '^mem_free_mb=')"
 pod "pod report"; eq "pod report: its host line has the same three figures as pod status" $'mem_avail_mb=9000\tgroup_mem_max_mb=8192\tgroup_mem_used_mb=3' "$(head -1 "$T/e/out" | tr '\t' '\n' | grep -E '^(mem_avail_mb|group_mem_max_mb|group_mem_used_mb)=' | paste -sd'\t')"
 # The host line has the group's swap before its last three words: memory.swap.current and memory.swap.max in megabytes, a dash when unreadable (and for `max`).
@@ -903,10 +903,10 @@ eq "container memory counts in the commitment" "75 boxd-pod: no room for another
 rm -f "$FAKE_STATE/pod-x"; pod "pod run b2 --vm --size small -- $B64"; eq "the same machines without container memory are admitted" 0 "$rc"
 cg8; ctrcg 2048 0; pod "pod run b1 --vm --size small -- $B64"; eq "container memory alone does not refuse when everything fits" 0 "$rc"
 cg8; ctrcg 1024 0; pod "pod status"; eq "pod status: no room for a large machine once a container box uses memory" vm_room=no "$(tr '\t' '\n' < "$T/e/out" | grep '^vm_room=')"
-eq "pod status: vm_why comes before vm_fit_mb and the three words of container boxes, and says why no machine fits" "vm_why=0 MB of running machines + 1024 MB used by container boxes + 8192 MB asked > 8192 MB, 100% of the 8192 MB cap" "$(awk -F'\t' '{ print $(NF-6) }' "$T/e/out")"
+eq "pod status: vm_why comes before vm_fit_mb and the three words of container boxes, and says why no machine fits" "vm_why=0 MB of running machines + 1024 MB used by container boxes + 8192 MB asked > 8192 MB, 100% of the 8192 MB cap" "$(awk -F'\t' '{ print $(NF-7) }' "$T/e/out")"
 rm -f "$FAKE_STATE/pod-x"; pod "pod status"; eq "pod status: room for a large machine on an idle cap" vm_room=yes "$(tr '\t' '\n' < "$T/e/out" | grep '^vm_room=')"
-eq "pod status: vm_why is empty when a machine fits" vm_why= "$(awk -F'\t' '{ print $(NF-6) }' "$T/e/out")"
-eq "pod status: vm_fit_mb comes before the three words of container boxes, the whole cap on an idle host" vm_fit_mb=8192 "$(awk -F'\t' '{ print $(NF-5) }' "$T/e/out")"
+eq "pod status: vm_why is empty when a machine fits" vm_why= "$(awk -F'\t' '{ print $(NF-7) }' "$T/e/out")"
+eq "pod status: vm_fit_mb comes before the three words of container boxes, the whole cap on an idle host" vm_fit_mb=8192 "$(awk -F'\t' '{ print $(NF-6) }' "$T/e/out")"
 # vm_fit_mb: the largest machine `pod run` admits (the smaller of cap minus use and the commit share minus machines minus
 # containers); the seam test runs pod run itself, with a machine of just under, exactly and just over that size.
 fitword() { pod "pod status"; tr '\t' '\n' < "$T/e/out" | sed -n 's/^vm_fit_mb=//p'; }
@@ -1376,7 +1376,10 @@ exec 8<"$W/jobs/$box/.running"; flock -s 8
 pod "pod drop $box idle"
 eq "drop idle: a box with a run going is kept, exit 75 and the message" "75|boxd-pod: box $box has a run or a call going; kept|" "$rc|$(cat "$T/e/err")|$(cat "$T/e/out")"
 eq "drop idle: the folder, the container and the log are untouched" "yes|pod-$box|" "$([ -d "$W/jobs/$box" ] && echo yes)|$(ls "$FAKE_STATE")|$(evlog)"
+bword() { tr '\t' '\n' < "$T/e/out" | grep '^busy='; }
+pod "pod status"; eq "busy: a box whose .running is held counts 1, and it is the last word of pod status" "busy=1 busy" "$(bword) $(tr '\t' '\n' < "$T/e/out" | tail -n 1 | cut -d= -f1)"
 exec 8<&-
+pod "pod status"; eq "busy: once the holder ended, 0" "busy=0" "$(bword)"
 pod "pod drop $box idle"; eq "drop idle: once the holder ended the box is removed" "0||$box	worktree gone" "$rc|$(folders)|$(evlog)"
 pod "pod drop $box idle"; eq "drop idle: nothing there is exit 0" 0 "$rc"
 pod "pod drop $box now"; eq "drop: any other second word is refused" 125 "$rc"
@@ -1398,11 +1401,11 @@ setup; mkdir -p "$W/jobs/$box/src"; echo "FROM localhost/nowhere:latest" > "$W/j
 pod "pod run $box --image-file Containerfile -- $B64"
 eq "image build: no store, no archive: the clear refusal, no build" "125|0" "$rc|$(grep -c '^build' "$FAKE_LOG")"
 
-# pod drop: the client's collector removes the box and the folder of a worktree that is gone.
+# pod drop: an order (box drop) removes the box and its folder; its reason is "dropped on request". The collector sends pod drop <box> idle (worktree gone).
 setup; mkdir -p "$W/cache"
 pod "pod run $box -- $B64"; eq "drop: the box exists first" "pod-$box" "$(ls "$FAKE_STATE")"
 pod "pod drop $box"; eq "drop: box and folder go" "0||" "$rc|$(ls "$FAKE_STATE")|$(folders)"
-eq "drop: logged with its reason" "$box	worktree gone" "$(evlog)"
+eq "drop: logged with its reason" "$box	dropped on request" "$(evlog)"
 eq "drop: the image built for the box goes with it, on both engines" "rmi localhost/built-$box:latest|image rm localhost/built-$box:latest" "$(grep '^rmi' "$FAKE_LOG" | paste -sd'|')|$(grep '^image rm' "$FAKE_MSB_LOG" | paste -sd'|')"
 pod "pod drop $box"; eq "drop: nothing there is exit 0 and no second line" "0 1" "$rc $(wc -l < "$W/cache/evictions.log")"
 pod "pod drop ../x"; eq "drop: a bad name is refused" 125 "$rc"
@@ -1410,11 +1413,11 @@ pod "pod drop"; eq "drop: needs a box" 125 "$rc"
 # The line says how many megabytes the folder held (du -smx inside the user namespace); when that fails the removal goes on and the line is the old one.
 mkdir -p "$W/jobs/sized-1" "$W/jobs/unsized-1"; head -c 5242880 /dev/urandom > "$W/jobs/sized-1/data"; head -c 5242880 /dev/urandom > "$W/jobs/unsized-1/data"
 want=$(du -smx "$W/jobs/sized-1" | cut -f1)
-pod "pod drop sized-1"; eq "drop: the line says the measured size in megabytes (a folder holding 5 MB of data is at least 5)" "0 evicted sized-1 (worktree gone), $want MB freed yes" "$rc $(cat "$T/e/out") $([ "$want" -ge 5 ] && [ ! -e "$W/jobs/sized-1" ] && echo yes)"
-eq "drop: evictions.log keeps its three fields" "sized-1	worktree gone" "$(tail -1 "$W/cache/evictions.log" | cut -f2-)"
-FAKE_DU_EXIT=1 pod "pod drop unsized-1"; eq "drop: a failed measurement still removes and prints the old line" "0 evicted unsized-1 (worktree gone) no" "$rc $(cat "$T/e/out") $([ -e "$W/jobs/unsized-1" ] && echo yes || echo no)"
+pod "pod drop sized-1"; eq "drop: the line says the measured size in megabytes (a folder holding 5 MB of data is at least 5)" "0 evicted sized-1 (dropped on request), $want MB freed yes" "$rc $(cat "$T/e/out") $([ "$want" -ge 5 ] && [ ! -e "$W/jobs/sized-1" ] && echo yes)"
+eq "drop: evictions.log keeps its three fields" "sized-1	dropped on request" "$(tail -1 "$W/cache/evictions.log" | cut -f2-)"
+FAKE_DU_EXIT=1 pod "pod drop unsized-1"; eq "drop: a failed measurement still removes and prints the old line" "0 evicted unsized-1 (dropped on request) no" "$rc $(cat "$T/e/out") $([ -e "$W/jobs/unsized-1" ] && echo yes || echo no)"
 pod "pod run $box -- $B64"
-eq "after an eviction the next call says once that the folder was removed" "boxd-pod: the folder of this box was removed on $(date +%F) (worktree gone); it starts empty" "$(grep 'folder of this box' "$T/e/err")"
+eq "after an eviction the next call says once that the folder was removed" "boxd-pod: the folder of this box was removed on $(date +%F) (dropped on request); it starts empty" "$(grep 'folder of this box' "$T/e/err")"
 pod "pod run $box -- $B64"; eq "and not again" "" "$(grep 'folder of this box' "$T/e/err")"
 printf 'ssh-ed25519 AAAAviewkey dashboard\n' > "$W/view_keys"; printf 'publickey ssh-ed25519 AAAAviewkey\n' > "$W/auth"
 CASE_ENV=(BOXD_VIEW_KEYS="$W/view_keys" SSH_USER_AUTH="$W/auth"); pod "pod drop $box"
@@ -1437,7 +1440,7 @@ echo 70 > "$FAKE_DF"; reapnow 100000
 eq "mem-peaks.log, retention by disk pressure: a box with no size record is large (8192 MB); the line is the reaper's clock" "100000	a	large	8192	7900|live" "$(paste -sd'|' "$W/cache/mem-peaks.log")|$(ls "$W/jobs")"
 unset FAKE_DF
 mkdepth gone 2900 medium; pod "pod drop gone"
-eq "mem-peaks.log, pod drop: the answer carries the need before the freed words" "yes" "$(grep -q '^evicted gone (worktree gone), needed 2900 MB of 4096 MB (medium), [0-9]* MB freed$' "$T/e/out" && echo yes)"
+eq "mem-peaks.log, pod drop: the answer carries the need before the freed words" "yes" "$(grep -q '^evicted gone (dropped on request), needed 2900 MB of 4096 MB (medium), [0-9]* MB freed$' "$T/e/out" && echo yes)"
 eq "mem-peaks.log, pod drop: the line is there, the folder is not" "gone	medium	4096	2900|no" "$(tail -n 1 "$W/cache/mem-peaks.log" | cut -f2-)|$([ -e "$W/jobs/gone" ] && echo yes || echo no)"
 mkdepth nope; pod "pod drop nope"; eq "mem-peaks.log: a box with no need adds no line" "2" "$(wc -l < "$W/cache/mem-peaks.log")"
 pod "pod drop absent"; eq "mem-peaks.log: a box with no folder adds no line" "2" "$(wc -l < "$W/cache/mem-peaks.log")"

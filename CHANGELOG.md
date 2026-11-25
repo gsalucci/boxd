@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.4.84
+
+- **Two builds placed seconds apart no longer land on the same host.** The 0.4.83 rule counts spare processors from `load1`,
+  the load of the last minute, which has not moved seconds after a build starts (measured 25 Nov 06:05: two new boxes placed
+  7 seconds apart both went to the 16 processor host; ten minutes later it was at load 16.9 while the 12 processor host sat at
+  0.19). `pod status` now ends with `busy=<n>`, the boxes a call or a run holds right now (one non-waiting lock test per box
+  folder, no engine call). For a container call the client counts the load as at least `busy * cpus / 2`: one running call is
+  half the host, two or more are all of it. A server without the word leaves the rule as it was. Unchanged: the sort around
+  it (asleep last, a host with load above its processors last, steps of 2, then free memory), and that flag still reads the
+  measured `load1` only. Known limit: a box that holds its lock while idle, such as a model server started by `box serve`,
+  counts as a running call and makes its host look half loaded.
+- **`box drop` is logged as what it is.** The server wrote the reason `worktree gone` for every removal through `pod drop`,
+  also for an explicit `box drop` whose worktree still exists (seen 25 Nov: the host's report and `cache/evictions.log`
+  said `worktree gone` for a live worktree, and the box's next call repeated it). The plain `pod drop <box>` now says
+  `dropped on request`; the collector's `pod drop <box> idle` keeps `worktree gone`. The client reads only the sizes of
+  that line, so older clients are unaffected.
+
 ## 0.4.83
 
 - **A container call goes to the host with more spare processors.** Among the hosts with room, the client used to take the

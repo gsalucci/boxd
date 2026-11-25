@@ -1174,7 +1174,7 @@ s45() {
   eq "and starts without the ignored files" 0 "$(printf '%s\n' "$out" | tail -1)"
   out=$(med "$wt" -- true 2>&1); eq "the call after that says nothing" "" "$out"
   med "$wt" -- sh -c 'mkdir -p keep && echo disk > keep/disk && chown -R 1234:1234 keep' >/dev/null 2>&1
-  has "pod drop answers with what it removed and how much it freed" "evicted $box (worktree gone), " "$(podcmd "drop $box")"
+  has "pod drop answers with what it removed and how much it freed" "evicted $box (dropped on request), " "$(podcmd "drop $box")"
   eq "pod drop: box and folder are gone" "0 no" "$(count "$box") $(bp "test -d $W/jobs/$box && echo yes || echo no")"
   eq "pod drop again: nothing there, exit 0" 0 "$(podcmd "drop $box" >/dev/null 2>&1; echo $?)"
 }

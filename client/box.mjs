@@ -24,7 +24,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-export const VERSION = "0.4.83";
+export const VERSION = "0.4.84";
 const BOX = /^[a-z0-9][a-z0-9_.-]{0,62}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const MAC = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i;
@@ -492,6 +492,7 @@ const emitRefusal = (env, hosts, text, waitable) => {
     if (env.BOXD_REFUSAL_JSON === "1")
         process.stderr.write(`${refusalLine(hosts, text.trimEnd(), waitable)}\n`);
 };
+// 25 November 2026, 06:05: two calls 7 seconds apart both went to the 16 processor host because `load1` had not moved yet; the `busy` word of `pod status` (boxes a call or run holds now) counts, so the load used for `spare` is at least busy * cpus / 2 (one call is half the host, two are all of it).
 // The host with room for this request that has the most free memory (`mem_free_mb`), ties in the given order; a container
 // call looks first at spare processors (`cpus - load1`) counted in steps of 2 so that a small difference is not a reason, when two awake hosts in the same group differ (24 November
 // 2026: load 12 on 16 processors against 0.5 on 12, and the first had more free memory, so it took every call; reason `calm`). A machine
@@ -541,7 +542,7 @@ export function choose(hosts, req) {
             waitable = true;
         }
         else
-            room.push({ name: h.name, ...(busy ? { busy: true } : {}), ...(!req.vm && s.load1 !== undefined && /^\d+(\.\d+)?$/.test(s.load1) && /^\d+$/.test(s.cpus ?? "") ? { spare: Math.floor((Number(s.cpus) - Number(s.load1)) / 2) } : {}), free: /^\d+$/.test(s.mem_free_mb ?? "") ? Number(s.mem_free_mb) : -1, ...(req.vm && /^\d+$/.test(s.group_mem_max_mb ?? "") ? { cap: Number(s.group_mem_max_mb) } : {}) });
+            room.push({ name: h.name, ...(busy ? { busy: true } : {}), ...(!req.vm && s.load1 !== undefined && /^\d+(\.\d+)?$/.test(s.load1) && /^\d+$/.test(s.cpus ?? "") ? { spare: Math.floor((Number(s.cpus) - Math.max(Number(s.load1), /^\d+$/.test(s.busy ?? "") ? Number(s.busy) * Number(s.cpus) / 2 : 0)) / 2) } : {}), free: /^\d+$/.test(s.mem_free_mb ?? "") ? Number(s.mem_free_mb) : -1, ...(req.vm && /^\d+$/.test(s.group_mem_max_mb ?? "") ? { cap: Number(s.group_mem_max_mb) } : {}) });
         why.push(no ?? busy ?? (h.state === "awake" && !s ? "awake, no status" : h.state));
         const fig = s && h.state === "awake" ? { free_mb: num(s.mem_free_mb), fit_mb: num(req.vm ? s.vm_fit_mb : s.box_fit_mb), need_mb: req.vm ? need ?? 8192 : num(s.box_reserve_mb), cap_mb: num(s.group_mem_max_mb) } : {};
         figures.push(Object.fromEntries(Object.entries(fig).filter(([, v]) => v !== undefined)));
