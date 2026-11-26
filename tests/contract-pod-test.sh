@@ -16,9 +16,12 @@ T=$(mktemp -d)
 # (bash builtins only, so the search is not a process with the marker; a read on a fifo nobody writes ends at once).
 export BOXD_TEST_RUN=$T
 mkfifo "$T/poll"
+# `left end` ends every such process instead: unless every case passed, a run a case left blocked on the stub's release fifo
+# never ends by itself, so the wait would never return and a script killed meanwhile left its runs behind (a detached run of
+# the idle-exit cases lived from 24 to 26 Nov on the client machine with its fake engine folder in /tmp).
 left() { local d p kv; for d in /proc/[0-9]*; do p=${d#/proc/}; [ "$p" = "$$" ] && continue
-  while IFS= read -r -d '' kv; do [ "$kv" = "BOXD_TEST_RUN=$T" ] && return 0; done 2>/dev/null <"$d/environ"; done; return 1; }
-trap 'exec 3>&-; while left; do read -r -t 0.05 <>"$T/poll"; done; rm -rf "$T"' EXIT
+  while IFS= read -r -d '' kv; do [ "$kv" = "BOXD_TEST_RUN=$T" ] && { [ -z "${1:-}" ] && return 0; kill -KILL "$p"; break; }; done 2>/dev/null <"$d/environ"; done; return 1; }
+trap 'exec 3>&-; [ "${passed:-}" = yes ] || left end; while left; do read -r -t 0.05 <>"$T/poll"; done; rm -rf "$T"' EXIT
 mkdir -p "$T/bin" "$T/vmbin"
 cat > "$T/bin/podman" <<'FAKE'
 #!/bin/sh
@@ -168,6 +171,14 @@ echo "$*" > "$FAKE_RSYNC"; pwd > "$FAKE_RSYNC.cwd"
 # FAKE_RSYNC_PROBE: is the folder of the box named in the last argument held busy right now?
 for a; do p=$a; done; b=${p#jobs/}; b=${b%%/*}
 [ -z "${FAKE_RSYNC_PROBE:-}" ] || { flock -n -x "jobs/$b/.running" true 2>/dev/null && echo free || echo held; } > "$FAKE_RSYNC_PROBE"
+# FAKE_RSYNC_TURNS: the first transfer waits for a release; one that starts while another is still at work records an overlap.
+if [ -n "${FAKE_RSYNC_TURNS:-}" ]; then
+    [ -e "$FAKE_RSYNC_TURNS.active" ] && : > "$FAKE_OVERLAP"
+    if [ ! -e "$FAKE_RSYNC_TURNS.first" ]; then
+        : > "$FAKE_RSYNC_TURNS.first"; : > "$FAKE_RSYNC_TURNS.active"
+        exec 5<>"$FAKE_EV"; echo rsync-blocked >&5; read -r _ <"$FAKE_REL"; rm -f "$FAKE_RSYNC_TURNS.active"
+    fi
+fi
 FAKE
 cat > "$T/bin/nproc" <<'FAKE'
 #!/bin/sh
@@ -1528,6 +1539,25 @@ pod "rsync --server --sender -logDtpre.iLsfxCIvu . jobs/nobox/src/out"
 eq "pull from a box that has no folder makes none" "0 no" "$rc $([ -e "$W/jobs/nobox" ] && echo yes || echo no)"
 unset FAKE_RSYNC_PROBE
 
+# Two syncs into one box take turns (two calls of one worktree at once collided in the sync, 27 Nov); a pull does not wait.
+setup; mkdir -p "$W/jobs/$box/src"; export FAKE_RSYNC_TURNS=$T/e/turns
+SSH_ORIGINAL_COMMAND="rsync --server -logDtpre.iLsfxCIvu --delete . jobs/$box/src/" bash "$POD" </dev/null >/dev/null 2>&1 &
+p1=$!; read -r ev <&3; eq "sync: the first sync is at work" rsync-blocked "$ev"
+SSH_ORIGINAL_COMMAND="rsync --server -logDtpre.iLsfxCIvu --delete . jobs/$box/src/" bash "$POD" </dev/null >/dev/null 2>&1 &
+p2=$!
+ino=$(stat -c %i "$W/jobs/$box/.sync" 2>/dev/null || echo none)
+# the second sync is either queued on the box's sync lock (listed as a waiter), or it ignored it (overlap, or done)
+until grep -q -- "->.*:$ino " /proc/locks || [ -e "$FAKE_OVERLAP" ] || ! kill -0 "$p2" 2>/dev/null; do :; done
+eq "sync: a second sync into the box waits for the first" no "$([ -e "$FAKE_OVERLAP" ] && echo yes || echo no)"
+unset FAKE_RSYNC_TURNS
+SSH_ORIGINAL_COMMAND="rsync --server --sender -logDtpre.iLsfxCIvu . jobs/$box/src/out" bash "$POD" </dev/null >/dev/null 2>&1 &
+p3=$!
+until ! kill -0 "$p3" 2>/dev/null || [ "$(grep -c -- "->.*:$ino " /proc/locks)" -gt 1 ]; do :; done
+eq "pull: a pull does not wait for a sync" ended "$(kill -0 "$p3" 2>/dev/null && echo waiting || echo ended)"
+echo go > "$FAKE_REL"
+wait "$p1"; r1=$?; wait "$p2"; r2=$?; wait "$p3"; r3=$?
+eq "sync: both syncs and the pull succeed" "0 0 0" "$r1 $r2 $r3"
+
 # (The recorded cases write 1 as the group of a run that still runs: group 1 always exists for the server's liveness check.)
 # A run whose process group is gone but whose record stayed (the host lost power, the box was killed): it has ended.
 setup; mkdir -p "$W/jobs/x/runs"; echo "half" > "$W/jobs/x/runs/lost.log"; echo 999999999 > "$W/jobs/x/runs/lost.pid"
@@ -1892,7 +1922,9 @@ eq "idle-exit: an open channel keeps the run, however long it is quiet" running 
 idleclock $t0; looks; echo go > "$T/hold"; wait "$fp"   # two looks on the new clock before the channel ends (the race of the killed channel below)
 f2=$(stat -c %Y "$W/jobs/$box/.forwarded")
 eq "forward: the channel stamped .forwarded again when it ended" yes "$([ "$f2" -ge "$t0" ] && echo yes || echo no)"
-eq "forward: .forwarding is free once the channel ended" free "$(flock -n -x "$W/jobs/$box/.forwarding" true && echo free || echo busy)"
+# -w, not -n: the run's watcher takes the lock for an instant at every look (each 0.05 s here), and a check that met one failed (26 Nov);
+# the bound only turns a lock the channel kept into a failure instead of a hang
+eq "forward: .forwarding is free once the channel ended" free "$(flock -w 20 -x "$W/jobs/$box/.forwarding" true && echo free || echo busy)"
 idleclock $((f2 + 9)); looks
 eq "idle-exit: a channel that closed moves the deadline: nine seconds after it, still running" running "$(runstate "$IC")"
 idleclock $((f2 + 10)); ended "$IC"
@@ -1908,7 +1940,7 @@ eq "idle-exit: while it ends the run it holds .forwarding, so a new channel wait
 env "${CASE_ENV[@]}" SSH_ORIGINAL_COMMAND="pod forward $box 8080" timeout 60 bash "$POD" </dev/null >/dev/null 2>&1 & fp=$!
 ended "$IE"; wait "$fp"
 eq "idle-exit: the channel that waited came back once the run had ended" 0 "$?"
-eq "idle-exit: .forwarding is free once the run ended" free "$(flock -n -x "$W/jobs/$box/.forwarding" true && echo free || echo busy)"
+eq "idle-exit: .forwarding is free once the run ended" free "$(flock -w 20 -x "$W/jobs/$box/.forwarding" true && echo free || echo busy)"   # -w: the watcher lets go just after pod end removed the records ended waits on
 eq "idle-exit: the watcher is gone, no process of it keeps the lock" gone "$(for i in $(seq 400); do tagged t3 || { echo gone; break; }; read -r -t 0.05 <>"$T/poll"; done)"
 unset FAKE_CLEAN
 
@@ -1937,4 +1969,4 @@ eq "detached log: output written after a note of the host lands behind it" "firs
 unset FAKE_EXEC_OUT FAKE_EXEC_LATE
 unset FAKE_BLOCK_EXEC; CASE_ENV=()
 
-[ "$fails" -eq 0 ] && echo "ALL OK" || { echo "$fails FAILED"; exit 1; }
+[ "$fails" -eq 0 ] && { passed=yes; echo "ALL OK"; } || { echo "$fails FAILED"; exit 1; }

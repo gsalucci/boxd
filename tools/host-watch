@@ -21,7 +21,7 @@
 #   cleanup       an idle box older than the time limit is still there; a run is "running" in a box that is not;
 #                 the work area is above the eviction level; the work area is no file system of its own, or shares the
 #                 system's disk while cleanup starts at 60 percent or more (words work_own, work_shared, evict_at);
-#                 a host stays awake without work; a box whose worktree is gone for hours is still recorded
+#                 a host stays awake without work (a held keepawake lock, or an ssh login left open); a box whose worktree is gone for hours is still recorded
 #   hosts         a host that should answer does not; the hosts run different versions; one host is over its processors while another has room and sits under half of its own (`lopsided`)
 set -u
 D=${HOST_WATCH_DIR:-$HOME/.local/state/boxd/watch}
@@ -65,6 +65,9 @@ check() { # <host> <report file> <now>
       for (b in idle) if (idle[b] > h["ttl"] + 600) out(2, "WARN", "idle-box:" b, "box " b " is idle for " int(idle[b] / 60) " minutes and still there (time limit " int(h["ttl"] / 60) ")")
       for (r in run) if (state[run[r]] != "running") out(2, "WARN", "stale-run:" r, "run " r " is listed as running but its box is not")
       if (h["power"] == "on" && !work && h["keepawake"] == "held") out(6, "WARN", "awake", "awake without work for 6 samples, something holds the lock that keeps it awake (last busy reason: " h["idle_last"] ")")
+      # The sleep module counts every connection on the admin port as work: a terminal left logged in kept the tower awake for 3 days, unflagged (26 Nov).
+      # 24 samples (2 hours at the default pace): an admin at work is normal, and this watcher'\''s own short calls never last that long.
+      else if (h["power"] == "on" && !work && h["idle_last"] == "ssh") out(24, "WARN", "login", "awake without work for 24 samples because an ssh connection stays open (the sleep module counts every login on port 22 as work); a terminal left logged in keeps it from sleeping, `ssh " host " w` lists the logins")
     }' "$2"
 }
 

@@ -12,7 +12,7 @@ hasnot() { if grep -q -- "$2" <<<"$3"; then bad "$1: \"$2\" in: $3"; else ok "$1
 
 NOW=1000000
 host() { # <group used> <vm_used> <vm_max> <disk> <pressure> <keepawake>
-  printf 'host\tversion=0.4.10\tengines=container,vm\tcpus=16\tload1=1\tload5=1\tload15=1\tboot=5\tmem_total_mb=32029\tmem_avail_mb=9000\tswap_total_mb=16013\tswap_used_mb=100\tgroup_mem_max_mb=24576\tgroup_mem_used_mb=%s\tpressure_some10=0\tpressure_some60=0\tpressure_full10=0\tpressure_full60=%s\toom_kills=4\tvm_used=%s\tvm_max=%s\tvm_room=yes\tvm_mem_mb=8192\tbox_mem_mb=12288\tdisk_pct=%s\tdisk_total_mb=9\tdisk_used_mb=1\tttl=1800\tpower=on\tidle_checks=20\tidle_count=0\tidle_last=ssh\treset_at=85\tkeepawake=%s\n' "$1" "$5" "$2" "$3" "$4" "$6"
+  printf 'host\tversion=0.4.10\tengines=container,vm\tcpus=16\tload1=1\tload5=1\tload15=1\tboot=5\tmem_total_mb=32029\tmem_avail_mb=9000\tswap_total_mb=16013\tswap_used_mb=100\tgroup_mem_max_mb=24576\tgroup_mem_used_mb=%s\tpressure_some10=0\tpressure_some60=0\tpressure_full10=0\tpressure_full60=%s\toom_kills=4\tvm_used=%s\tvm_max=%s\tvm_room=yes\tvm_mem_mb=8192\tbox_mem_mb=12288\tdisk_pct=%s\tdisk_total_mb=9\tdisk_used_mb=1\tttl=1800\tpower=on\tidle_checks=20\tidle_count=0\tidle_last=idle\treset_at=85\tkeepawake=%s\n' "$1" "$5" "$2" "$3" "$4" "$6"
 }
 box() { # <name> <engine> <state> <last used> <limit> <busy> <runs>
   printf 'box\tbox=%s\tengine=%s\timage=i\tstate=%s\tlast_used=%s\tuser=-\tsize=-\tmem_limit_mb=%s\tmem_mb=1\tbusy=%s\truns=%s\n' "$@"
@@ -65,6 +65,19 @@ hasnot "a box exactly ten minutes over is not yet late" "box edge" "$out"
 has "run in a box that does not run" "run gone/r9 is listed as running" "$out"
 { host 9000 0 none 28 0 held; box c container running $((NOW - 100)) 12288 no 0; } > "$T/awake"
 has "awake without work" "6	WARN	tower:awake	tower: awake without work" "$($W check tower "$T/awake" $NOW)"
+# A login left open (the sleep module's last busy reason is ssh) with no work is a finding after 24 samples; with a run going,
+# with the lock held (that finding names it already) or with another reason, it is not.
+login() { sed '1s/idle_last=idle/idle_last=ssh/'; }
+{ host 9000 0 none 28 0 free | login; box c container running $((NOW - 100)) 12288 no 0; } > "$T/login"
+has "a login left open keeps the host awake" "24	WARN	tower:login	tower: awake without work for 24 samples because an ssh connection stays open" "$($W check tower "$T/login" $NOW)"
+{ host 9000 0 none 28 0 free | login; box a container running $((NOW - 100)) 12288 yes 1; run a r1 running; } > "$T/loginwork"
+hasnot "a login while a run goes is no finding" "login" "$($W check tower "$T/loginwork" $NOW)"
+{ host 9000 0 none 28 0 held | login; } > "$T/loginheld"
+out=$($W check tower "$T/loginheld" $NOW); has "a held lock with a login is the lock finding" "tower:awake" "$out"; hasnot "a held lock with a login gives no second finding" "tower:login" "$out"
+{ host 9000 0 none 28 0 free | sed '1s/idle_last=idle/idle_last=load/'; } > "$T/loginload"
+[ -z "$($W check tower "$T/loginload" $NOW)" ] && ok "awake for load is no login finding" || bad "awake for load is no login finding"
+{ host 9000 0 none 28 0 free | login | sed '1s/power=on/power=off/'; } > "$T/loginoff"
+[ -z "$($W check tower "$T/loginoff" $NOW)" ] && ok "a host without the power module is no login finding" || bad "a host without the power module is no login finding"
 has "every finding names its host" "^[0-9]*	[A-Z]*	tower:" "$out"
 
 # The words of the disk budget (work_own, work_shared, evict_at): a report without them, from an older server, gives neither finding.

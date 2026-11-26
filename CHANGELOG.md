@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.4.86
+
+- **Two calls of one worktree no longer collide in the file sync.** The server let two syncs into the same box run at once,
+  and each rsync's `--delete` removed the other's half-written temporary files, so a builder that ran two `cargo test`
+  calls in parallel had one of them fail in the sync. A sync into a box now waits for the one already running there
+  (`jobs/<box>/.sync`); a pull does not wait.
+- **The host watcher now flags a host kept awake by an open login.** The sleep module counts every connection on the admin
+  port 22 as work, and the watcher only flagged a host awake without work when the keepawake lock was held; a terminal left
+  logged in on the tower (a system monitor, no input for 3 days) kept it from sleeping since 23 Nov without a finding. A host
+  awake with no work whose last busy reason is ssh for 24 samples in a row (2 hours) is now a warning that says how to list
+  the logins.
+- **The contract test no longer leaves runs behind.** At exit it waited for every process it had started, but a run a
+  failed case left blocked on the fake engine never ends, so the wait hung and a test killed meanwhile left that run alive
+  (one lived from 24 to 26 Nov on the client machine). Unless every case passed, the test now ends its processes itself.
+- **The skill no longer suggests pinning `box hosts --pick` with `--host` for a placed worktree.** It said a script could use
+  it to force `--host` for an already placed worktree; a caller that did so before every call moved its worktree whenever the
+  load shifted, and each move built the box again on the other host and left the old one holding memory (seen 26 Nov).
+- **A client test that failed now and then is fixed.** The dashboard capture ran the real server without its card-folder
+  setting, so the machine's own graphics card description (written by the driver tools at some boots) made the report say
+  `gpus=2` against the recorded `gpus=0`. The capture now points that folder at an empty path, like the other host files.
+- **Two lock checks of the contract test no longer race the idle watcher.** They tried the lock on `.forwarding` once,
+  without waiting, while the run's watcher takes it for an instant at every look; they now wait for it, with a bound.
+
 ## 0.4.85
 
 - **A model server is not a build.** 0.4.84 counted every box with a call or a run going in the `busy` word, so a model

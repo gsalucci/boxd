@@ -39,7 +39,7 @@ gpu_count() {
 }
 ROUTE=${BOXD_ROUTE:-/proc/net/route}   # test hooks: the routing table and the network interface folder `pod report` reads
 NETDIR=${BOXD_NET:-/sys/class/net}
-VERSION=0.4.85
+VERSION=0.4.86
 # Keys that may only read, one "<type> <key> [comment]" per line (view_only below); and the largest answer of pod calls and pod log.
 VIEW_KEYS=${BOXD_VIEW_KEYS:-/etc/boxd/view_keys}
 READ_MAX=${BOXD_READ_MAX:-1048576}
@@ -2051,6 +2051,9 @@ if [ -n "${SSH_ORIGINAL_COMMAND:-}" ]; then
         if [[ ${W[-1]} =~ ^jobs/([^/]+)/src ]] && [ -d "jobs/${BASH_REMATCH[1]}" ]; then
             b=jobs/${BASH_REMATCH[1]}
             [ ! -e "$b/.last-used" ] || touch "$b/.last-used"
+            # Two syncs into one box (two calls of one worktree at once) take turns: each rsync's --delete removes the other's
+            # half-written temporary files, and the other then fails to rename them (two calls of one worktree collided in the sync, reported 27 Nov). A pull only reads: no turn.
+            [[ ${W[*]} == *" --sender"* ]] || exec flock -s "$b/.running" flock -x "$b/.sync" rsync "${W[@]:1}"
             exec flock -s "$b/.running" rsync "${W[@]:1}"
         fi
         exec rsync "${W[@]:1}"
