@@ -695,7 +695,11 @@ Since 0.4.0. A box can run a server of its own (a desktop with x11vnc on 5900, a
   `.last-used` on open and on end. Since 0.4.80 it also holds a shared lock on `jobs/<box>/.forwarding` (made when missing) for the life of the channel and touches `jobs/<box>/.forwarded` on open and on end: the trace that a run started with `--idle-exit` looks for (see `pod run`), independent of `.last-used`, which other calls touch too. A hangup, termination or broken pipe ends the relay.
 - **It ends when the channel ends.** The ssh session closing closes standard input; socat then ends and so does the call.
 - **Call log.** One line per channel in the nine columns, command column `forward <port>`, written when the channel ends (exit code of
-  the relay, `129` when hung up). Nothing per byte.
+  the relay, `129` when hung up). Nothing per byte. Since 0.4.87 socat's error output is kept in `jobs/<box>/.forward-err.<random>` for the
+  life of the channel and passed on to the caller when it ends (then removed). socat exits 1 both for a closed port and for a caller that
+  hung up during a reply (a streaming client that stops reading, a killed ssh), and a session without a terminal gets no hangup signal: an
+  exit 1 whose error is on the caller's side (` E read(0,` or ` E write(1,`) is exit and log `129` with reason `caller gone`. A closed port
+  (` E TCP:127.0.0.1:<port>: Connection refused`) and an error on the box's side stay `1`, which is what `box serve`'s probes read.
 - **Client, `box forward [--host <name>] [--pod <name>] <local-port> <box-port>`.** Listens on `127.0.0.1` only (local port 0 picks a free
   one), and for each accepted connection runs one `ssh boxd-<host> pod forward <box> <box-port>` whose standard input and output are the
   connection. No sync, no box registration, no collector pass. Prints `forwarding 127.0.0.1:<local> -> box <box> port <box-port> (Ctrl+C stops)`

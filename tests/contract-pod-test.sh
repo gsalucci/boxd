@@ -85,6 +85,7 @@ case $1 in
         [ -z "${FAKE_FWD_PROBE:-}" ] || { flock -n -x "$FAKE_FWD_PROBE" true && echo free || echo busy; } > "$FAKE_FWD_PROBE.probe"
         [ -z "${FAKE_FWD_HOLD:-}" ] || { : > "$FAKE_FWD_HOLD.in"; read -r _ <"$FAKE_FWD_HOLD"; }   # FAKE_FWD_HOLD=<fifo>: the relay stays open until a line is written to it
         [ -z "${FAKE_FWD_OUT:-}" ] || printf %s "$FAKE_FWD_OUT"
+        [ -z "${FAKE_FWD_ERR:-}" ] || echo "$FAKE_FWD_ERR" >&2   # FAKE_FWD_ERR=<line>: socat's error line, as socat 1.8 writes it
         exit "${FAKE_FWD_EXIT:-0}" ;;
     rmi) [ "${FAKE_RMI_REFUSE:-}" != "$2" ] || exit 1 ;;   # an image a box uses is refused, as the real engine does
     images) cat "${FAKE_IMAGE_LIST:-/dev/null}" ;;   # the named images of the store, one reference per line
@@ -435,6 +436,20 @@ eq "snapshot: init once, then add and commit each time" \
 setup; mkdir -p "$W/jobs/$box"; echo "docker.io/library/debian:stable-slim running" > "$FAKE_STATE/pod-$box"
 CASE_ENV=(FAKE_CPID=4242); pod "pod forward $box 5900"; CASE_ENV=()
 eq "forward: the relay runs under boxd-keepawake" boxd-keepawake "$(cat "$FAKE_KEEP" 2>/dev/null)"
+# socat exits 1 both for a closed port and for a caller that hung up during a reply (a streaming client that stops reading, a killed ssh):
+# no hangup signal reaches a session without a terminal, so the error on the caller's side (descriptor 0 or 1) tells them apart.
+# A closed port stays 1 (box serve's probes rely on it), a failure on the box's side stays 1, a gone caller is 129 as the contract says.
+fwd() {   # fwd <socat error line>: one channel whose relay fails with that line
+    setup; mkdir -p "$W/jobs/$box" "$W/cache"; echo "docker.io/library/debian:stable-slim running" > "$FAKE_STATE/pod-$box"
+    CASE_ENV=(FAKE_CPID=4242 FAKE_FWD_EXIT=1 "FAKE_FWD_ERR=$1"); pod "pod forward $box 8080"; CASE_ENV=()
+    lg="$rc|$(cut -f5,7 "$W/cache/calls.log" | tr '\t' '|')|$(grep -cF "$1" "$T/e/err")|$(ls -A "$W/jobs/$box" | grep -vc '^\.\(running\|forwarding\|forwarded\|last-used\)$')"
+}
+fwd "2026/11/27 03:23:20 socat[24832] E write(1, 0x55d971e70000, 8192): Broken pipe"
+eq "forward: a caller gone during a reply is exit 129, logged as caller gone, the error passed on, no file left" "129|129|caller gone|1|0" "$lg"
+fwd "2026/11/27 03:23:20 socat[24830] E TCP:127.0.0.1:8080: Connection refused"
+eq "forward: a closed port stays exit 1, the refusal passed on" "1|1||1|0" "$lg"
+fwd "2026/11/27 03:23:20 socat[24830] E read(5, 0x55d971e70000, 8192): Connection reset by peer"
+eq "forward: a reset on the box's side stays exit 1" "1|1||1|0" "$lg"
 
 # List
 setup

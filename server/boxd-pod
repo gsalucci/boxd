@@ -39,7 +39,7 @@ gpu_count() {
 }
 ROUTE=${BOXD_ROUTE:-/proc/net/route}   # test hooks: the routing table and the network interface folder `pod report` reads
 NETDIR=${BOXD_NET:-/sys/class/net}
-VERSION=0.4.86
+VERSION=0.4.87
 # Keys that may only read, one "<type> <key> [comment]" per line (view_only below); and the largest answer of pod calls and pod log.
 VIEW_KEYS=${BOXD_VIEW_KEYS:-/etc/boxd/view_keys}
 READ_MAX=${BOXD_READ_MAX:-1048576}
@@ -1940,7 +1940,7 @@ pod_run() {
 # foreground call: shared lock on .running and boxd-keepawake, so the reaper and the sleep module leave a viewer alone.
 # shortcut: container boxes only (a vm box has no host-side namespace to enter), when a vm box needs a viewer: relay through msb exec.
 pod_forward() {
-    local box=${1:-} port=${2:-} name J st pid ep gone="" rc
+    local box=${1:-} port=${2:-} name J st pid ep gone="" rc err why=""
     CALL_T0=${EPOCHREALTIME//[!0-9]/} CALL_BOX=$box CALL_ENGINE=container CALL_CMD="forward ${port:0:6}"
     [[ $box =~ $BOX_RE ]] || die "bad box name"
     [[ $port =~ ^[1-9][0-9]{0,4}$ ]] && [ "$port" -le 65535 ] || die "bad port"
@@ -1961,8 +1961,11 @@ pod_forward() {
     exec 5>>"$J/.forwarding"   # the trace a run started with --idle-exit looks for: held for the life of the channel
     flock -s 5
     touch "$J/.last-used" "$J/.forwarded"
+    # socat exits 1 for a closed port and also when the caller hung up during a reply (a streaming client that stops reading): no hangup
+    # signal reaches a session without a terminal. Its error line tells them apart, so it is kept and passed on when the channel ends.
+    err=$(mktemp "$J/.forward-err.XXXXXX" 2>/dev/null) || err=""
     trap 'gone=1' HUP TERM PIPE INT
-    boxd-keepawake podman unshare nsenter "--net=/proc/$pid/ns/net" socat - "TCP:127.0.0.1:$port" <&0 &
+    boxd-keepawake podman unshare nsenter "--net=/proc/$pid/ns/net" socat - "TCP:127.0.0.1:$port" <&0 2>"${err:-/dev/stderr}" &
     ep=$!
     wait "$ep"; rc=$?
     if [ -n "$gone" ]; then
@@ -1971,8 +1974,14 @@ pod_forward() {
         kill -TERM "$ep" 2>/dev/null; wait "$ep" 2>/dev/null
         rc=129
     fi
+    if [ -n "$err" ]; then
+        cat "$err" >&2 2>/dev/null
+        # An error on the caller's side, standard input (0) or output (1): the caller is gone, exit 129 as for a hangup (box serve's probes need 1 only for a closed port).
+        [ "$rc" != 1 ] || ! grep -q ' E \(read(0\|write(1\),' "$err" || { rc=129 why="caller gone"; }
+        rm -f "$err"
+    fi
     touch "$J/.last-used" "$J/.forwarded"
-    logcall "$rc"
+    logcall "$rc" "$why"
     exit "$rc"
 }
 

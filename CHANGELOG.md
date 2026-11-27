@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.87
+
+- **A forward whose caller hung up during a reply is no longer logged as a failure.** socat exits 1 both for a closed port
+  and for a caller that stops reading before the reply ends (a streaming model client, a killed ssh), and a session without
+  a terminal gets no hangup signal, so such channels were logged with exit 1. On the tower 636 of 1,108 calls of one night
+  were these, with every request answered; the call log and the dashboard showed them as failures. The server now keeps
+  socat's error line and passes it on when the channel ends: an error on the caller's side is exit 129 with reason
+  `caller gone`, as the contract always said for a hangup. A closed port still gives 1, which `box serve` probes read.
+
 ## 0.4.86
 
 - **Two calls of one worktree no longer collide in the file sync.** The server let two syncs into the same box run at once,
